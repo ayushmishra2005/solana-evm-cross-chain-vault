@@ -1,0 +1,22 @@
+[package]
+name = "accounting-model"
+version = "0.1.0"
+description = "Chain independent reference model for the SolEVM Vault accounting rules"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ruint = { version = "=1.20.0", default-features = false }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+ruint = { version = "=1.20.0", default-features = false }
+
+[features]
+default = ["std"]
+std = []
+
+[lints]
+workspace = true

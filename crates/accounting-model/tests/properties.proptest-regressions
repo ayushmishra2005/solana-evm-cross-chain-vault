@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7e0c5d9b4efe12f1bdcad4b67205aebf4b0d22b84bd42bb045f16cb5c4cf9dde # shrinks to actions = [Deposit { account: 84, amount: 1000000 }, CancelDeposit { account: 4 }]
+cc a2fb188324574fd704a86f4f0f0305bbb44e14582dfcf19e8747a38876007139 # shrinks to cycles = [Cycle { deposits: [(3, 60569999), (2, 179255009)], redeems: [], cancel_deposits: [], cancel_redeems: [], pause_before_cutoff: false, claimers: [0], claim_every_user: true }, Cycle { deposits: [], redeems: [(2, 84), (3, 28)], cancel_deposits: [], cancel_redeems: [], pause_before_cutoff: false, claimers: [0], claim_every_user: false }]
+cc c64e70d70f4bc4d66e0af122aceb85bcc13578923d5a0f7794bb9ce501cfc5ca # shrinks to cycles = [Cycle { deposits: [(0, 666089646), (1, 88583029)], redeems: [], cancel_deposits: [], cancel_redeems: [], pause_before_cutoff: false, claimers: [1], claim_every_user: false }, Cycle { deposits: [(0, 15909005), (2, 1479620)], redeems: [(1, 92)], cancel_deposits: [], cancel_redeems: [], pause_before_cutoff: false, claimers: [0], claim_every_user: false }, Cycle { deposits: [(1, 585929436), (2, 1000080)], redeems: [], cancel_deposits: [], cancel_redeems: [], pause_before_cutoff: false, claimers: [0], claim_every_user: false }]
