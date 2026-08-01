@@ -39,9 +39,9 @@ pub use commitment::{COMMITMENT_DOMAIN, MESSAGE_ID_DOMAIN, next_commitment};
 pub use error::{AmountField, DecodeError, EncodeError, IdentifierField, ValidationError};
 pub use hash::keccak256;
 pub use identifier::{
-    ApplicationId, AssetAmount, AssetId, BasisPoints, BodyHash, ChainId, Commitment, ConfigVersion,
-    DeploymentId, EpochId, Flags, LaneId, MAX_BASIS_POINTS, MessageId, ProtocolVersion, ReportId,
-    SchemaVersion, Sequence, Timestamp, TransferId, VaultId,
+    ApplicationId, AssetAmount, BasisPoints, BodyHash, ChainId, Commitment, ConfigVersion,
+    DeploymentId, DestinationReference, EpochId, Flags, LaneId, MAX_BASIS_POINTS, MessageId,
+    ProtocolVersion, SchemaVersion, Sequence, Timestamp, TransferId, VaultId,
 };
 pub use message::{Header, Message, MessageType};
 

@@ -1,13 +1,14 @@
 use crate::codec::{read_array, read_u64, read_u128, write_bytes, write_u64, write_u128};
 use crate::error::{AmountField, DecodeError, EncodeError, IdentifierField, ValidationError};
-use crate::identifier::{AssetAmount, AssetId, ConfigVersion, Timestamp, TransferId};
+use crate::identifier::{AssetAmount, ConfigVersion, Timestamp, TransferId};
 use crate::layout;
 
 /// Asks the remote leg to unwind and return assets.
+///
+/// The asset comes from the vault named in the header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecallBody {
     pub transfer_id: TransferId,
-    pub asset_id: AssetId,
     pub requested_amount: AssetAmount,
     pub minimum_return_amount: AssetAmount,
     pub deadline: Timestamp,
@@ -20,11 +21,6 @@ impl RecallBody {
             out,
             layout::RECALL_TRANSFER_ID_OFFSET,
             self.transfer_id.as_bytes(),
-        )?;
-        write_bytes(
-            out,
-            layout::RECALL_ASSET_ID_OFFSET,
-            self.asset_id.as_bytes(),
         )?;
         write_u128(
             out,
@@ -47,7 +43,6 @@ impl RecallBody {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         Ok(Self {
             transfer_id: TransferId::new(read_array(bytes, layout::RECALL_TRANSFER_ID_OFFSET)?),
-            asset_id: AssetId::new(read_array(bytes, layout::RECALL_ASSET_ID_OFFSET)?),
             requested_amount: AssetAmount::new(read_u128(
                 bytes,
                 layout::RECALL_REQUESTED_AMOUNT_OFFSET,
@@ -67,9 +62,6 @@ impl RecallBody {
     pub(crate) fn validate(&self, published_at: Timestamp) -> Result<(), ValidationError> {
         if self.transfer_id.is_zero() {
             return Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer));
-        }
-        if self.asset_id.is_zero() {
-            return Err(ValidationError::ZeroIdentifier(IdentifierField::Asset));
         }
         if self.requested_amount.is_zero() {
             return Err(ValidationError::ZeroAmount(AmountField::RequestedAmount));
@@ -97,7 +89,6 @@ impl RecallBody {
     pub(crate) fn sample() -> Self {
         Self {
             transfer_id: TransferId::new([0x33; 32]),
-            asset_id: AssetId::new([0x44; 32]),
             requested_amount: AssetAmount::new(750_000),
             minimum_return_amount: AssetAmount::new(740_000),
             deadline: Timestamp::new(3_000),
@@ -152,18 +143,6 @@ mod tests {
         assert_eq!(
             body.validate(PUBLISHED),
             Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer))
-        );
-    }
-
-    #[test]
-    fn a_zero_asset_id_rejects() {
-        let body = RecallBody {
-            asset_id: AssetId::ZERO,
-            ..RecallBody::sample()
-        };
-        assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ZeroIdentifier(IdentifierField::Asset))
         );
     }
 

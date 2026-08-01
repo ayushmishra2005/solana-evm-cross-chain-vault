@@ -30,7 +30,7 @@ const HEADER_REGIONS: &[Region] = &[
     region("magic", layout::MAGIC_OFFSET, layout::MAGIC_LEN),
     region("protocol version", layout::PROTOCOL_VERSION_OFFSET, 2),
     region("schema version", layout::SCHEMA_VERSION_OFFSET, 2),
-    region("message type", layout::MESSAGE_TYPE_OFFSET, 2),
+    region("message type", layout::MESSAGE_TYPE_OFFSET, 1),
     region("flags", layout::FLAGS_OFFSET, 2),
     region("source chain", layout::SOURCE_CHAIN_OFFSET, 4),
     region("destination chain", layout::DESTINATION_CHAIN_OFFSET, 4),
@@ -52,13 +52,11 @@ const HEADER_REGIONS: &[Region] = &[
     region("observed at", layout::OBSERVED_AT_OFFSET, 8),
     region("published at", layout::PUBLISHED_AT_OFFSET, 8),
     region("expires at", layout::EXPIRES_AT_OFFSET, 8),
-    region("body length", layout::BODY_LENGTH_OFFSET, 4),
     region("body hash", layout::BODY_HASH_OFFSET, 32),
 ];
 
 const ALLOCATE_REGIONS: &[Region] = &[
     region("transfer id", layout::ALLOCATE_TRANSFER_ID_OFFSET, 32),
-    region("asset id", layout::ALLOCATE_ASSET_ID_OFFSET, 32),
     region("amount", layout::ALLOCATE_AMOUNT_OFFSET, 16),
     region(
         "expected source balance",
@@ -76,7 +74,6 @@ const ALLOCATE_REGIONS: &[Region] = &[
 
 const RECALL_REGIONS: &[Region] = &[
     region("transfer id", layout::RECALL_TRANSFER_ID_OFFSET, 32),
-    region("asset id", layout::RECALL_ASSET_ID_OFFSET, 32),
     region(
         "requested amount",
         layout::RECALL_REQUESTED_AMOUNT_OFFSET,
@@ -92,9 +89,7 @@ const RECALL_REGIONS: &[Region] = &[
 ];
 
 const REMOTE_REPORT_REGIONS: &[Region] = &[
-    region("report id", layout::REPORT_ID_OFFSET, 32),
     region("epoch id", layout::REPORT_EPOCH_ID_OFFSET, 8),
-    region("asset id", layout::REPORT_ASSET_ID_OFFSET, 32),
     region(
         "remote principal",
         layout::REPORT_REMOTE_PRINCIPAL_OFFSET,
@@ -113,11 +108,6 @@ const REMOTE_REPORT_REGIONS: &[Region] = &[
         32,
     ),
     region("probe status", layout::REPORT_PROBE_STATUS_OFFSET, 1),
-    region(
-        "reserved",
-        layout::REPORT_RESERVED_OFFSET,
-        layout::REPORT_RESERVED_LEN,
-    ),
     region("probe timestamp", layout::REPORT_PROBE_TIMESTAMP_OFFSET, 8),
     region("config version", layout::REPORT_CONFIG_VERSION_OFFSET, 8),
     region(
@@ -129,7 +119,6 @@ const REMOTE_REPORT_REGIONS: &[Region] = &[
 
 const RECALL_SENT_REGIONS: &[Region] = &[
     region("transfer id", layout::RECALL_SENT_TRANSFER_ID_OFFSET, 32),
-    region("asset id", layout::RECALL_SENT_ASSET_ID_OFFSET, 32),
     region(
         "principal sent",
         layout::RECALL_SENT_PRINCIPAL_SENT_OFFSET,
@@ -183,11 +172,6 @@ const CONFIG_UPDATE_REGIONS: &[Region] = &[
         "max downward deviation bps",
         layout::CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET,
         2,
-    ),
-    region(
-        "reserved",
-        layout::CONFIG_RESERVED_OFFSET,
-        layout::CONFIG_RESERVED_LEN,
     ),
     region("max report age", layout::CONFIG_MAX_REPORT_AGE_OFFSET, 8),
     region(
@@ -352,7 +336,7 @@ fn setting_any_single_flag_bit_rejects() {
 }
 
 #[test]
-fn swapping_the_message_type_to_every_other_type_rejects() {
+fn swapping_the_message_type_to_every_other_type_rejects_on_total_length() {
     for kind in MessageType::ALL {
         let bytes = common::encoded(kind);
         for other in MessageType::ALL {
@@ -360,16 +344,24 @@ fn swapping_the_message_type_to_every_other_type_rejects() {
                 continue;
             }
             let mut edited = bytes.clone();
-            edited
-                .get_mut(layout::MESSAGE_TYPE_OFFSET..layout::MESSAGE_TYPE_OFFSET + 2)
-                .unwrap()
-                .copy_from_slice(&other.to_u16().to_be_bytes());
+            *edited.get_mut(layout::MESSAGE_TYPE_OFFSET).unwrap() = other.to_u8();
+
+            let wanted = u32::try_from(other.message_len()).unwrap();
+            let present = u32::try_from(kind.message_len()).unwrap();
+            let expected = if wanted > present {
+                protocol_types::DecodeError::Truncated {
+                    needed: wanted,
+                    found: present,
+                }
+            } else {
+                protocol_types::DecodeError::TrailingBytes {
+                    expected: wanted,
+                    found: present,
+                }
+            };
             assert_eq!(
                 decode_message(&edited),
-                Err(protocol_types::DecodeError::BodyLengthMismatch {
-                    expected: u32::try_from(other.body_len()).unwrap(),
-                    found: u32::try_from(kind.body_len()).unwrap(),
-                }),
+                Err(expected),
                 "{kind:?} read as {other:?}"
             );
         }
@@ -377,22 +369,70 @@ fn swapping_the_message_type_to_every_other_type_rejects() {
 }
 
 #[test]
-fn every_declared_body_length_other_than_the_right_one_rejects() {
-    let kind = MessageType::Recall;
-    let bytes = common::encoded(kind);
-    for declared in [0u32, 1, 111, 113, 128, u32::MAX] {
+fn every_unknown_message_type_byte_rejects() {
+    let bytes = common::encoded(MessageType::Allocate);
+    for value in 0..=u8::MAX {
+        if (1..=5).contains(&value) {
+            continue;
+        }
         let mut edited = bytes.clone();
-        edited
-            .get_mut(layout::BODY_LENGTH_OFFSET..layout::BODY_LENGTH_OFFSET + 4)
-            .unwrap()
-            .copy_from_slice(&declared.to_be_bytes());
+        *edited.get_mut(layout::MESSAGE_TYPE_OFFSET).unwrap() = value;
         assert_eq!(
             decode_message(&edited),
-            Err(protocol_types::DecodeError::BodyLengthMismatch {
-                expected: 112,
-                found: declared,
-            })
+            Err(protocol_types::DecodeError::UnknownMessageType(value))
         );
+    }
+}
+
+#[test]
+fn every_unknown_probe_status_byte_rejects() {
+    let bytes = common::encoded(MessageType::RemoteReport);
+    let position = HEADER_LEN + layout::REPORT_PROBE_STATUS_OFFSET;
+    for value in 4..=u8::MAX {
+        let mut edited = bytes.clone();
+        *edited.get_mut(position).unwrap() = value;
+        let sealed = resealed(&edited);
+        assert_eq!(
+            decode_message(&sealed),
+            Err(protocol_types::DecodeError::InvalidProbeStatus(value))
+        );
+    }
+}
+
+#[test]
+fn a_byte_flip_across_two_newly_adjacent_fields_is_still_detected() {
+    // Each boundary is where the padding used to sit, or where a width shrank.
+    let boundaries = [
+        (
+            MessageType::RemoteReport,
+            HEADER_LEN + layout::REPORT_PROBE_STATUS_OFFSET + 1,
+            HEADER_LEN + layout::REPORT_PROBE_TIMESTAMP_OFFSET,
+        ),
+        (
+            MessageType::ConfigUpdate,
+            HEADER_LEN + layout::CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET + 2,
+            HEADER_LEN + layout::CONFIG_MAX_REPORT_AGE_OFFSET,
+        ),
+        (
+            MessageType::Allocate,
+            layout::MESSAGE_TYPE_OFFSET + 1,
+            layout::FLAGS_OFFSET,
+        ),
+    ];
+
+    for (kind, end_of_left, start_of_right) in boundaries {
+        assert_eq!(end_of_left, start_of_right, "{kind:?} has a gap");
+        let bytes = common::encoded(kind);
+        for position in [start_of_right - 1, start_of_right] {
+            let mut edited = bytes.clone();
+            *edited.get_mut(position).unwrap() ^= 1;
+            let sealed = if position >= HEADER_LEN {
+                resealed(&edited)
+            } else {
+                edited
+            };
+            assert_diverges(&bytes, &sealed, &format!("{kind:?} byte {position}"));
+        }
     }
 }
 

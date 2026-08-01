@@ -16,6 +16,15 @@ use crate::error::{DecodeError, EncodeError, ValidationError};
 use crate::identifier::Timestamp;
 use crate::message::MessageType;
 
+/// Envelope times a body is checked against.
+///
+/// Both are carried so a body event can never sit after its observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct EnvelopeTimes {
+    pub observed_at: Timestamp,
+    pub published_at: Timestamp,
+}
+
 /// The body of one message, tagged by its kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Body {
@@ -64,13 +73,13 @@ impl Body {
         }
     }
 
-    pub(crate) fn validate(&self, published_at: Timestamp) -> Result<(), ValidationError> {
+    pub(crate) fn validate(&self, times: EnvelopeTimes) -> Result<(), ValidationError> {
         match self {
-            Self::Allocate(body) => body.validate(published_at),
-            Self::Recall(body) => body.validate(published_at),
-            Self::RemoteReport(body) => body.validate(published_at),
-            Self::RecallSent(body) => body.validate(published_at),
-            Self::ConfigUpdate(body) => body.validate(published_at),
+            Self::Allocate(body) => body.validate(times.published_at),
+            Self::Recall(body) => body.validate(times.published_at),
+            Self::RemoteReport(body) => body.validate(times),
+            Self::RecallSent(body) => body.validate(times),
+            Self::ConfigUpdate(body) => body.validate(times.published_at),
         }
     }
 }

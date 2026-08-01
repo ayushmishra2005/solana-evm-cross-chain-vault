@@ -6,10 +6,10 @@
 #![allow(unreachable_pub, dead_code, clippy::unwrap_used)]
 
 use protocol_types::{
-    AllocateBody, ApplicationId, AssetAmount, AssetId, BasisPoints, Body, ChainId, Commitment,
-    ConfigUpdateBody, ConfigVersion, DeploymentId, EpochId, Flags, Header, LaneId, Message,
-    MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody,
-    ReportId, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
+    AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
+    ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
+    LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
+    RemoteReportBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
 };
 
 pub const OBSERVED_AT: u64 = 1_700_000_000;
@@ -47,7 +47,6 @@ pub fn header() -> Header {
 pub fn allocate_body() -> AllocateBody {
     AllocateBody {
         transfer_id: TransferId::new([0x11; 32]),
-        asset_id: AssetId::new([0x22; 32]),
         amount: AssetAmount::new(1_000_000),
         expected_source_balance: AssetAmount::new(5_000_000),
         minimum_destination_amount: AssetAmount::new(999_000),
@@ -60,7 +59,6 @@ pub fn allocate_body() -> AllocateBody {
 pub fn recall_body() -> RecallBody {
     RecallBody {
         transfer_id: TransferId::new([0x33; 32]),
-        asset_id: AssetId::new([0x44; 32]),
         requested_amount: AssetAmount::new(750_000),
         minimum_return_amount: AssetAmount::new(740_000),
         deadline: Timestamp::new(PUBLISHED_AT + 1_800),
@@ -71,16 +69,14 @@ pub fn recall_body() -> RecallBody {
 #[must_use]
 pub fn remote_report_body() -> RemoteReportBody {
     RemoteReportBody {
-        report_id: ReportId::new([0x55; 32]),
         epoch_id: EpochId::new(12),
-        asset_id: AssetId::new([0x66; 32]),
         remote_principal: AssetAmount::new(2_000_000),
         reported_value: AssetAmount::new(2_050_000),
         realized_loss: AssetAmount::new(1_500),
         unattributed_balance: AssetAmount::new(25),
         latest_completed_transfer_id: TransferId::new([0x77; 32]),
         probe_status: ProbeStatus::Fresh,
-        probe_timestamp: Timestamp::new(PUBLISHED_AT - 120),
+        probe_timestamp: Timestamp::new(OBSERVED_AT - 120),
         config_version: ConfigVersion::new(4),
         remote_state_commitment: Commitment::new([0x88; 32]),
     }
@@ -90,12 +86,11 @@ pub fn remote_report_body() -> RemoteReportBody {
 pub fn recall_sent_body() -> RecallSentBody {
     RecallSentBody {
         transfer_id: TransferId::new([0x99; 32]),
-        asset_id: AssetId::new([0xAA; 32]),
         principal_sent: AssetAmount::new(500_000),
         actual_amount_sent: AssetAmount::new(498_000),
         realized_loss: AssetAmount::new(2_000),
-        destination_reference: Commitment::new([0xBB; 32]),
-        sent_timestamp: Timestamp::new(PUBLISHED_AT - 30),
+        destination_reference: DestinationReference::new([0xBB; 32]),
+        sent_timestamp: Timestamp::new(OBSERVED_AT - 30),
         config_version: ConfigVersion::new(4),
     }
 }

@@ -6,17 +6,16 @@ mod common;
 
 use common::{header, message, resealed};
 use protocol_types::layout::{
-    ALLOCATE_MESSAGE_LEN, BODY_HASH_OFFSET, BODY_LENGTH_OFFSET, CONFIG_UPDATE_MESSAGE_LEN,
-    DEPLOYMENT_ID_OFFSET, DESTINATION_APPLICATION_OFFSET, FLAGS_OFFSET, HEADER_LEN, MAGIC_OFFSET,
-    MAX_MESSAGE_LEN, MESSAGE_TYPE_OFFSET, PROTOCOL_VERSION_OFFSET, RECALL_MESSAGE_LEN,
-    RECALL_SENT_MESSAGE_LEN, REMOTE_REPORT_MESSAGE_LEN, SCHEMA_VERSION_OFFSET,
-    SOURCE_APPLICATION_OFFSET,
+    ALLOCATE_MESSAGE_LEN, BODY_HASH_OFFSET, CONFIG_UPDATE_MESSAGE_LEN, DEPLOYMENT_ID_OFFSET,
+    DESTINATION_APPLICATION_OFFSET, FLAGS_OFFSET, HEADER_LEN, MAGIC_OFFSET, MAX_MESSAGE_LEN,
+    MESSAGE_TYPE_OFFSET, PROTOCOL_VERSION_OFFSET, RECALL_MESSAGE_LEN, RECALL_SENT_MESSAGE_LEN,
+    REMOTE_REPORT_MESSAGE_LEN, SCHEMA_VERSION_OFFSET, SOURCE_APPLICATION_OFFSET,
 };
 use protocol_types::{
-    AllocateBody, ApplicationId, AssetAmount, AssetId, Body, ChainId, Commitment, DecodeError,
-    DeploymentId, EncodeError, Flags, IdentifierField, LaneId, Message, MessageType,
-    ProtocolVersion, SchemaVersion, Sequence, Timestamp, TransferId, ValidationError, VaultId,
-    decode_message, encode_into, encode_message,
+    AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, DecodeError, DeploymentId,
+    EncodeError, Flags, Header, IdentifierField, LaneId, Message, MessageType, ProtocolVersion,
+    SchemaVersion, Sequence, Timestamp, TransferId, ValidationError, VaultId, decode_message,
+    encode_into, encode_message,
 };
 
 fn patch(kind: MessageType, offset: usize, value: &[u8]) -> Vec<u8> {
@@ -42,11 +41,11 @@ fn every_message_type_survives_the_round_trip() {
 #[test]
 fn every_message_type_has_its_declared_encoded_length() {
     let expected = [
-        (MessageType::Allocate, ALLOCATE_MESSAGE_LEN, 380),
-        (MessageType::Recall, RECALL_MESSAGE_LEN, 364),
-        (MessageType::RemoteReport, REMOTE_REPORT_MESSAGE_LEN, 476),
-        (MessageType::RecallSent, RECALL_SENT_MESSAGE_LEN, 412),
-        (MessageType::ConfigUpdate, CONFIG_UPDATE_MESSAGE_LEN, 324),
+        (MessageType::Allocate, ALLOCATE_MESSAGE_LEN, 343),
+        (MessageType::Recall, RECALL_MESSAGE_LEN, 327),
+        (MessageType::RemoteReport, REMOTE_REPORT_MESSAGE_LEN, 400),
+        (MessageType::RecallSent, RECALL_SENT_MESSAGE_LEN, 375),
+        (MessageType::ConfigUpdate, CONFIG_UPDATE_MESSAGE_LEN, 317),
     ];
     for (kind, declared, literal) in expected {
         assert_eq!(declared, literal, "{kind:?}");
@@ -87,7 +86,7 @@ fn encoding_into_a_short_slice_reports_the_needed_width() {
     assert_eq!(
         encode_into(&message(MessageType::Allocate), &mut buffer),
         Err(EncodeError::BufferTooSmall {
-            needed: 380,
+            needed: 343,
             available: 8
         })
     );
@@ -114,19 +113,25 @@ fn the_versions_and_type_are_big_endian_at_their_offsets() {
     );
     assert_eq!(
         bytes.get(MESSAGE_TYPE_OFFSET..FLAGS_OFFSET),
-        Some(&[0u8, 3][..])
+        Some(&[3u8][..])
     );
 }
 
 #[test]
-fn the_declared_body_length_is_big_endian_and_matches_the_type() {
+fn the_message_type_is_one_byte_and_names_the_body_width() {
     for kind in MessageType::ALL {
         let bytes = common::encoded(kind);
-        let declared = bytes
-            .get(BODY_LENGTH_OFFSET..BODY_LENGTH_OFFSET + 4)
-            .unwrap();
-        let expected = u32::try_from(kind.body_len()).unwrap().to_be_bytes();
-        assert_eq!(declared, expected, "{kind:?}");
+        assert_eq!(bytes.get(MESSAGE_TYPE_OFFSET), Some(&kind.to_u8()));
+        assert_eq!(bytes.len(), HEADER_LEN + kind.body_len(), "{kind:?}");
+    }
+}
+
+#[test]
+fn no_two_message_types_share_a_total_length() {
+    let mut seen = Vec::new();
+    for kind in MessageType::ALL {
+        assert!(!seen.contains(&kind.message_len()), "{kind:?}");
+        seen.push(kind.message_len());
     }
 }
 
@@ -153,14 +158,46 @@ fn a_solana_destination_application_keeps_all_thirty_two_bytes() {
 fn an_evm_application_round_trips_through_a_decoded_header() {
     let decoded = decode_message(&common::encoded(MessageType::Allocate)).unwrap();
     assert_eq!(
-        decoded.header.source_application.evm_address(),
-        Some(common::EVM_APPLICATION)
+        decoded.header.source_application.low_20_bytes(),
+        common::EVM_APPLICATION
     );
     assert_eq!(
-        decoded.header.destination_application.to_solana_pubkey(),
+        decoded.header.destination_application.to_bytes(),
         common::SOLANA_APPLICATION
     );
-    assert_eq!(decoded.header.destination_application.evm_address(), None);
+}
+
+#[test]
+fn a_decoded_application_is_never_labelled_with_a_chain_family() {
+    let decoded = decode_message(&common::encoded(MessageType::Allocate)).unwrap();
+    let evm = decoded.header.source_application;
+    let solana = decoded.header.destination_application;
+
+    // Both answer the same byte questions, so neither is classified.
+    assert!(evm.has_zero_high_12_bytes());
+    assert!(!solana.has_zero_high_12_bytes());
+    assert_eq!(evm.low_20_bytes(), common::EVM_APPLICATION);
+    assert_eq!(solana.low_20_bytes(), [0xB2u8; 20]);
+}
+
+#[test]
+fn a_zero_prefixed_application_survives_the_round_trip_as_written() {
+    let mut key = [0u8; 32];
+    key[12..].copy_from_slice(&[0x5D; 20]);
+    let moved = Message {
+        header: Header {
+            destination_application: ApplicationId::from_solana_pubkey(key),
+            ..header()
+        },
+        body: common::body_of(MessageType::Allocate),
+    };
+    let bytes = encode_message(&moved).unwrap();
+    let decoded = decode_message(&bytes).unwrap();
+    assert_eq!(decoded.header.destination_application.to_bytes(), key);
+    assert_eq!(
+        decoded.header.destination_application,
+        ApplicationId::from_evm_address([0x5D; 20])
+    );
 }
 
 // Structural rejections
@@ -170,7 +207,7 @@ fn an_empty_input_rejects_as_truncated() {
     assert_eq!(
         decode_message(&[]),
         Err(DecodeError::Truncated {
-            needed: 252,
+            needed: 247,
             found: 0
         })
     );
@@ -183,8 +220,8 @@ fn a_truncated_header_rejects() {
     assert_eq!(
         decode_message(short),
         Err(DecodeError::Truncated {
-            needed: 252,
-            found: 251
+            needed: 247,
+            found: 246
         })
     );
 }
@@ -196,8 +233,8 @@ fn a_truncated_body_rejects() {
     assert_eq!(
         decode_message(short),
         Err(DecodeError::Truncated {
-            needed: 380,
-            found: 379
+            needed: 343,
+            found: 342
         })
     );
 }
@@ -209,8 +246,8 @@ fn a_valid_message_with_one_extra_byte_rejects() {
     assert_eq!(
         decode_message(&bytes),
         Err(DecodeError::TrailingBytes {
-            expected: 380,
-            found: 381
+            expected: 343,
+            found: 344
         })
     );
 }
@@ -265,12 +302,8 @@ fn an_unsupported_schema_version_rejects() {
 
 #[test]
 fn an_unknown_message_type_rejects() {
-    for kind in [0u16, 6, u16::MAX] {
-        let bytes = patch(
-            MessageType::Allocate,
-            MESSAGE_TYPE_OFFSET,
-            &kind.to_be_bytes(),
-        );
+    for kind in [0u8, 6, u8::MAX] {
+        let bytes = patch(MessageType::Allocate, MESSAGE_TYPE_OFFSET, &[kind]);
         assert_eq!(
             decode_message(&bytes),
             Err(DecodeError::UnknownMessageType(kind))
@@ -279,33 +312,25 @@ fn an_unknown_message_type_rejects() {
 }
 
 #[test]
-fn a_known_type_with_the_wrong_body_length_rejects() {
-    let bytes = patch(
-        MessageType::Allocate,
-        MESSAGE_TYPE_OFFSET,
-        &2u16.to_be_bytes(),
-    );
+fn a_known_type_whose_body_is_shorter_rejects_as_trailing_bytes() {
+    let bytes = patch(MessageType::Allocate, MESSAGE_TYPE_OFFSET, &[2]);
     assert_eq!(
         decode_message(&bytes),
-        Err(DecodeError::BodyLengthMismatch {
-            expected: 112,
-            found: 128
+        Err(DecodeError::TrailingBytes {
+            expected: 327,
+            found: 343
         })
     );
 }
 
 #[test]
-fn a_tampered_body_length_rejects() {
-    let bytes = patch(
-        MessageType::Allocate,
-        BODY_LENGTH_OFFSET,
-        &99u32.to_be_bytes(),
-    );
+fn a_known_type_whose_body_is_longer_rejects_as_truncated() {
+    let bytes = patch(MessageType::Allocate, MESSAGE_TYPE_OFFSET, &[3]);
     assert_eq!(
         decode_message(&bytes),
-        Err(DecodeError::BodyLengthMismatch {
-            expected: 128,
-            found: 99
+        Err(DecodeError::Truncated {
+            needed: 400,
+            found: 343
         })
     );
 }
@@ -338,15 +363,12 @@ fn a_body_edit_with_a_new_hash_decodes_to_a_different_message() {
 #[test]
 fn a_message_type_swap_with_a_resealed_body_still_rejects_on_length() {
     let mut bytes = common::encoded(MessageType::RemoteReport);
-    bytes
-        .get_mut(MESSAGE_TYPE_OFFSET..MESSAGE_TYPE_OFFSET + 2)
-        .unwrap()
-        .copy_from_slice(&1u16.to_be_bytes());
+    *bytes.get_mut(MESSAGE_TYPE_OFFSET).unwrap() = 1;
     assert_eq!(
         decode_message(&resealed(&bytes)),
-        Err(DecodeError::BodyLengthMismatch {
-            expected: 128,
-            found: 224
+        Err(DecodeError::TrailingBytes {
+            expected: 343,
+            found: 400
         })
     );
 }
@@ -654,17 +676,6 @@ fn an_unknown_probe_status_rejects_during_decoding() {
 }
 
 #[test]
-fn a_non_zero_reserved_body_byte_rejects_during_decoding() {
-    let mut bytes = common::encoded(MessageType::RemoteReport);
-    let offset = HEADER_LEN + protocol_types::layout::REPORT_RESERVED_OFFSET;
-    *bytes.get_mut(offset).unwrap() = 1;
-    assert_eq!(
-        decode_message(&resealed(&bytes)),
-        Err(DecodeError::ReservedBytesSet)
-    );
-}
-
-#[test]
 fn a_deadline_before_publication_rejects_during_decoding() {
     let mut bytes = common::encoded(MessageType::Allocate);
     let start = HEADER_LEN + protocol_types::layout::ALLOCATE_DEADLINE_OFFSET;
@@ -762,7 +773,7 @@ fn an_encoded_buffer_compares_and_prints_by_its_bytes() {
     assert_eq!(allocate, message(MessageType::Allocate).encode().unwrap());
     assert_ne!(allocate, recall);
     assert_eq!(allocate.to_vec(), allocate.as_bytes());
-    assert!(format!("{allocate:?}").contains("380"));
+    assert!(format!("{allocate:?}").contains("343"));
 }
 
 #[test]
@@ -811,11 +822,11 @@ fn a_deployment_id_change_is_visible_in_the_encoded_bytes() {
 }
 
 #[test]
-fn an_asset_id_change_is_visible_in_the_encoded_bytes() {
+fn a_transfer_id_change_is_visible_in_the_encoded_bytes() {
     let edited = Message {
         header: header(),
         body: Body::Allocate(AllocateBody {
-            asset_id: AssetId::new([0x23; 32]),
+            transfer_id: protocol_types::TransferId::new([0x23; 32]),
             ..common::allocate_body()
         }),
     };

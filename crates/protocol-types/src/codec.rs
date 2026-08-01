@@ -2,7 +2,7 @@
 //!
 //! Parsing lives here. Field rules live in [`crate::validation`].
 
-use crate::body::Body;
+use crate::body::{Body, EnvelopeTimes};
 use crate::commitment::message_id;
 use crate::error::{DecodeError, EncodeError};
 use crate::hash::keccak256;
@@ -16,6 +16,14 @@ use crate::validation;
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
+
+/// Lifts the two envelope times a body is checked against.
+const fn envelope_times(header: &Header) -> EnvelopeTimes {
+    EnvelopeTimes {
+        observed_at: header.observed_at,
+        published_at: header.published_at,
+    }
+}
 
 /// Narrows a length for an error field without ever wrapping.
 pub(crate) fn saturating_u32(value: usize) -> u32 {
@@ -58,15 +66,6 @@ pub(crate) fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, DecodeError> 
 
 pub(crate) fn read_u128(bytes: &[u8], offset: usize) -> Result<u128, DecodeError> {
     read_array::<16>(bytes, offset).map(u128::from_be_bytes)
-}
-
-/// True when every byte of the range is zero.
-pub(crate) fn reserved_is_clear(
-    bytes: &[u8],
-    offset: usize,
-    width: usize,
-) -> Result<bool, DecodeError> {
-    Ok(window(bytes, offset, width)?.iter().all(|byte| *byte == 0))
 }
 
 pub(crate) fn write_bytes(out: &mut [u8], offset: usize, value: &[u8]) -> Result<(), EncodeError> {
@@ -153,7 +152,7 @@ fn write_header(
         layout::SCHEMA_VERSION_OFFSET,
         header.schema_version.get(),
     )?;
-    write_u16(out, layout::MESSAGE_TYPE_OFFSET, message_type.to_u16())?;
+    write_u8(out, layout::MESSAGE_TYPE_OFFSET, message_type.to_u8())?;
     write_u16(out, layout::FLAGS_OFFSET, header.flags.bits())?;
     write_u32(out, layout::SOURCE_CHAIN_OFFSET, header.source_chain.get())?;
     write_u32(
@@ -187,11 +186,6 @@ fn write_header(
     write_u64(out, layout::OBSERVED_AT_OFFSET, header.observed_at.get())?;
     write_u64(out, layout::PUBLISHED_AT_OFFSET, header.published_at.get())?;
     write_u64(out, layout::EXPIRES_AT_OFFSET, header.expires_at.get())?;
-    write_u32(
-        out,
-        layout::BODY_LENGTH_OFFSET,
-        saturating_u32(message_type.body_len()),
-    )?;
     write_bytes(out, layout::BODY_HASH_OFFSET, body_hash.as_bytes())
 }
 
@@ -288,7 +282,7 @@ impl Message {
 pub fn encode_into(message: &Message, out: &mut [u8]) -> Result<usize, EncodeError> {
     validation::validate_supported_versions_for_encode(&message.header)?;
     validation::validate_header(&message.header)?;
-    message.body.validate(message.header.published_at)?;
+    message.body.validate(envelope_times(&message.header))?;
 
     let width = message.encoded_len();
     let available = saturating_u32(out.len());
@@ -326,7 +320,7 @@ pub fn decode_message(bytes: &[u8]) -> Result<Message, DecodeError> {
     let body = Body::decode(frame.message_type, body_bytes)?;
 
     validation::validate_header(&header)?;
-    body.validate(header.published_at)?;
+    body.validate(envelope_times(&header))?;
     Ok(Message { header, body })
 }
 
@@ -374,13 +368,6 @@ mod tests {
             read_u32(&bytes, usize::MAX),
             Err(DecodeError::LengthOverflow)
         );
-    }
-
-    #[test]
-    fn reserved_bytes_are_clear_only_when_every_byte_is_zero() {
-        let bytes = [0u8, 0, 1];
-        assert_eq!(reserved_is_clear(&bytes, 0, 2), Ok(true));
-        assert_eq!(reserved_is_clear(&bytes, 0, 3), Ok(false));
     }
 
     #[test]

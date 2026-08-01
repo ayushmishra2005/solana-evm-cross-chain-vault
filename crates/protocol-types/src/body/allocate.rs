@@ -1,15 +1,15 @@
 use crate::codec::{read_array, read_u64, read_u128, write_bytes, write_u64, write_u128};
 use crate::error::{AmountField, DecodeError, EncodeError, IdentifierField, ValidationError};
-use crate::identifier::{AssetAmount, AssetId, ConfigVersion, Timestamp, TransferId};
+use crate::identifier::{AssetAmount, ConfigVersion, Timestamp, TransferId};
 use crate::layout;
 
 /// Authorises moving assets to the remote leg.
 ///
-/// It authorises the move. It is not evidence that assets moved.
+/// It authorises the move. It is not evidence that assets moved. The asset
+/// comes from the vault named in the header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocateBody {
     pub transfer_id: TransferId,
-    pub asset_id: AssetId,
     pub amount: AssetAmount,
     pub expected_source_balance: AssetAmount,
     pub minimum_destination_amount: AssetAmount,
@@ -23,11 +23,6 @@ impl AllocateBody {
             out,
             layout::ALLOCATE_TRANSFER_ID_OFFSET,
             self.transfer_id.as_bytes(),
-        )?;
-        write_bytes(
-            out,
-            layout::ALLOCATE_ASSET_ID_OFFSET,
-            self.asset_id.as_bytes(),
         )?;
         write_u128(out, layout::ALLOCATE_AMOUNT_OFFSET, self.amount.get())?;
         write_u128(
@@ -51,7 +46,6 @@ impl AllocateBody {
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         Ok(Self {
             transfer_id: TransferId::new(read_array(bytes, layout::ALLOCATE_TRANSFER_ID_OFFSET)?),
-            asset_id: AssetId::new(read_array(bytes, layout::ALLOCATE_ASSET_ID_OFFSET)?),
             amount: AssetAmount::new(read_u128(bytes, layout::ALLOCATE_AMOUNT_OFFSET)?),
             expected_source_balance: AssetAmount::new(read_u128(
                 bytes,
@@ -72,9 +66,6 @@ impl AllocateBody {
     pub(crate) fn validate(&self, published_at: Timestamp) -> Result<(), ValidationError> {
         if self.transfer_id.is_zero() {
             return Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer));
-        }
-        if self.asset_id.is_zero() {
-            return Err(ValidationError::ZeroIdentifier(IdentifierField::Asset));
         }
         if self.amount.is_zero() {
             return Err(ValidationError::ZeroAmount(AmountField::Amount));
@@ -102,7 +93,6 @@ impl AllocateBody {
     pub(crate) fn sample() -> Self {
         Self {
             transfer_id: TransferId::new([0x11; 32]),
-            asset_id: AssetId::new([0x22; 32]),
             amount: AssetAmount::new(1_000_000),
             expected_source_balance: AssetAmount::new(5_000_000),
             minimum_destination_amount: AssetAmount::new(999_000),
@@ -156,18 +146,6 @@ mod tests {
         assert_eq!(
             body.validate(PUBLISHED),
             Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer))
-        );
-    }
-
-    #[test]
-    fn a_zero_asset_id_rejects() {
-        let body = AllocateBody {
-            asset_id: AssetId::ZERO,
-            ..AllocateBody::sample()
-        };
-        assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ZeroIdentifier(IdentifierField::Asset))
         );
     }
 

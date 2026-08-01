@@ -3,7 +3,7 @@
 //! Everything here is stateless. Authorisation, replay and stored sequence
 //! state belong to the application, not to the codec.
 
-use crate::codec::{read_array, read_u16, read_u32, saturating_u32};
+use crate::codec::{read_array, read_u8, read_u16, saturating_u32};
 use crate::error::{DecodeError, EncodeError, IdentifierField, ValidationError};
 use crate::layout;
 use crate::message::{Header, MessageType};
@@ -18,6 +18,7 @@ pub(crate) struct Frame {
 /// Checks the frame of a byte string without trusting any field.
 ///
 /// It settles the magic, the versions, the kind and the exact total width.
+/// The kind alone fixes the body width, so no length is carried on the wire.
 pub(crate) fn inspect_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
     if bytes.len() < layout::HEADER_LEN {
         return Err(DecodeError::Truncated {
@@ -40,17 +41,8 @@ pub(crate) fn inspect_frame(bytes: &[u8]) -> Result<Frame, DecodeError> {
         return Err(DecodeError::UnsupportedSchemaVersion(schema));
     }
 
-    let message_type = MessageType::from_u16(read_u16(bytes, layout::MESSAGE_TYPE_OFFSET)?)?;
+    let message_type = MessageType::from_u8(read_u8(bytes, layout::MESSAGE_TYPE_OFFSET)?)?;
     let body_len = message_type.body_len();
-
-    let declared = read_u32(bytes, layout::BODY_LENGTH_OFFSET)?;
-    let expected = saturating_u32(body_len);
-    if declared != expected {
-        return Err(DecodeError::BodyLengthMismatch {
-            expected,
-            found: declared,
-        });
-    }
 
     let total = layout::HEADER_LEN
         .checked_add(body_len)

@@ -2,6 +2,9 @@
 //!
 //! Nothing outside this module may hardcode an offset. The assertions below
 //! keep the fields contiguous and keep each declared size honest.
+//!
+//! Fields are packed with no padding. A reader copies the bytes it needs and
+//! reads them big endian, so no field has to start on a machine word boundary.
 
 /// Width of a wide identifier.
 pub const WIDE: usize = 32;
@@ -14,7 +17,7 @@ pub const MAGIC_LEN: usize = 4;
 pub const PROTOCOL_VERSION_OFFSET: usize = MAGIC_OFFSET + MAGIC_LEN;
 pub const SCHEMA_VERSION_OFFSET: usize = PROTOCOL_VERSION_OFFSET + 2;
 pub const MESSAGE_TYPE_OFFSET: usize = SCHEMA_VERSION_OFFSET + 2;
-pub const FLAGS_OFFSET: usize = MESSAGE_TYPE_OFFSET + 2;
+pub const FLAGS_OFFSET: usize = MESSAGE_TYPE_OFFSET + 1;
 pub const SOURCE_CHAIN_OFFSET: usize = FLAGS_OFFSET + 2;
 pub const DESTINATION_CHAIN_OFFSET: usize = SOURCE_CHAIN_OFFSET + 4;
 pub const SOURCE_APPLICATION_OFFSET: usize = DESTINATION_CHAIN_OFFSET + 4;
@@ -27,8 +30,7 @@ pub const PREVIOUS_COMMITMENT_OFFSET: usize = SEQUENCE_OFFSET + 8;
 pub const OBSERVED_AT_OFFSET: usize = PREVIOUS_COMMITMENT_OFFSET + WIDE;
 pub const PUBLISHED_AT_OFFSET: usize = OBSERVED_AT_OFFSET + 8;
 pub const EXPIRES_AT_OFFSET: usize = PUBLISHED_AT_OFFSET + 8;
-pub const BODY_LENGTH_OFFSET: usize = EXPIRES_AT_OFFSET + 8;
-pub const BODY_HASH_OFFSET: usize = BODY_LENGTH_OFFSET + 4;
+pub const BODY_HASH_OFFSET: usize = EXPIRES_AT_OFFSET + 8;
 
 /// Bytes before the body starts.
 pub const HEADER_LEN: usize = BODY_HASH_OFFSET + WIDE;
@@ -36,8 +38,7 @@ pub const HEADER_LEN: usize = BODY_HASH_OFFSET + WIDE;
 // Allocate body
 
 pub const ALLOCATE_TRANSFER_ID_OFFSET: usize = 0;
-pub const ALLOCATE_ASSET_ID_OFFSET: usize = ALLOCATE_TRANSFER_ID_OFFSET + WIDE;
-pub const ALLOCATE_AMOUNT_OFFSET: usize = ALLOCATE_ASSET_ID_OFFSET + WIDE;
+pub const ALLOCATE_AMOUNT_OFFSET: usize = ALLOCATE_TRANSFER_ID_OFFSET + WIDE;
 pub const ALLOCATE_EXPECTED_SOURCE_BALANCE_OFFSET: usize = ALLOCATE_AMOUNT_OFFSET + 16;
 pub const ALLOCATE_MINIMUM_DESTINATION_AMOUNT_OFFSET: usize =
     ALLOCATE_EXPECTED_SOURCE_BALANCE_OFFSET + 16;
@@ -48,8 +49,7 @@ pub const ALLOCATE_BODY_LEN: usize = ALLOCATE_CONFIG_VERSION_OFFSET + 8;
 // Recall body
 
 pub const RECALL_TRANSFER_ID_OFFSET: usize = 0;
-pub const RECALL_ASSET_ID_OFFSET: usize = RECALL_TRANSFER_ID_OFFSET + WIDE;
-pub const RECALL_REQUESTED_AMOUNT_OFFSET: usize = RECALL_ASSET_ID_OFFSET + WIDE;
+pub const RECALL_REQUESTED_AMOUNT_OFFSET: usize = RECALL_TRANSFER_ID_OFFSET + WIDE;
 pub const RECALL_MINIMUM_RETURN_AMOUNT_OFFSET: usize = RECALL_REQUESTED_AMOUNT_OFFSET + 16;
 pub const RECALL_DEADLINE_OFFSET: usize = RECALL_MINIMUM_RETURN_AMOUNT_OFFSET + 16;
 pub const RECALL_CONFIG_VERSION_OFFSET: usize = RECALL_DEADLINE_OFFSET + 8;
@@ -57,20 +57,15 @@ pub const RECALL_BODY_LEN: usize = RECALL_CONFIG_VERSION_OFFSET + 8;
 
 // Remote report body
 
-pub const REPORT_ID_OFFSET: usize = 0;
-pub const REPORT_EPOCH_ID_OFFSET: usize = REPORT_ID_OFFSET + WIDE;
-pub const REPORT_ASSET_ID_OFFSET: usize = REPORT_EPOCH_ID_OFFSET + 8;
-pub const REPORT_REMOTE_PRINCIPAL_OFFSET: usize = REPORT_ASSET_ID_OFFSET + WIDE;
+pub const REPORT_EPOCH_ID_OFFSET: usize = 0;
+pub const REPORT_REMOTE_PRINCIPAL_OFFSET: usize = REPORT_EPOCH_ID_OFFSET + 8;
 pub const REPORT_REPORTED_VALUE_OFFSET: usize = REPORT_REMOTE_PRINCIPAL_OFFSET + 16;
 pub const REPORT_REALIZED_LOSS_OFFSET: usize = REPORT_REPORTED_VALUE_OFFSET + 16;
 pub const REPORT_UNATTRIBUTED_BALANCE_OFFSET: usize = REPORT_REALIZED_LOSS_OFFSET + 16;
 pub const REPORT_LATEST_COMPLETED_TRANSFER_ID_OFFSET: usize =
     REPORT_UNATTRIBUTED_BALANCE_OFFSET + 16;
 pub const REPORT_PROBE_STATUS_OFFSET: usize = REPORT_LATEST_COMPLETED_TRANSFER_ID_OFFSET + WIDE;
-/// Padding that puts the timestamps back on an eight byte boundary.
-pub const REPORT_RESERVED_OFFSET: usize = REPORT_PROBE_STATUS_OFFSET + 1;
-pub const REPORT_RESERVED_LEN: usize = 7;
-pub const REPORT_PROBE_TIMESTAMP_OFFSET: usize = REPORT_RESERVED_OFFSET + REPORT_RESERVED_LEN;
+pub const REPORT_PROBE_TIMESTAMP_OFFSET: usize = REPORT_PROBE_STATUS_OFFSET + 1;
 pub const REPORT_CONFIG_VERSION_OFFSET: usize = REPORT_PROBE_TIMESTAMP_OFFSET + 8;
 pub const REPORT_REMOTE_STATE_COMMITMENT_OFFSET: usize = REPORT_CONFIG_VERSION_OFFSET + 8;
 pub const REMOTE_REPORT_BODY_LEN: usize = REPORT_REMOTE_STATE_COMMITMENT_OFFSET + WIDE;
@@ -78,8 +73,7 @@ pub const REMOTE_REPORT_BODY_LEN: usize = REPORT_REMOTE_STATE_COMMITMENT_OFFSET 
 // Recall sent body
 
 pub const RECALL_SENT_TRANSFER_ID_OFFSET: usize = 0;
-pub const RECALL_SENT_ASSET_ID_OFFSET: usize = RECALL_SENT_TRANSFER_ID_OFFSET + WIDE;
-pub const RECALL_SENT_PRINCIPAL_SENT_OFFSET: usize = RECALL_SENT_ASSET_ID_OFFSET + WIDE;
+pub const RECALL_SENT_PRINCIPAL_SENT_OFFSET: usize = RECALL_SENT_TRANSFER_ID_OFFSET + WIDE;
 pub const RECALL_SENT_ACTUAL_AMOUNT_SENT_OFFSET: usize = RECALL_SENT_PRINCIPAL_SENT_OFFSET + 16;
 pub const RECALL_SENT_REALIZED_LOSS_OFFSET: usize = RECALL_SENT_ACTUAL_AMOUNT_SENT_OFFSET + 16;
 pub const RECALL_SENT_DESTINATION_REFERENCE_OFFSET: usize = RECALL_SENT_REALIZED_LOSS_OFFSET + 16;
@@ -97,10 +91,7 @@ pub const CONFIG_MAX_UPWARD_DEVIATION_BPS_OFFSET: usize =
     CONFIG_MAX_REMOTE_ALLOCATION_BPS_OFFSET + 2;
 pub const CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET: usize =
     CONFIG_MAX_UPWARD_DEVIATION_BPS_OFFSET + 2;
-/// Padding that puts max report age on an eight byte boundary.
-pub const CONFIG_RESERVED_OFFSET: usize = CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET + 2;
-pub const CONFIG_RESERVED_LEN: usize = 2;
-pub const CONFIG_MAX_REPORT_AGE_OFFSET: usize = CONFIG_RESERVED_OFFSET + CONFIG_RESERVED_LEN;
+pub const CONFIG_MAX_REPORT_AGE_OFFSET: usize = CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET + 2;
 pub const CONFIG_EFFECTIVE_TIMESTAMP_OFFSET: usize = CONFIG_MAX_REPORT_AGE_OFFSET + 8;
 pub const CONFIG_COMMITMENT_OFFSET: usize = CONFIG_EFFECTIVE_TIMESTAMP_OFFSET + 8;
 pub const CONFIG_UPDATE_BODY_LEN: usize = CONFIG_COMMITMENT_OFFSET + WIDE;
@@ -119,20 +110,28 @@ pub const MAX_BODY_LEN: usize = REMOTE_REPORT_BODY_LEN;
 /// Largest whole message across every message type.
 pub const MAX_MESSAGE_LEN: usize = HEADER_LEN + MAX_BODY_LEN;
 
+/// Transport budget every message is expected to fit inside.
+pub const MESSAGE_SIZE_TARGET: usize = 400;
+
 // Declared sizes
 
-const _: () = assert!(HEADER_LEN == 252);
-const _: () = assert!(ALLOCATE_BODY_LEN == 128);
-const _: () = assert!(RECALL_BODY_LEN == 112);
-const _: () = assert!(REMOTE_REPORT_BODY_LEN == 224);
-const _: () = assert!(RECALL_SENT_BODY_LEN == 160);
-const _: () = assert!(CONFIG_UPDATE_BODY_LEN == 72);
+const _: () = assert!(HEADER_LEN == 247);
+const _: () = assert!(ALLOCATE_BODY_LEN == 96);
+const _: () = assert!(RECALL_BODY_LEN == 80);
+const _: () = assert!(REMOTE_REPORT_BODY_LEN == 153);
+const _: () = assert!(RECALL_SENT_BODY_LEN == 128);
+const _: () = assert!(CONFIG_UPDATE_BODY_LEN == 70);
 
-const _: () = assert!(ALLOCATE_MESSAGE_LEN == 380);
-const _: () = assert!(RECALL_MESSAGE_LEN == 364);
-const _: () = assert!(REMOTE_REPORT_MESSAGE_LEN == 476);
-const _: () = assert!(RECALL_SENT_MESSAGE_LEN == 412);
-const _: () = assert!(CONFIG_UPDATE_MESSAGE_LEN == 324);
+const _: () = assert!(ALLOCATE_MESSAGE_LEN == 343);
+const _: () = assert!(RECALL_MESSAGE_LEN == 327);
+const _: () = assert!(REMOTE_REPORT_MESSAGE_LEN == 400);
+const _: () = assert!(RECALL_SENT_MESSAGE_LEN == 375);
+const _: () = assert!(CONFIG_UPDATE_MESSAGE_LEN == 317);
+
+// Every message fits the transport budget.
+
+const _: () = assert!(MAX_MESSAGE_LEN == 400);
+const _: () = assert!(MAX_MESSAGE_LEN <= MESSAGE_SIZE_TARGET);
 
 // The body never outgrows the buffer the encoder reserves.
 
@@ -141,7 +140,6 @@ const _: () = assert!(RECALL_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(REMOTE_REPORT_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(RECALL_SENT_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(CONFIG_UPDATE_BODY_LEN <= MAX_BODY_LEN);
-const _: () = assert!(MAX_MESSAGE_LEN == 476);
 
 /// Every field of one region, as a start offset and a width.
 type Field = (usize, usize);
@@ -168,7 +166,7 @@ const HEADER_FIELDS: &[Field] = &[
     (MAGIC_OFFSET, MAGIC_LEN),
     (PROTOCOL_VERSION_OFFSET, 2),
     (SCHEMA_VERSION_OFFSET, 2),
-    (MESSAGE_TYPE_OFFSET, 2),
+    (MESSAGE_TYPE_OFFSET, 1),
     (FLAGS_OFFSET, 2),
     (SOURCE_CHAIN_OFFSET, 4),
     (DESTINATION_CHAIN_OFFSET, 4),
@@ -182,13 +180,11 @@ const HEADER_FIELDS: &[Field] = &[
     (OBSERVED_AT_OFFSET, 8),
     (PUBLISHED_AT_OFFSET, 8),
     (EXPIRES_AT_OFFSET, 8),
-    (BODY_LENGTH_OFFSET, 4),
     (BODY_HASH_OFFSET, WIDE),
 ];
 
 const ALLOCATE_FIELDS: &[Field] = &[
     (ALLOCATE_TRANSFER_ID_OFFSET, WIDE),
-    (ALLOCATE_ASSET_ID_OFFSET, WIDE),
     (ALLOCATE_AMOUNT_OFFSET, 16),
     (ALLOCATE_EXPECTED_SOURCE_BALANCE_OFFSET, 16),
     (ALLOCATE_MINIMUM_DESTINATION_AMOUNT_OFFSET, 16),
@@ -198,7 +194,6 @@ const ALLOCATE_FIELDS: &[Field] = &[
 
 const RECALL_FIELDS: &[Field] = &[
     (RECALL_TRANSFER_ID_OFFSET, WIDE),
-    (RECALL_ASSET_ID_OFFSET, WIDE),
     (RECALL_REQUESTED_AMOUNT_OFFSET, 16),
     (RECALL_MINIMUM_RETURN_AMOUNT_OFFSET, 16),
     (RECALL_DEADLINE_OFFSET, 8),
@@ -206,16 +201,13 @@ const RECALL_FIELDS: &[Field] = &[
 ];
 
 const REMOTE_REPORT_FIELDS: &[Field] = &[
-    (REPORT_ID_OFFSET, WIDE),
     (REPORT_EPOCH_ID_OFFSET, 8),
-    (REPORT_ASSET_ID_OFFSET, WIDE),
     (REPORT_REMOTE_PRINCIPAL_OFFSET, 16),
     (REPORT_REPORTED_VALUE_OFFSET, 16),
     (REPORT_REALIZED_LOSS_OFFSET, 16),
     (REPORT_UNATTRIBUTED_BALANCE_OFFSET, 16),
     (REPORT_LATEST_COMPLETED_TRANSFER_ID_OFFSET, WIDE),
     (REPORT_PROBE_STATUS_OFFSET, 1),
-    (REPORT_RESERVED_OFFSET, REPORT_RESERVED_LEN),
     (REPORT_PROBE_TIMESTAMP_OFFSET, 8),
     (REPORT_CONFIG_VERSION_OFFSET, 8),
     (REPORT_REMOTE_STATE_COMMITMENT_OFFSET, WIDE),
@@ -223,7 +215,6 @@ const REMOTE_REPORT_FIELDS: &[Field] = &[
 
 const RECALL_SENT_FIELDS: &[Field] = &[
     (RECALL_SENT_TRANSFER_ID_OFFSET, WIDE),
-    (RECALL_SENT_ASSET_ID_OFFSET, WIDE),
     (RECALL_SENT_PRINCIPAL_SENT_OFFSET, 16),
     (RECALL_SENT_ACTUAL_AMOUNT_SENT_OFFSET, 16),
     (RECALL_SENT_REALIZED_LOSS_OFFSET, 16),
@@ -238,7 +229,6 @@ const CONFIG_UPDATE_FIELDS: &[Field] = &[
     (CONFIG_MAX_REMOTE_ALLOCATION_BPS_OFFSET, 2),
     (CONFIG_MAX_UPWARD_DEVIATION_BPS_OFFSET, 2),
     (CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET, 2),
-    (CONFIG_RESERVED_OFFSET, CONFIG_RESERVED_LEN),
     (CONFIG_MAX_REPORT_AGE_OFFSET, 8),
     (CONFIG_EFFECTIVE_TIMESTAMP_OFFSET, 8),
     (CONFIG_COMMITMENT_OFFSET, WIDE),
@@ -251,12 +241,35 @@ const _: () = assert!(is_contiguous(REMOTE_REPORT_FIELDS, REMOTE_REPORT_BODY_LEN
 const _: () = assert!(is_contiguous(RECALL_SENT_FIELDS, RECALL_SENT_BODY_LEN));
 const _: () = assert!(is_contiguous(CONFIG_UPDATE_FIELDS, CONFIG_UPDATE_BODY_LEN));
 
-// Timestamps stay on an eight byte boundary inside padded bodies.
+/// True when no two body widths are equal.
+///
+/// Distinct widths are what make a swapped message type fail on total length.
+/// The caller below runs at compile time, so a bad index fails the build.
+#[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
+const fn all_distinct(widths: &[usize]) -> bool {
+    let mut left = 0;
+    while left < widths.len() {
+        let mut right = left + 1;
+        while right < widths.len() {
+            if widths[left] == widths[right] {
+                return false;
+            }
+            right += 1;
+        }
+        left += 1;
+    }
+    true
+}
 
-const _: () = assert!(REPORT_PROBE_TIMESTAMP_OFFSET.is_multiple_of(8));
-const _: () = assert!(REPORT_CONFIG_VERSION_OFFSET.is_multiple_of(8));
-const _: () = assert!(CONFIG_MAX_REPORT_AGE_OFFSET.is_multiple_of(8));
-const _: () = assert!(CONFIG_EFFECTIVE_TIMESTAMP_OFFSET.is_multiple_of(8));
+const BODY_WIDTHS: &[usize] = &[
+    ALLOCATE_BODY_LEN,
+    RECALL_BODY_LEN,
+    REMOTE_REPORT_BODY_LEN,
+    RECALL_SENT_BODY_LEN,
+    CONFIG_UPDATE_BODY_LEN,
+];
+
+const _: () = assert!(all_distinct(BODY_WIDTHS));
 
 #[cfg(test)]
 mod tests {
@@ -286,6 +299,24 @@ mod tests {
     }
 
     #[test]
+    fn every_field_ends_where_the_next_field_starts() {
+        for region in [
+            HEADER_FIELDS,
+            ALLOCATE_FIELDS,
+            RECALL_FIELDS,
+            REMOTE_REPORT_FIELDS,
+            RECALL_SENT_FIELDS,
+            CONFIG_UPDATE_FIELDS,
+        ] {
+            for pair in region.windows(2) {
+                let (start, width) = pair.first().copied().unwrap_or((0, 0));
+                let (next, _) = pair.get(1).copied().unwrap_or((0, 0));
+                assert_eq!(start + width, next);
+            }
+        }
+    }
+
+    #[test]
     fn a_gap_between_fields_is_rejected() {
         assert!(!is_contiguous(&[(0, 4), (8, 4)], 12));
     }
@@ -306,6 +337,17 @@ mod tests {
     }
 
     #[test]
+    fn repeated_body_widths_are_rejected() {
+        assert!(all_distinct(&[1, 2, 3]));
+        assert!(!all_distinct(&[1, 2, 1]));
+    }
+
+    #[test]
+    fn every_body_width_is_distinct() {
+        assert!(all_distinct(BODY_WIDTHS));
+    }
+
+    #[test]
     fn every_message_length_is_the_header_plus_its_body() {
         for (message_len, body_len) in [
             (ALLOCATE_MESSAGE_LEN, ALLOCATE_BODY_LEN),
@@ -316,6 +358,21 @@ mod tests {
         ] {
             assert_eq!(message_len, HEADER_LEN + body_len);
             assert!(message_len <= MAX_MESSAGE_LEN);
+            assert!(message_len <= MESSAGE_SIZE_TARGET);
+        }
+    }
+
+    #[test]
+    fn several_fields_start_off_a_word_boundary() {
+        for offset in [
+            FLAGS_OFFSET,
+            SOURCE_CHAIN_OFFSET,
+            SEQUENCE_OFFSET,
+            OBSERVED_AT_OFFSET,
+            REPORT_PROBE_TIMESTAMP_OFFSET,
+            CONFIG_MAX_REPORT_AGE_OFFSET,
+        ] {
+            assert!(!offset.is_multiple_of(8), "offset {offset} is word aligned");
         }
     }
 }

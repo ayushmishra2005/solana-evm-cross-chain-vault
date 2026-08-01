@@ -27,7 +27,7 @@ impl MessageType {
     ];
 
     #[must_use]
-    pub const fn to_u16(self) -> u16 {
+    pub const fn to_u8(self) -> u8 {
         match self {
             Self::Allocate => 1,
             Self::Recall => 2,
@@ -38,7 +38,7 @@ impl MessageType {
     }
 
     /// Rejects zero, reserved and future discriminants.
-    pub const fn from_u16(value: u16) -> Result<Self, DecodeError> {
+    pub const fn from_u8(value: u8) -> Result<Self, DecodeError> {
         match value {
             1 => Ok(Self::Allocate),
             2 => Ok(Self::Recall),
@@ -124,26 +124,28 @@ mod tests {
     #[test]
     fn every_discriminant_survives_the_round_trip() {
         for kind in MessageType::ALL {
-            assert_eq!(MessageType::from_u16(kind.to_u16()), Ok(kind));
+            assert_eq!(MessageType::from_u8(kind.to_u8()), Ok(kind));
         }
     }
 
     #[test]
     fn the_discriminants_are_the_documented_numbers() {
-        assert_eq!(MessageType::Allocate.to_u16(), 1);
-        assert_eq!(MessageType::Recall.to_u16(), 2);
-        assert_eq!(MessageType::RemoteReport.to_u16(), 3);
-        assert_eq!(MessageType::RecallSent.to_u16(), 4);
-        assert_eq!(MessageType::ConfigUpdate.to_u16(), 5);
+        assert_eq!(MessageType::Allocate.to_u8(), 1);
+        assert_eq!(MessageType::Recall.to_u8(), 2);
+        assert_eq!(MessageType::RemoteReport.to_u8(), 3);
+        assert_eq!(MessageType::RecallSent.to_u8(), 4);
+        assert_eq!(MessageType::ConfigUpdate.to_u8(), 5);
     }
 
     #[test]
-    fn zero_and_reserved_discriminants_reject() {
-        for value in [0u16, 6, 7, 255, 256, u16::MAX] {
-            assert_eq!(
-                MessageType::from_u16(value),
-                Err(DecodeError::UnknownMessageType(value))
-            );
+    fn every_value_outside_the_defined_set_rejects() {
+        for value in 0..=u8::MAX {
+            let outcome = MessageType::from_u8(value);
+            if (1..=5).contains(&value) {
+                assert!(outcome.is_ok(), "{value} should be known");
+            } else {
+                assert_eq!(outcome, Err(DecodeError::UnknownMessageType(value)));
+            }
         }
     }
 

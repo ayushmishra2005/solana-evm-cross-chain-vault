@@ -93,8 +93,10 @@ wide_id!(ApplicationId, "Application endpoint on one chain.");
 wide_id!(DeploymentId, "Distinguishes one deployment from another.");
 wide_id!(VaultId, "Vault the message belongs to.");
 wide_id!(TransferId, "Identifies one allocation or recall.");
-wide_id!(ReportId, "Identifies one remote report.");
-wide_id!(AssetId, "Asset the message refers to.");
+wide_id!(
+    DestinationReference,
+    "Opaque receipt the destination chain can be searched by."
+);
 wide_id!(Commitment, "Hash chain link or configuration digest.");
 wide_id!(BodyHash, "Keccak-256 of the encoded body.");
 wide_id!(MessageId, "Keccak-256 identifier of a whole message.");
@@ -121,6 +123,11 @@ impl BasisPoints {
     }
 }
 
+/// An application endpoint is always 32 opaque bytes on the wire.
+///
+/// The chain family is never read out of those bytes. A Solana key may start
+/// with twelve zero bytes, so a zero prefix proves nothing. Callers learn the
+/// family from configuration and then pick the matching operation below.
 impl ApplicationId {
     /// Maps a 20 byte EVM address into the low bytes, with a zero prefix.
     #[must_use]
@@ -133,26 +140,29 @@ impl ApplicationId {
         }))
     }
 
-    /// Returns the EVM address when the first twelve bytes are zero.
-    #[must_use]
-    pub fn evm_address(&self) -> Option<[u8; 20]> {
-        let (prefix, address) = self.0.split_at(12);
-        if prefix != [0u8; 12] {
-            return None;
-        }
-        address.try_into().ok()
-    }
-
     /// Keeps a Solana public key unchanged.
     #[must_use]
     pub const fn from_solana_pubkey(key: [u8; 32]) -> Self {
         Self(key)
     }
 
-    /// Returns the Solana public key bytes unchanged.
+    /// Returns the last twenty bytes and claims nothing about the chain.
+    ///
+    /// Use it only after configuration says this endpoint is an EVM address.
     #[must_use]
-    pub const fn to_solana_pubkey(self) -> [u8; 32] {
-        self.0
+    pub fn low_20_bytes(&self) -> [u8; 20] {
+        let mut low = [0u8; 20];
+        let source = self.0.split_at(12).1;
+        low.copy_from_slice(source);
+        low
+    }
+
+    /// Reports whether the first twelve bytes are zero.
+    ///
+    /// This is a fact about the bytes. It is not proof of a chain family.
+    #[must_use]
+    pub fn has_zero_high_12_bytes(&self) -> bool {
+        self.0.split_at(12).0 == [0u8; 12]
     }
 }
 
@@ -191,20 +201,39 @@ mod tests {
         let address = [0xAB; 20];
         let id = ApplicationId::from_evm_address(address);
         assert_eq!(id.as_bytes().get(..12), Some(&[0u8; 12][..]));
-        assert_eq!(id.evm_address(), Some(address));
+        assert_eq!(id.low_20_bytes(), address);
     }
 
     #[test]
     fn a_solana_key_survives_the_round_trip_unchanged() {
         let key = core::array::from_fn(|index| u8::try_from(index).unwrap_or(0));
         let id = ApplicationId::from_solana_pubkey(key);
-        assert_eq!(id.to_solana_pubkey(), key);
+        assert_eq!(id.to_bytes(), key);
     }
 
     #[test]
-    fn a_full_width_key_is_not_read_as_an_evm_address() {
-        let id = ApplicationId::from_solana_pubkey([0x11; 32]);
-        assert_eq!(id.evm_address(), None);
+    fn a_solana_key_that_starts_with_twelve_zero_bytes_stays_a_generic_identifier() {
+        let mut key = [0u8; 32];
+        key[12..].copy_from_slice(&[0x5D; 20]);
+        let solana = ApplicationId::from_solana_pubkey(key);
+        let evm = ApplicationId::from_evm_address([0x5D; 20]);
+        assert_eq!(solana, evm);
+        assert_eq!(solana.to_bytes(), key);
+    }
+
+    #[test]
+    fn a_zero_prefix_is_reported_as_a_byte_fact_and_never_as_a_chain() {
+        let padded = ApplicationId::from_evm_address([0x7E; 20]);
+        let full = ApplicationId::from_solana_pubkey([0x11; 32]);
+        assert!(padded.has_zero_high_12_bytes());
+        assert!(!full.has_zero_high_12_bytes());
+    }
+
+    #[test]
+    fn the_low_twenty_bytes_are_returned_for_any_identifier() {
+        let full = ApplicationId::from_solana_pubkey([0x11; 32]);
+        assert_eq!(full.low_20_bytes(), [0x11; 20]);
+        assert_eq!(full.to_bytes().get(12..), Some(&full.low_20_bytes()[..]));
     }
 
     #[test]

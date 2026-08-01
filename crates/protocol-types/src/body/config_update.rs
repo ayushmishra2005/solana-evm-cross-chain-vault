@@ -1,6 +1,4 @@
-use crate::codec::{
-    read_array, read_u16, read_u64, reserved_is_clear, write_bytes, write_u16, write_u64,
-};
+use crate::codec::{read_array, read_u16, read_u64, write_bytes, write_u16, write_u64};
 use crate::error::{AmountField, DecodeError, EncodeError, IdentifierField, ValidationError};
 use crate::identifier::{BasisPoints, Commitment, ConfigVersion, Timestamp};
 use crate::layout;
@@ -47,11 +45,6 @@ impl ConfigUpdateBody {
             layout::CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET,
             self.max_downward_deviation_bps.get(),
         )?;
-        write_bytes(
-            out,
-            layout::CONFIG_RESERVED_OFFSET,
-            &[0u8; layout::CONFIG_RESERVED_LEN],
-        )?;
         write_u64(
             out,
             layout::CONFIG_MAX_REPORT_AGE_OFFSET,
@@ -70,13 +63,6 @@ impl ConfigUpdateBody {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if !reserved_is_clear(
-            bytes,
-            layout::CONFIG_RESERVED_OFFSET,
-            layout::CONFIG_RESERVED_LEN,
-        )? {
-            return Err(DecodeError::ReservedBytesSet);
-        }
         Ok(Self {
             config_version: ConfigVersion::new(read_u64(bytes, layout::CONFIG_VERSION_OFFSET)?),
             previous_config_version: ConfigVersion::new(read_u64(
@@ -157,6 +143,31 @@ impl ConfigUpdateBody {
 mod tests {
     use super::*;
 
+    #[test]
+    fn max_report_age_is_read_from_an_unaligned_offset() {
+        let body = ConfigUpdateBody {
+            max_report_age: 0x0102_0304_0506_0708,
+            ..ConfigUpdateBody::sample()
+        };
+        let mut bytes = [0u8; layout::CONFIG_UPDATE_BODY_LEN];
+        assert_eq!(body.encode_into(&mut bytes), Ok(()));
+        let start = layout::CONFIG_MAX_REPORT_AGE_OFFSET;
+        assert!(!start.is_multiple_of(8));
+        assert_eq!(
+            bytes.get(start..start + 8),
+            Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..])
+        );
+        assert_eq!(ConfigUpdateBody::decode(&bytes), Ok(body));
+    }
+
+    #[test]
+    fn the_deviation_bounds_sit_directly_before_max_report_age() {
+        assert_eq!(
+            layout::CONFIG_MAX_DOWNWARD_DEVIATION_BPS_OFFSET + 2,
+            layout::CONFIG_MAX_REPORT_AGE_OFFSET
+        );
+    }
+
     const PUBLISHED: Timestamp = Timestamp::new(1_000);
 
     fn encoded(body: &ConfigUpdateBody) -> [u8; layout::CONFIG_UPDATE_BODY_LEN] {
@@ -182,28 +193,6 @@ mod tests {
         let bytes = encoded(&body);
         let start = layout::CONFIG_MAX_REMOTE_ALLOCATION_BPS_OFFSET;
         assert_eq!(bytes.get(start..start + 6), Some(&[1u8, 2, 3, 4, 5, 6][..]));
-    }
-
-    #[test]
-    fn the_reserved_bytes_are_written_as_zero() {
-        let bytes = encoded(&ConfigUpdateBody::sample());
-        let start = layout::CONFIG_RESERVED_OFFSET;
-        assert_eq!(
-            bytes.get(start..start + layout::CONFIG_RESERVED_LEN),
-            Some(&[0u8; layout::CONFIG_RESERVED_LEN][..])
-        );
-    }
-
-    #[test]
-    fn a_non_zero_reserved_byte_rejects() {
-        let mut bytes = encoded(&ConfigUpdateBody::sample());
-        if let Some(byte) = bytes.get_mut(layout::CONFIG_RESERVED_OFFSET) {
-            *byte = 1;
-        }
-        assert_eq!(
-            ConfigUpdateBody::decode(&bytes),
-            Err(DecodeError::ReservedBytesSet)
-        );
     }
 
     #[test]

@@ -9,10 +9,10 @@ mod common;
 use proptest::prelude::*;
 use protocol_types::layout::{BODY_HASH_OFFSET, HEADER_LEN, MAX_MESSAGE_LEN};
 use protocol_types::{
-    AllocateBody, ApplicationId, AssetAmount, AssetId, BasisPoints, Body, ChainId, Commitment,
-    ConfigUpdateBody, ConfigVersion, DeploymentId, EpochId, Flags, Header, LaneId, Message,
-    MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody,
-    ReportId, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId, decode_message,
+    AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
+    ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
+    LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
+    RemoteReportBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId, decode_message,
     encode_into, encode_message, next_commitment,
 };
 
@@ -114,7 +114,6 @@ fn header_strategy() -> impl Strategy<Value = Header> {
 fn allocate_strategy(published: u64) -> impl Strategy<Value = Body> {
     (
         non_zero_wide(),
-        non_zero_wide(),
         1u128..=u128::MAX,
         any::<u128>(),
         0..MAX_TIME,
@@ -122,11 +121,10 @@ fn allocate_strategy(published: u64) -> impl Strategy<Value = Body> {
         any::<u64>(),
     )
         .prop_map(
-            move |(transfer, asset, amount, balance, delay, version, minimum_seed)| {
+            move |(transfer, amount, balance, delay, version, minimum_seed)| {
                 let minimum = u128::from(minimum_seed % 100).max(1).min(amount);
                 Body::Allocate(AllocateBody {
                     transfer_id: TransferId::new(transfer),
-                    asset_id: AssetId::new(asset),
                     amount: AssetAmount::new(amount),
                     expected_source_balance: AssetAmount::new(balance),
                     minimum_destination_amount: AssetAmount::new(minimum),
@@ -140,25 +138,21 @@ fn allocate_strategy(published: u64) -> impl Strategy<Value = Body> {
 fn recall_strategy(published: u64) -> impl Strategy<Value = Body> {
     (
         non_zero_wide(),
-        non_zero_wide(),
         1u128..=u128::MAX,
         0..MAX_TIME,
         1u64..=u64::MAX,
         any::<u64>(),
     )
-        .prop_map(
-            move |(transfer, asset, requested, delay, version, minimum_seed)| {
-                let minimum = u128::from(minimum_seed % 100).max(1).min(requested);
-                Body::Recall(RecallBody {
-                    transfer_id: TransferId::new(transfer),
-                    asset_id: AssetId::new(asset),
-                    requested_amount: AssetAmount::new(requested),
-                    minimum_return_amount: AssetAmount::new(minimum),
-                    deadline: Timestamp::new(published.saturating_add(delay)),
-                    config_version: ConfigVersion::new(version),
-                })
-            },
-        )
+        .prop_map(move |(transfer, requested, delay, version, minimum_seed)| {
+            let minimum = u128::from(minimum_seed % 100).max(1).min(requested);
+            Body::Recall(RecallBody {
+                transfer_id: TransferId::new(transfer),
+                requested_amount: AssetAmount::new(requested),
+                minimum_return_amount: AssetAmount::new(minimum),
+                deadline: Timestamp::new(published.saturating_add(delay)),
+                config_version: ConfigVersion::new(version),
+            })
+        })
 }
 
 fn probe_strategy() -> impl Strategy<Value = ProbeStatus> {
@@ -170,25 +164,21 @@ fn probe_strategy() -> impl Strategy<Value = ProbeStatus> {
     ]
 }
 
-fn remote_report_strategy(published: u64) -> impl Strategy<Value = Body> {
+fn remote_report_strategy(observed: u64) -> impl Strategy<Value = Body> {
     (
-        non_zero_wide(),
         1u64..=u64::MAX,
-        non_zero_wide(),
         any::<u128>(),
         any::<u128>(),
         any::<u128>(),
         prop::array::uniform32(any::<u8>()),
         probe_strategy(),
-        0..=published,
+        0..=observed,
         1u64..=u64::MAX,
         non_zero_wide(),
     )
         .prop_map(
             move |(
-                report,
                 epoch,
-                asset,
                 principal,
                 value,
                 unattributed,
@@ -205,9 +195,7 @@ fn remote_report_strategy(published: u64) -> impl Strategy<Value = Body> {
                     probe_seed
                 };
                 Body::RemoteReport(RemoteReportBody {
-                    report_id: ReportId::new(report),
                     epoch_id: EpochId::new(epoch),
-                    asset_id: AssetId::new(asset),
                     remote_principal: AssetAmount::new(principal),
                     reported_value: AssetAmount::new(value),
                     realized_loss: AssetAmount::new(loss),
@@ -222,25 +210,23 @@ fn remote_report_strategy(published: u64) -> impl Strategy<Value = Body> {
         )
 }
 
-fn recall_sent_strategy(published: u64) -> impl Strategy<Value = Body> {
+fn recall_sent_strategy(observed: u64) -> impl Strategy<Value = Body> {
     (
         non_zero_wide(),
-        non_zero_wide(),
         1u128..=u128::MAX,
         1u128..=u128::MAX,
         non_zero_wide(),
-        0..=published,
+        0..=observed,
         1u64..=u64::MAX,
     )
         .prop_map(
-            move |(transfer, asset, principal, actual, reference, sent, version)| {
+            move |(transfer, principal, actual, reference, sent, version)| {
                 Body::RecallSent(RecallSentBody {
                     transfer_id: TransferId::new(transfer),
-                    asset_id: AssetId::new(asset),
                     principal_sent: AssetAmount::new(principal),
                     actual_amount_sent: AssetAmount::new(actual),
                     realized_loss: AssetAmount::new(principal / 2),
-                    destination_reference: Commitment::new(reference),
+                    destination_reference: DestinationReference::new(reference),
                     sent_timestamp: Timestamp::new(sent),
                     config_version: ConfigVersion::new(version),
                 })
@@ -274,12 +260,14 @@ fn config_update_strategy(published: u64) -> impl Strategy<Value = Body> {
         )
 }
 
-fn body_strategy(kind: MessageType, published: u64) -> BoxedStrategy<Body> {
+fn body_strategy(kind: MessageType, header: &Header) -> BoxedStrategy<Body> {
+    let observed = header.observed_at.get();
+    let published = header.published_at.get();
     match kind {
         MessageType::Allocate => allocate_strategy(published).boxed(),
         MessageType::Recall => recall_strategy(published).boxed(),
-        MessageType::RemoteReport => remote_report_strategy(published).boxed(),
-        MessageType::RecallSent => recall_sent_strategy(published).boxed(),
+        MessageType::RemoteReport => remote_report_strategy(observed).boxed(),
+        MessageType::RecallSent => recall_sent_strategy(observed).boxed(),
         MessageType::ConfigUpdate => config_update_strategy(published).boxed(),
     }
 }
@@ -296,15 +284,13 @@ fn kind_strategy() -> impl Strategy<Value = MessageType> {
 
 fn message_strategy() -> impl Strategy<Value = Message> {
     (header_strategy(), kind_strategy()).prop_flat_map(|(header, kind)| {
-        body_strategy(kind, header.published_at.get())
-            .prop_map(move |body| Message { header, body })
+        body_strategy(kind, &header).prop_map(move |body| Message { header, body })
     })
 }
 
 fn message_of(kind: MessageType) -> impl Strategy<Value = Message> {
     header_strategy().prop_flat_map(move |header| {
-        body_strategy(kind, header.published_at.get())
-            .prop_map(move |body| Message { header, body })
+        body_strategy(kind, &header).prop_map(move |body| Message { header, body })
     })
 }
 
@@ -497,35 +483,79 @@ proptest! {
     #[test]
     fn every_allocate_message_round_trips(subject in message_of(MessageType::Allocate)) {
         let bytes = encode_message(&subject).unwrap();
-        prop_assert_eq!(bytes.len(), 380);
+        prop_assert_eq!(bytes.len(), 343);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 
     #[test]
     fn every_recall_message_round_trips(subject in message_of(MessageType::Recall)) {
         let bytes = encode_message(&subject).unwrap();
-        prop_assert_eq!(bytes.len(), 364);
+        prop_assert_eq!(bytes.len(), 327);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 
     #[test]
     fn every_remote_report_message_round_trips(subject in message_of(MessageType::RemoteReport)) {
         let bytes = encode_message(&subject).unwrap();
-        prop_assert_eq!(bytes.len(), 476);
+        prop_assert_eq!(bytes.len(), 400);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 
     #[test]
     fn every_recall_sent_message_round_trips(subject in message_of(MessageType::RecallSent)) {
         let bytes = encode_message(&subject).unwrap();
-        prop_assert_eq!(bytes.len(), 412);
+        prop_assert_eq!(bytes.len(), 375);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 
     #[test]
     fn every_config_update_message_round_trips(subject in message_of(MessageType::ConfigUpdate)) {
         let bytes = encode_message(&subject).unwrap();
-        prop_assert_eq!(bytes.len(), 324);
+        prop_assert_eq!(bytes.len(), 317);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
+    }
+
+    #[test]
+    fn every_sampled_message_fits_the_transport_budget(subject in message_strategy()) {
+        let bytes = encode_message(&subject).unwrap();
+        prop_assert!(bytes.len() <= protocol_types::layout::MESSAGE_SIZE_TARGET);
+    }
+
+    #[test]
+    fn a_probe_seen_after_the_observation_always_rejects(
+        subject in message_of(MessageType::RemoteReport),
+        ahead in 1u64..1_000,
+    ) {
+        let Body::RemoteReport(body) = subject.body else {
+            return Err(TestCaseError::reject("wrong body kind"));
+        };
+        let observed = subject.header.observed_at.get();
+        let edited = Message {
+            body: Body::RemoteReport(RemoteReportBody {
+                probe_timestamp: Timestamp::new(observed.saturating_add(ahead)),
+                ..body
+            }),
+            ..subject
+        };
+        prop_assert!(encode_message(&edited).is_err());
+    }
+
+    #[test]
+    fn a_send_seen_after_the_observation_always_rejects(
+        subject in message_of(MessageType::RecallSent),
+        ahead in 1u64..1_000,
+    ) {
+        let Body::RecallSent(body) = subject.body else {
+            return Err(TestCaseError::reject("wrong body kind"));
+        };
+        let observed = subject.header.observed_at.get();
+        let edited = Message {
+            body: Body::RecallSent(RecallSentBody {
+                sent_timestamp: Timestamp::new(observed.saturating_add(ahead)),
+                ..body
+            }),
+            ..subject
+        };
+        prop_assert!(encode_message(&edited).is_err());
     }
 }

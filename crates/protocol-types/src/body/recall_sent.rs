@@ -1,19 +1,20 @@
+use crate::body::EnvelopeTimes;
 use crate::codec::{read_array, read_u64, read_u128, write_bytes, write_u64, write_u128};
 use crate::error::{AmountField, DecodeError, EncodeError, IdentifierField, ValidationError};
-use crate::identifier::{AssetAmount, AssetId, Commitment, ConfigVersion, Timestamp, TransferId};
+use crate::identifier::{AssetAmount, ConfigVersion, DestinationReference, Timestamp, TransferId};
 use crate::layout;
 
 /// Says the remote leg released assets back towards the hub.
 ///
-/// It is evidence of a send. It is not evidence of arrival.
+/// It is evidence of a send. It is not evidence of arrival. The asset comes
+/// from the vault named in the header.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecallSentBody {
     pub transfer_id: TransferId,
-    pub asset_id: AssetId,
     pub principal_sent: AssetAmount,
     pub actual_amount_sent: AssetAmount,
     pub realized_loss: AssetAmount,
-    pub destination_reference: Commitment,
+    pub destination_reference: DestinationReference,
     pub sent_timestamp: Timestamp,
     pub config_version: ConfigVersion,
 }
@@ -24,11 +25,6 @@ impl RecallSentBody {
             out,
             layout::RECALL_SENT_TRANSFER_ID_OFFSET,
             self.transfer_id.as_bytes(),
-        )?;
-        write_bytes(
-            out,
-            layout::RECALL_SENT_ASSET_ID_OFFSET,
-            self.asset_id.as_bytes(),
         )?;
         write_u128(
             out,
@@ -68,7 +64,6 @@ impl RecallSentBody {
                 bytes,
                 layout::RECALL_SENT_TRANSFER_ID_OFFSET,
             )?),
-            asset_id: AssetId::new(read_array(bytes, layout::RECALL_SENT_ASSET_ID_OFFSET)?),
             principal_sent: AssetAmount::new(read_u128(
                 bytes,
                 layout::RECALL_SENT_PRINCIPAL_SENT_OFFSET,
@@ -81,7 +76,7 @@ impl RecallSentBody {
                 bytes,
                 layout::RECALL_SENT_REALIZED_LOSS_OFFSET,
             )?),
-            destination_reference: Commitment::new(read_array(
+            destination_reference: DestinationReference::new(read_array(
                 bytes,
                 layout::RECALL_SENT_DESTINATION_REFERENCE_OFFSET,
             )?),
@@ -96,12 +91,9 @@ impl RecallSentBody {
         })
     }
 
-    pub(crate) fn validate(&self, published_at: Timestamp) -> Result<(), ValidationError> {
+    pub(crate) fn validate(&self, times: EnvelopeTimes) -> Result<(), ValidationError> {
         if self.transfer_id.is_zero() {
             return Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer));
-        }
-        if self.asset_id.is_zero() {
-            return Err(ValidationError::ZeroIdentifier(IdentifierField::Asset));
         }
         if self.principal_sent.is_zero() {
             return Err(ValidationError::ZeroAmount(AmountField::PrincipalSent));
@@ -117,8 +109,8 @@ impl RecallSentBody {
                 IdentifierField::DestinationReference,
             ));
         }
-        if self.sent_timestamp > published_at {
-            return Err(ValidationError::SentTimestampAfterPublication);
+        if self.sent_timestamp > times.observed_at {
+            return Err(ValidationError::SentTimestampAfterObservation);
         }
         if self.config_version.is_zero() {
             return Err(ValidationError::ZeroIdentifier(
@@ -132,11 +124,10 @@ impl RecallSentBody {
     pub(crate) fn sample() -> Self {
         Self {
             transfer_id: TransferId::new([0x99; 32]),
-            asset_id: AssetId::new([0xAA; 32]),
             principal_sent: AssetAmount::new(500_000),
             actual_amount_sent: AssetAmount::new(498_000),
             realized_loss: AssetAmount::new(2_000),
-            destination_reference: Commitment::new([0xBB; 32]),
+            destination_reference: DestinationReference::new([0xBB; 32]),
             sent_timestamp: Timestamp::new(950),
             config_version: ConfigVersion::new(4),
         }
@@ -147,7 +138,10 @@ impl RecallSentBody {
 mod tests {
     use super::*;
 
-    const PUBLISHED: Timestamp = Timestamp::new(1_000);
+    const TIMES: EnvelopeTimes = EnvelopeTimes {
+        observed_at: Timestamp::new(950),
+        published_at: Timestamp::new(1_000),
+    };
 
     fn encoded(body: &RecallSentBody) -> [u8; layout::RECALL_SENT_BODY_LEN] {
         let mut bytes = [0u8; layout::RECALL_SENT_BODY_LEN];
@@ -163,7 +157,7 @@ mod tests {
 
     #[test]
     fn a_sample_body_passes_validation() {
-        assert_eq!(RecallSentBody::sample().validate(PUBLISHED), Ok(()));
+        assert_eq!(RecallSentBody::sample().validate(TIMES), Ok(()));
     }
 
     #[test]
@@ -173,20 +167,8 @@ mod tests {
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(IdentifierField::Transfer))
-        );
-    }
-
-    #[test]
-    fn a_zero_asset_id_rejects() {
-        let body = RecallSentBody {
-            asset_id: AssetId::ZERO,
-            ..RecallSentBody::sample()
-        };
-        assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ZeroIdentifier(IdentifierField::Asset))
         );
     }
 
@@ -197,7 +179,7 @@ mod tests {
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroAmount(AmountField::PrincipalSent))
         );
     }
@@ -209,7 +191,7 @@ mod tests {
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroAmount(AmountField::ActualAmountSent))
         );
     }
@@ -223,7 +205,7 @@ mod tests {
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::RealizedLossAbovePrincipal)
         );
     }
@@ -231,11 +213,11 @@ mod tests {
     #[test]
     fn a_zero_destination_reference_rejects() {
         let body = RecallSentBody {
-            destination_reference: Commitment::ZERO,
+            destination_reference: DestinationReference::ZERO,
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(
                 IdentifierField::DestinationReference
             ))
@@ -243,24 +225,50 @@ mod tests {
     }
 
     #[test]
-    fn a_sent_timestamp_after_publication_rejects() {
+    fn a_sent_timestamp_after_observation_rejects() {
         let body = RecallSentBody {
-            sent_timestamp: Timestamp::new(1_001),
+            sent_timestamp: Timestamp::new(951),
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::SentTimestampAfterPublication)
+            body.validate(TIMES),
+            Err(ValidationError::SentTimestampAfterObservation)
         );
     }
 
     #[test]
-    fn a_sent_timestamp_equal_to_publication_is_allowed() {
+    fn a_sent_timestamp_equal_to_the_observation_is_allowed() {
         let body = RecallSentBody {
-            sent_timestamp: PUBLISHED,
+            sent_timestamp: TIMES.observed_at,
             ..RecallSentBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
+    }
+
+    #[test]
+    fn a_send_seen_after_the_observation_but_before_publication_rejects() {
+        let body = RecallSentBody {
+            sent_timestamp: Timestamp::new(975),
+            ..RecallSentBody::sample()
+        };
+        assert_eq!(
+            body.validate(TIMES),
+            Err(ValidationError::SentTimestampAfterObservation)
+        );
+    }
+
+    #[test]
+    fn a_realized_loss_is_kept_even_when_it_differs_from_principal_minus_amount() {
+        let body = RecallSentBody {
+            principal_sent: AssetAmount::new(100),
+            actual_amount_sent: AssetAmount::new(50),
+            realized_loss: AssetAmount::new(10),
+            ..RecallSentBody::sample()
+        };
+        assert_eq!(body.validate(TIMES), Ok(()));
+        let mut bytes = [0u8; layout::RECALL_SENT_BODY_LEN];
+        assert_eq!(body.encode_into(&mut bytes), Ok(()));
+        assert_eq!(RecallSentBody::decode(&bytes), Ok(body));
     }
 
     #[test]
@@ -270,7 +278,7 @@ mod tests {
             ..RecallSentBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(
                 IdentifierField::ConfigVersion
             ))
@@ -285,7 +293,7 @@ mod tests {
             realized_loss: AssetAmount::ZERO,
             ..RecallSentBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
     }
 
     #[test]

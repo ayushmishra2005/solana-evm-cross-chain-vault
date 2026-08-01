@@ -1,11 +1,9 @@
+use crate::body::EnvelopeTimes;
 use crate::codec::{
-    read_array, read_u8, read_u64, read_u128, reserved_is_clear, write_bytes, write_u8, write_u64,
-    write_u128,
+    read_array, read_u8, read_u64, read_u128, write_bytes, write_u8, write_u64, write_u128,
 };
 use crate::error::{DecodeError, EncodeError, IdentifierField, ValidationError};
-use crate::identifier::{
-    AssetAmount, AssetId, Commitment, ConfigVersion, EpochId, Timestamp, TransferId,
-};
+use crate::identifier::{AssetAmount, Commitment, ConfigVersion, EpochId, Timestamp, TransferId};
 use crate::layout;
 
 /// How fresh the last real withdrawal probe is.
@@ -48,12 +46,11 @@ impl ProbeStatus {
 
 /// What the remote leg says it holds for one epoch.
 ///
-/// Whether the value is economically acceptable is decided later.
+/// Whether the value is economically acceptable is decided later. The report
+/// is identified by its epoch and by the message id of the envelope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RemoteReportBody {
-    pub report_id: crate::identifier::ReportId,
     pub epoch_id: EpochId,
-    pub asset_id: AssetId,
     pub remote_principal: AssetAmount,
     pub reported_value: AssetAmount,
     pub realized_loss: AssetAmount,
@@ -67,13 +64,7 @@ pub struct RemoteReportBody {
 
 impl RemoteReportBody {
     pub(crate) fn encode_into(&self, out: &mut [u8]) -> Result<(), EncodeError> {
-        write_bytes(out, layout::REPORT_ID_OFFSET, self.report_id.as_bytes())?;
         write_u64(out, layout::REPORT_EPOCH_ID_OFFSET, self.epoch_id.get())?;
-        write_bytes(
-            out,
-            layout::REPORT_ASSET_ID_OFFSET,
-            self.asset_id.as_bytes(),
-        )?;
         write_u128(
             out,
             layout::REPORT_REMOTE_PRINCIPAL_OFFSET,
@@ -104,11 +95,6 @@ impl RemoteReportBody {
             layout::REPORT_PROBE_STATUS_OFFSET,
             self.probe_status.to_u8(),
         )?;
-        write_bytes(
-            out,
-            layout::REPORT_RESERVED_OFFSET,
-            &[0u8; layout::REPORT_RESERVED_LEN],
-        )?;
         write_u64(
             out,
             layout::REPORT_PROBE_TIMESTAMP_OFFSET,
@@ -127,20 +113,8 @@ impl RemoteReportBody {
     }
 
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
-        if !reserved_is_clear(
-            bytes,
-            layout::REPORT_RESERVED_OFFSET,
-            layout::REPORT_RESERVED_LEN,
-        )? {
-            return Err(DecodeError::ReservedBytesSet);
-        }
         Ok(Self {
-            report_id: crate::identifier::ReportId::new(read_array(
-                bytes,
-                layout::REPORT_ID_OFFSET,
-            )?),
             epoch_id: EpochId::new(read_u64(bytes, layout::REPORT_EPOCH_ID_OFFSET)?),
-            asset_id: AssetId::new(read_array(bytes, layout::REPORT_ASSET_ID_OFFSET)?),
             remote_principal: AssetAmount::new(read_u128(
                 bytes,
                 layout::REPORT_REMOTE_PRINCIPAL_OFFSET,
@@ -177,15 +151,9 @@ impl RemoteReportBody {
         })
     }
 
-    pub(crate) fn validate(&self, published_at: Timestamp) -> Result<(), ValidationError> {
-        if self.report_id.is_zero() {
-            return Err(ValidationError::ZeroIdentifier(IdentifierField::Report));
-        }
+    pub(crate) fn validate(&self, times: EnvelopeTimes) -> Result<(), ValidationError> {
         if self.epoch_id.is_zero() {
             return Err(ValidationError::ZeroIdentifier(IdentifierField::Epoch));
-        }
-        if self.asset_id.is_zero() {
-            return Err(ValidationError::ZeroIdentifier(IdentifierField::Asset));
         }
         if self.config_version.is_zero() {
             return Err(ValidationError::ZeroIdentifier(
@@ -200,8 +168,8 @@ impl RemoteReportBody {
         if self.realized_loss > self.remote_principal {
             return Err(ValidationError::RealizedLossAbovePrincipal);
         }
-        if self.probe_timestamp > published_at {
-            return Err(ValidationError::ProbeTimestampAfterPublication);
+        if self.probe_timestamp > times.observed_at {
+            return Err(ValidationError::ProbeTimestampAfterObservation);
         }
         if self.probe_status == ProbeStatus::Fresh && self.probe_timestamp.is_zero() {
             return Err(ValidationError::MissingProbeTimestamp);
@@ -212,9 +180,7 @@ impl RemoteReportBody {
     #[cfg(test)]
     pub(crate) fn sample() -> Self {
         Self {
-            report_id: crate::identifier::ReportId::new([0x55; 32]),
             epoch_id: EpochId::new(12),
-            asset_id: AssetId::new([0x66; 32]),
             remote_principal: AssetAmount::new(2_000_000),
             reported_value: AssetAmount::new(2_050_000),
             realized_loss: AssetAmount::new(1_500),
@@ -232,7 +198,10 @@ impl RemoteReportBody {
 mod tests {
     use super::*;
 
-    const PUBLISHED: Timestamp = Timestamp::new(1_000);
+    const TIMES: EnvelopeTimes = EnvelopeTimes {
+        observed_at: Timestamp::new(950),
+        published_at: Timestamp::new(1_000),
+    };
 
     fn encoded(body: &RemoteReportBody) -> [u8; layout::REMOTE_REPORT_BODY_LEN] {
         let mut bytes = [0u8; layout::REMOTE_REPORT_BODY_LEN];
@@ -272,28 +241,6 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_bytes_are_written_as_zero() {
-        let bytes = encoded(&RemoteReportBody::sample());
-        let start = layout::REPORT_RESERVED_OFFSET;
-        assert_eq!(
-            bytes.get(start..start + layout::REPORT_RESERVED_LEN),
-            Some(&[0u8; layout::REPORT_RESERVED_LEN][..])
-        );
-    }
-
-    #[test]
-    fn a_non_zero_reserved_byte_rejects() {
-        let mut bytes = encoded(&RemoteReportBody::sample());
-        if let Some(byte) = bytes.get_mut(layout::REPORT_RESERVED_OFFSET) {
-            *byte = 1;
-        }
-        assert_eq!(
-            RemoteReportBody::decode(&bytes),
-            Err(DecodeError::ReservedBytesSet)
-        );
-    }
-
-    #[test]
     fn an_unknown_probe_status_byte_rejects_during_decoding() {
         let mut bytes = encoded(&RemoteReportBody::sample());
         if let Some(byte) = bytes.get_mut(layout::REPORT_PROBE_STATUS_OFFSET) {
@@ -307,19 +254,7 @@ mod tests {
 
     #[test]
     fn a_sample_body_passes_validation() {
-        assert_eq!(RemoteReportBody::sample().validate(PUBLISHED), Ok(()));
-    }
-
-    #[test]
-    fn a_zero_report_id_rejects() {
-        let body = RemoteReportBody {
-            report_id: crate::identifier::ReportId::ZERO,
-            ..RemoteReportBody::sample()
-        };
-        assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ZeroIdentifier(IdentifierField::Report))
-        );
+        assert_eq!(RemoteReportBody::sample().validate(TIMES), Ok(()));
     }
 
     #[test]
@@ -329,20 +264,8 @@ mod tests {
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(IdentifierField::Epoch))
-        );
-    }
-
-    #[test]
-    fn a_zero_asset_id_rejects() {
-        let body = RemoteReportBody {
-            asset_id: AssetId::ZERO,
-            ..RemoteReportBody::sample()
-        };
-        assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ZeroIdentifier(IdentifierField::Asset))
         );
     }
 
@@ -353,7 +276,7 @@ mod tests {
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(
                 IdentifierField::ConfigVersion
             ))
@@ -367,7 +290,7 @@ mod tests {
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::ZeroIdentifier(
                 IdentifierField::RemoteStateCommitment
             ))
@@ -382,7 +305,7 @@ mod tests {
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::RealizedLossAbovePrincipal)
         );
     }
@@ -394,18 +317,66 @@ mod tests {
             realized_loss: AssetAmount::new(10),
             ..RemoteReportBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
     }
 
     #[test]
-    fn a_probe_timestamp_after_publication_rejects() {
+    fn a_probe_timestamp_after_observation_rejects() {
         let body = RemoteReportBody {
-            probe_timestamp: Timestamp::new(1_001),
+            probe_timestamp: Timestamp::new(951),
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
-            Err(ValidationError::ProbeTimestampAfterPublication)
+            body.validate(TIMES),
+            Err(ValidationError::ProbeTimestampAfterObservation)
+        );
+    }
+
+    #[test]
+    fn a_probe_timestamp_equal_to_the_observation_is_allowed() {
+        let body = RemoteReportBody {
+            probe_timestamp: TIMES.observed_at,
+            ..RemoteReportBody::sample()
+        };
+        assert_eq!(body.validate(TIMES), Ok(()));
+    }
+
+    #[test]
+    fn a_probe_timestamp_between_observation_and_publication_rejects() {
+        let body = RemoteReportBody {
+            probe_timestamp: Timestamp::new(980),
+            ..RemoteReportBody::sample()
+        };
+        assert_eq!(
+            body.validate(TIMES),
+            Err(ValidationError::ProbeTimestampAfterObservation)
+        );
+    }
+
+    #[test]
+    fn the_probe_timestamp_is_read_from_an_unaligned_offset() {
+        let body = RemoteReportBody {
+            probe_timestamp: Timestamp::new(0x0102_0304_0506_0708),
+            ..RemoteReportBody::sample()
+        };
+        let bytes = encoded(&body);
+        let start = layout::REPORT_PROBE_TIMESTAMP_OFFSET;
+        assert!(!start.is_multiple_of(8));
+        assert_eq!(
+            bytes.get(start..start + 8),
+            Some(&[1u8, 2, 3, 4, 5, 6, 7, 8][..])
+        );
+        assert_eq!(
+            RemoteReportBody::decode(&bytes).map(|read| read.probe_timestamp),
+            Ok(body.probe_timestamp)
+        );
+    }
+
+    #[test]
+    fn the_probe_status_sits_directly_before_the_probe_timestamp() {
+        assert_eq!(
+            layout::REPORT_PROBE_STATUS_OFFSET + 1,
+            layout::REPORT_PROBE_TIMESTAMP_OFFSET
         );
     }
 
@@ -417,7 +388,7 @@ mod tests {
             ..RemoteReportBody::sample()
         };
         assert_eq!(
-            body.validate(PUBLISHED),
+            body.validate(TIMES),
             Err(ValidationError::MissingProbeTimestamp)
         );
     }
@@ -429,7 +400,7 @@ mod tests {
             probe_timestamp: Timestamp::ZERO,
             ..RemoteReportBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
     }
 
     #[test]
@@ -440,7 +411,7 @@ mod tests {
                 probe_timestamp: Timestamp::ZERO,
                 ..RemoteReportBody::sample()
             };
-            assert_eq!(body.validate(PUBLISHED), Ok(()));
+            assert_eq!(body.validate(TIMES), Ok(()));
         }
     }
 
@@ -452,7 +423,7 @@ mod tests {
             realized_loss: AssetAmount::ZERO,
             ..RemoteReportBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
     }
 
     #[test]
@@ -461,7 +432,7 @@ mod tests {
             latest_completed_transfer_id: TransferId::ZERO,
             ..RemoteReportBody::sample()
         };
-        assert_eq!(body.validate(PUBLISHED), Ok(()));
+        assert_eq!(body.validate(TIMES), Ok(()));
     }
 
     #[test]

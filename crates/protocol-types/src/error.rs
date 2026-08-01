@@ -13,8 +13,6 @@ pub enum IdentifierField {
     Lane,
     Sequence,
     Transfer,
-    Report,
-    Asset,
     Epoch,
     ConfigVersion,
     RemoteStateCommitment,
@@ -35,8 +33,6 @@ impl IdentifierField {
             Self::Lane => "lane id",
             Self::Sequence => "sequence",
             Self::Transfer => "transfer id",
-            Self::Report => "report id",
-            Self::Asset => "asset id",
             Self::Epoch => "epoch id",
             Self::ConfigVersion => "config version",
             Self::RemoteStateCommitment => "remote state commitment",
@@ -87,8 +83,8 @@ pub enum ValidationError {
     ExpirationBeforePublication,
     DeadlineBeforePublication,
     EffectiveTimestampBeforePublication,
-    ProbeTimestampAfterPublication,
-    SentTimestampAfterPublication,
+    ProbeTimestampAfterObservation,
+    SentTimestampAfterObservation,
     MissingProbeTimestamp,
     MinimumAboveAmount,
     RealizedLossAbovePrincipal,
@@ -126,10 +122,10 @@ impl fmt::Display for ValidationError {
             Self::EffectiveTimestampBeforePublication => {
                 formatter.write_str("effective time is before publication time")
             }
-            Self::ProbeTimestampAfterPublication => {
+            Self::ProbeTimestampAfterObservation => {
                 formatter.write_str("probe time is after publication time")
             }
-            Self::SentTimestampAfterPublication => {
+            Self::SentTimestampAfterObservation => {
                 formatter.write_str("sent time is after publication time")
             }
             Self::MissingProbeTimestamp => {
@@ -198,10 +194,8 @@ pub enum DecodeError {
     InvalidMagic,
     UnsupportedProtocolVersion(u16),
     UnsupportedSchemaVersion(u16),
-    UnknownMessageType(u16),
+    UnknownMessageType(u8),
     InvalidProbeStatus(u8),
-    ReservedBytesSet,
-    BodyLengthMismatch { expected: u32, found: u32 },
     BodyHashMismatch,
     LengthOverflow,
     Invalid(ValidationError),
@@ -241,13 +235,6 @@ impl fmt::Display for DecodeError {
             Self::InvalidProbeStatus(found) => {
                 write!(formatter, "probe status {found} is not known")
             }
-            Self::ReservedBytesSet => formatter.write_str("a reserved byte is not zero"),
-            Self::BodyLengthMismatch { expected, found } => {
-                write!(
-                    formatter,
-                    "body length {found} does not match the expected {expected}"
-                )
-            }
             Self::BodyHashMismatch => formatter.write_str("body hash does not match the body"),
             Self::LengthOverflow => formatter.write_str("declared length does not fit in memory"),
             Self::Invalid(reason) => reason.fmt(formatter),
@@ -263,7 +250,7 @@ mod tests {
     extern crate alloc;
     use alloc::string::ToString;
 
-    const IDENTIFIERS: [IdentifierField; 16] = [
+    const IDENTIFIERS: [IdentifierField; 14] = [
         IdentifierField::SourceChain,
         IdentifierField::DestinationChain,
         IdentifierField::SourceApplication,
@@ -273,8 +260,6 @@ mod tests {
         IdentifierField::Lane,
         IdentifierField::Sequence,
         IdentifierField::Transfer,
-        IdentifierField::Report,
-        IdentifierField::Asset,
         IdentifierField::Epoch,
         IdentifierField::ConfigVersion,
         IdentifierField::RemoteStateCommitment,
@@ -302,8 +287,8 @@ mod tests {
         ValidationError::ExpirationBeforePublication,
         ValidationError::DeadlineBeforePublication,
         ValidationError::EffectiveTimestampBeforePublication,
-        ValidationError::ProbeTimestampAfterPublication,
-        ValidationError::SentTimestampAfterPublication,
+        ValidationError::ProbeTimestampAfterObservation,
+        ValidationError::SentTimestampAfterObservation,
         ValidationError::MissingProbeTimestamp,
         ValidationError::MinimumAboveAmount,
         ValidationError::RealizedLossAbovePrincipal,
@@ -311,25 +296,20 @@ mod tests {
         ValidationError::ConfigVersionNotIncreasing,
     ];
 
-    const DECODES: [DecodeError; 12] = [
+    const DECODES: [DecodeError; 10] = [
         DecodeError::Truncated {
-            needed: 252,
+            needed: 247,
             found: 8,
         },
         DecodeError::TrailingBytes {
-            expected: 380,
-            found: 381,
+            expected: 343,
+            found: 344,
         },
         DecodeError::InvalidMagic,
         DecodeError::UnsupportedProtocolVersion(2),
         DecodeError::UnsupportedSchemaVersion(3),
         DecodeError::UnknownMessageType(9),
         DecodeError::InvalidProbeStatus(7),
-        DecodeError::ReservedBytesSet,
-        DecodeError::BodyLengthMismatch {
-            expected: 128,
-            found: 112,
-        },
         DecodeError::BodyHashMismatch,
         DecodeError::LengthOverflow,
         DecodeError::Invalid(ValidationError::ReservedFlagsSet),
@@ -337,7 +317,7 @@ mod tests {
 
     const ENCODES: [EncodeError; 4] = [
         EncodeError::BufferTooSmall {
-            needed: 380,
+            needed: 343,
             available: 8,
         },
         EncodeError::UnsupportedProtocolVersion(2),
