@@ -12,14 +12,16 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-The accounting model also builds without the standard library.
+Both library crates also build without the standard library.
 
 ```bash
 cargo check -p accounting-model --no-default-features
+cargo check -p protocol-types --no-default-features
 ```
 
 Raise the property test case count for a longer run.
 
 ```bash
 PROPTEST_CASES=250000 cargo test --release -p accounting-model --test properties
+PROPTEST_CASES=250000 cargo test --release -p protocol-types --test properties
 ```

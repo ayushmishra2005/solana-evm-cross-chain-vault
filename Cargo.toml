@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/accounting-model"]
+members = ["crates/accounting-model", "crates/protocol-types"]
 
 [workspace.package]
 edition = "2024"

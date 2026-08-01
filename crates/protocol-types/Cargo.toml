@@ -1,0 +1,24 @@
+[package]
+name = "protocol-types"
+version = "0.1.0"
+description = "Canonical message envelope and fixed width codec for the SolEVM Vault protocol"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+sha3 = { version = "=0.12.0", default-features = false }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+
+[features]
+# Without features the crate is no_std and allocation free.
+default = ["std"]
+# Adds the owned Vec encoding helpers.
+alloc = []
+std = ["alloc"]
+
+[lints]
+workspace = true
