@@ -1,0 +1,46 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["dependencies"]
+solc_version = "0.8.30"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+bytecode_hash = "none"
+gas_reports = ["SolEVMVault"]
+
+[lint]
+# Public immutables keep lowerCamelCase so accessors read like the rest of the API.
+exclude_lints = ["screaming-snake-case-immutable"]
+
+[profile.default.fuzz]
+runs = 512
+max_test_rejects = 65536
+
+[profile.default.invariant]
+runs = 128
+depth = 200
+fail_on_revert = true
+call_override = false
+shrink_run_limit = 2048
+
+# Longer search for the soak run.
+[profile.soak.fuzz]
+runs = 8192
+
+[profile.soak.invariant]
+runs = 512
+depth = 192
+fail_on_revert = true
+
+[fmt]
+line_length = 100
+tab_width = 4
+bracket_spacing = false
+int_types = "long"
+multiline_func_header = "attributes_first"
+quote_style = "double"
+number_underscore = "thousands"
+sort_imports = true
