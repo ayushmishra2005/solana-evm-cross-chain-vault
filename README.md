@@ -12,11 +12,12 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 ```
 
-Both library crates also build without the standard library.
+All library crates also build without the standard library.
 
 ```bash
 cargo check -p accounting-model --no-default-features
 cargo check -p protocol-types --no-default-features
+cargo check -p xchain-sim --no-default-features
 ```
 
 Raise the property test case count for a longer run.
@@ -24,4 +25,5 @@ Raise the property test case count for a longer run.
 ```bash
 PROPTEST_CASES=250000 cargo test --release -p accounting-model --test properties
 PROPTEST_CASES=250000 cargo test --release -p protocol-types --test properties
+PROPTEST_CASES=250000 cargo test --release -p xchain-sim --test properties
 ```
