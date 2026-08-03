@@ -1,0 +1,17 @@
+[package]
+name = "evm-differential"
+version = "0.1.0"
+description = "Deterministic scenario producer that drives the Rust accounting model and the Solidity vault through the same trace"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+accounting-model = { path = "../accounting-model" }
+alloy-primitives = { version = "=1.6.1", default-features = false, features = ["std"] }
+alloy-sol-types = { version = "=1.6.1", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

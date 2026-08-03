@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/accounting-model", "crates/protocol-types", "crates/xchain-sim"]
+members = [
+    "crates/accounting-model",
+    "crates/evm-differential",
+    "crates/protocol-types",
+    "crates/xchain-sim",
+]
 
 [workspace.package]
 edition = "2024"

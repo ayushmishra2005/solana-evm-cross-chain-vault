@@ -50,3 +50,30 @@ The `soak` profile raises the fuzz and invariant budgets.
 ```bash
 FOUNDRY_PROFILE=soak forge test
 ```
+
+## Differential harness
+
+`crates/evm-differential` generates scenarios from the Rust accounting model
+and the Foundry harness replays them against the vault. The `differential`
+profile enables FFI, which the normal suite does not need.
+
+```bash
+cd contracts/solevm-vault
+RUN_DIFFERENTIAL=1 FOUNDRY_PROFILE=differential \
+  forge test --match-contract RustModelDifferentialTest -vv
+```
+
+`DIFF_SEED`, `DIFF_CASES` and `DIFF_STEPS` widen the run.
+
+```bash
+RUN_DIFFERENTIAL=1 DIFF_SEED=1 DIFF_CASES=512 DIFF_STEPS=5 \
+  FOUNDRY_PROFILE=differential \
+  forge test --match-contract RustModelDifferentialTest -vv
+```
+
+Inspect one scenario, or the reachability of a whole run, without Foundry.
+
+```bash
+cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --stats
+cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
+```

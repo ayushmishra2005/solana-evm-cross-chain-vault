@@ -26,6 +26,21 @@ fail_on_revert = true
 call_override = false
 shrink_run_limit = 2048
 
+# The differential run shells out to the Rust generator, so it needs FFI.
+# One test replays every scenario, so it needs far more gas than a unit test.
+[profile.differential]
+ffi = true
+gas_limit = 9223372036854775807
+memory_limit = 1073741824
+
+[profile.differential.fuzz]
+runs = 256
+
+[profile.differential.invariant]
+runs = 16
+depth = 32
+fail_on_revert = true
+
 # Longer search for the soak run.
 [profile.soak.fuzz]
 runs = 8192
