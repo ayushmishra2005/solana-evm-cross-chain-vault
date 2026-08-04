@@ -77,3 +77,30 @@ Inspect one scenario, or the reachability of a whole run, without Foundry.
 cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --stats
 cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 ```
+
+## Solana remote leg
+
+`programs/solevm-remote-leg` is a separate Cargo workspace. Build the program
+first, because the LiteSVM and Mollusk suites load the compiled object.
+
+```bash
+cd programs/solevm-remote-leg
+cargo-build-sbf --tools-version v1.54
+```
+
+Then run the suite from the same directory.
+
+```bash
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+```
+
+Run one layer on its own.
+
+```bash
+cargo test --lib
+cargo test --test initialize --test freeze --test adversarial
+cargo test --test compute -- --nocapture
+```
