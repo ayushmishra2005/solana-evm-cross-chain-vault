@@ -187,14 +187,19 @@ fn a_zero_local_application_is_rejected() {
 }
 
 #[test]
-fn a_source_application_equal_to_the_local_application_is_rejected() {
+fn equal_application_bytes_on_different_chains_initialize() {
     let mut fixture = Fixture::new();
     let mut params = fixture.params.clone();
     params.local_application_id = params.source_application_id;
-    expect_error(
-        fixture.initialize_with_params(params),
-        RemoteLegError::InvalidApplication,
-    );
+    assert_ne!(params.source_chain_id, params.destination_chain_id);
+
+    fixture
+        .initialize_with_params(params)
+        .expect("equal application bytes are valid across chains");
+
+    let config = fixture.config();
+    assert_eq!(config.source_application_id, SOURCE_APPLICATION_ID);
+    assert_eq!(config.local_application_id, SOURCE_APPLICATION_ID);
 }
 
 #[test]

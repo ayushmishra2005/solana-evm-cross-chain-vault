@@ -50,4 +50,50 @@ pub enum RemoteLegError {
     InvalidConfigVersion,
     #[msg("arithmetic overflowed")]
     ArithmeticOverflow,
+    #[msg("control state is already initialized")]
+    ControlStateAlreadyInitialized,
+    #[msg("account layout version is not supported")]
+    InvalidStateVersion,
+    #[msg("risk configuration fails its policy")]
+    InvalidRiskConfig,
+    #[msg("basis points exceed ten thousand")]
+    InvalidBasisPoints,
+    #[msg("report age is not usable")]
+    InvalidReportAge,
+    #[msg("configuration commitment is not usable")]
+    InvalidConfigCommitment,
+    #[msg("message bytes are not canonical")]
+    InvalidMessage,
+    #[msg("message is larger than the protocol maximum")]
+    MessageTooLarge,
+    #[msg("message type is not accepted here")]
+    UnsupportedMessageType,
+    #[msg("protocol version is not supported")]
+    InvalidProtocolVersion,
+    #[msg("schema version is not supported")]
+    InvalidSchemaVersion,
+    #[msg("message timestamp is not usable")]
+    InvalidTimestamp,
+    #[msg("message has expired")]
+    MessageExpired,
+    #[msg("sequence is not the expected next one")]
+    InvalidSequence,
+    #[msg("sequence is below the replay watermark")]
+    SequenceBelowWatermark,
+    #[msg("previous commitment does not match the lane")]
+    InvalidPreviousCommitment,
+    #[msg("message was already consumed")]
+    ReplayDetected,
+    #[msg("consumed message record fails its policy")]
+    InvalidConsumedMessage,
+    #[msg("configuration is not effective yet")]
+    ConfigNotEffective,
+    #[msg("watermark value is not usable")]
+    InvalidWatermark,
+    #[msg("watermark would break the mandatory lag")]
+    WatermarkLagViolation,
+    #[msg("record may not be closed yet")]
+    RecordNotClosable,
+    #[msg("rent destination is not the administrator")]
+    InvalidRentDestination,
 }

@@ -88,6 +88,83 @@ mod tests {
     }
 
     #[test]
+    fn every_configuration_field_keeps_its_documented_offset() {
+        let config = sample_config();
+        let mut bytes = Vec::new();
+        config.serialize(&mut bytes).expect("config encodes");
+        assert_eq!(bytes.len(), RemoteConfig::INIT_SPACE);
+
+        #[track_caller]
+        fn field(bytes: &[u8], offset: usize, expected: &[u8]) {
+            assert_eq!(
+                bytes.get(offset..offset + expected.len()),
+                Some(expected),
+                "field at offset {offset} moved"
+            );
+        }
+
+        field(&bytes, 0, &[STATE_VERSION]);
+        field(&bytes, 1, &[1]);
+        field(&bytes, 2, &[2]);
+        field(&bytes, 3, &[0]);
+        field(&bytes, 4, &[0xA1; 32]);
+        field(&bytes, 36, &[0xA2; 32]);
+        field(&bytes, 68, &[0xA3; 32]);
+        field(&bytes, 100, &[0xA4; 32]);
+        field(&bytes, 132, &[0xA5; 32]);
+        field(&bytes, 164, &[0xA6; 32]);
+        field(&bytes, 196, &[0xA7; 32]);
+        field(&bytes, 228, &[0xA8; 32]);
+        field(&bytes, 260, &1u32.to_le_bytes());
+        field(&bytes, 264, &2u32.to_le_bytes());
+        field(&bytes, 268, &[1u8; 32]);
+        field(&bytes, 300, &[2u8; 32]);
+        field(&bytes, 332, &[3u8; 32]);
+        field(&bytes, 364, &[4u8; 32]);
+        field(&bytes, 396, &1u32.to_le_bytes());
+        field(&bytes, 400, &2u32.to_le_bytes());
+        field(&bytes, 404, &MIN_CONFIG_VERSION.to_le_bytes());
+        field(&bytes, 412, &7i64.to_le_bytes());
+        field(&bytes, 420, &[0u8; REMOTE_CONFIG_RESERVED]);
+        assert_eq!(420 + REMOTE_CONFIG_RESERVED, RemoteConfig::INIT_SPACE);
+    }
+
+    #[test]
+    fn the_reserved_bytes_stay_reserved() {
+        let config = sample_config();
+        assert_eq!(config.reserved, [0u8; REMOTE_CONFIG_RESERVED]);
+        assert_eq!(REMOTE_CONFIG_RESERVED, 64);
+    }
+
+    fn sample_config() -> RemoteConfig {
+        RemoteConfig {
+            state_version: STATE_VERSION,
+            bump: 1,
+            custody_authority_bump: 2,
+            frozen: false,
+            administrator: Pubkey::new_from_array([0xA1; 32]),
+            emergency_guardian: Pubkey::new_from_array([0xA2; 32]),
+            transport_verifier: Pubkey::new_from_array([0xA3; 32]),
+            asset_mint: Pubkey::new_from_array([0xA4; 32]),
+            token_program: Pubkey::new_from_array([0xA5; 32]),
+            custody_authority: Pubkey::new_from_array([0xA6; 32]),
+            custody_token_account: Pubkey::new_from_array([0xA7; 32]),
+            outbound_escrow: Pubkey::new_from_array([0xA8; 32]),
+            source_chain_id: 1,
+            destination_chain_id: 2,
+            source_application_id: [1u8; 32],
+            local_application_id: [2u8; 32],
+            deployment_id: [3u8; 32],
+            vault_id: [4u8; 32],
+            control_lane_id: 1,
+            report_lane_id: 2,
+            config_version: MIN_CONFIG_VERSION,
+            initialized_at: 7,
+            reserved: [0u8; REMOTE_CONFIG_RESERVED],
+        }
+    }
+
+    #[test]
     fn the_configuration_seeds_keep_their_documented_order() {
         let deployment = [7u8; 32];
         let vault = [9u8; 32];

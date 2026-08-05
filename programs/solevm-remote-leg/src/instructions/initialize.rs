@@ -57,6 +57,7 @@ impl InitializeParams {
         Ok(())
     }
 
+    /// The chain id is part of the domain, so equal application bytes are fine.
     fn check_domains(&self) -> Result<()> {
         require_neq!(self.source_chain_id, 0, RemoteLegError::InvalidSourceDomain);
         require_neq!(
@@ -76,10 +77,6 @@ impl InitializeParams {
         );
         require!(
             self.local_application_id != [0u8; 32],
-            RemoteLegError::InvalidApplication
-        );
-        require!(
-            self.source_application_id != self.local_application_id,
             RemoteLegError::InvalidApplication
         );
 
@@ -385,14 +382,11 @@ mod tests {
     }
 
     #[test]
-    fn matching_source_and_local_applications_are_rejected() {
+    fn equal_application_bytes_on_different_chains_are_accepted() {
         let mut params = valid_params();
         params.local_application_id = params.source_application_id;
-        expect(
-            &params,
-            &administrator(),
-            RemoteLegError::InvalidApplication,
-        );
+        assert_ne!(params.source_chain_id, params.destination_chain_id);
+        assert!(params.validate(&administrator()).is_ok());
     }
 
     #[test]

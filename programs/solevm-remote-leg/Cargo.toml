@@ -40,8 +40,11 @@ custom-panic = []
 [dependencies]
 anchor-lang = "=1.1.2"
 anchor-spl = { version = "=1.1.2", default-features = false, features = ["token"] }
+protocol-types = { path = "../../crates/protocol-types", default-features = false }
 
 [dev-dependencies]
+# Tests build canonical messages, so they need the owned encoder.
+protocol-types = { path = "../../crates/protocol-types", features = ["std"] }
 litesvm = "=0.15.2"
 mollusk-svm = "=0.14.0"
 solana-account = "=4.3.1"

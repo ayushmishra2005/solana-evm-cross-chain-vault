@@ -102,5 +102,7 @@ Run one layer on its own.
 ```bash
 cargo test --lib
 cargo test --test initialize --test freeze --test adversarial
+cargo test --test control_state --test config_update
+cargo test --test decoding --test replay --test compatibility
 cargo test --test compute -- --nocapture
 ```

@@ -3,7 +3,8 @@ name = "protocol-types"
 version = "0.1.0"
 description = "Canonical message envelope and fixed width codec for the SolEVM Vault protocol"
 edition.workspace = true
-rust-version.workspace = true
+# The Solana platform tools ship Rust 1.89, and this crate compiles there.
+rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
 
