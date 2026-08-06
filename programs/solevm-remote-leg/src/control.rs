@@ -49,6 +49,48 @@ impl MessageClass {
             Self::ConfigUpdate => protocol_types::MessageType::ConfigUpdate,
         }
     }
+
+    /// How strictly this class orders its sequence numbers.
+    #[must_use]
+    pub const fn sequence_rule(self) -> SequenceRule {
+        match self {
+            Self::ConfigUpdate => SequenceRule::StrictNext,
+            Self::Allocate | Self::Recall => SequenceRule::StrictlyIncreasing,
+        }
+    }
+}
+
+/// How a lane decides whether an arriving sequence is acceptable.
+///
+/// Config messages must apply in an unbroken run. Asset messages may skip a
+/// number, because a message the transport never delivered must not stall the
+/// lane. The commitment chain still keeps the accepted run in order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequenceRule {
+    StrictNext,
+    StrictlyIncreasing,
+}
+
+impl SequenceRule {
+    /// Rejects a sequence the lane may not accept next.
+    pub fn check(self, sequence: u64, highest_consumed_sequence: u64) -> Result<()> {
+        match self {
+            Self::StrictNext => {
+                let expected = highest_consumed_sequence
+                    .checked_add(1)
+                    .ok_or(RemoteLegError::ArithmeticOverflow)?;
+                require_eq!(sequence, expected, RemoteLegError::InvalidSequence);
+            }
+            Self::StrictlyIncreasing => {
+                require_gt!(
+                    sequence,
+                    highest_consumed_sequence,
+                    RemoteLegError::InvalidSequence
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Risk limits the canonical vault controls through config messages.
@@ -284,6 +326,64 @@ mod tests {
             &crate::ID,
         );
         assert_ne!(first.0, second.0);
+    }
+
+    #[test]
+    fn only_the_config_lane_demands_an_unbroken_run() {
+        assert_eq!(
+            MessageClass::ConfigUpdate.sequence_rule(),
+            SequenceRule::StrictNext
+        );
+        assert_eq!(
+            MessageClass::Allocate.sequence_rule(),
+            SequenceRule::StrictlyIncreasing
+        );
+        assert_eq!(
+            MessageClass::Recall.sequence_rule(),
+            SequenceRule::StrictlyIncreasing
+        );
+    }
+
+    #[test]
+    fn a_strict_lane_accepts_only_the_next_sequence() {
+        assert!(SequenceRule::StrictNext.check(5, 4).is_ok());
+        for sequence in [4u64, 6, 100] {
+            assert_eq!(
+                SequenceRule::StrictNext
+                    .check(sequence, 4)
+                    .expect_err("the sequence is refused"),
+                Error::from(RemoteLegError::InvalidSequence)
+            );
+        }
+    }
+
+    #[test]
+    fn an_asset_lane_accepts_any_higher_sequence() {
+        for sequence in [5u64, 6, 100] {
+            assert!(SequenceRule::StrictlyIncreasing.check(sequence, 4).is_ok());
+        }
+    }
+
+    #[test]
+    fn an_asset_lane_rejects_a_sequence_it_already_passed() {
+        for sequence in [0u64, 3, 4] {
+            assert_eq!(
+                SequenceRule::StrictlyIncreasing
+                    .check(sequence, 4)
+                    .expect_err("the sequence is refused"),
+                Error::from(RemoteLegError::InvalidSequence)
+            );
+        }
+    }
+
+    #[test]
+    fn a_strict_lane_at_the_highest_sequence_cannot_overflow() {
+        assert_eq!(
+            SequenceRule::StrictNext
+                .check(0, u64::MAX)
+                .expect_err("the sequence is refused"),
+            Error::from(RemoteLegError::ArithmeticOverflow)
+        );
     }
 
     #[test]

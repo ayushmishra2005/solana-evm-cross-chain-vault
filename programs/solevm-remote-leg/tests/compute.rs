@@ -325,6 +325,7 @@ impl Bench {
                 administrator: self.administrator,
                 remote_config: self.config,
                 replay_lane: lane,
+                remote_position: None,
             }
             .to_account_metas(None),
             data: solevm_remote_leg::instruction::AdvanceReplayWatermark {

@@ -331,6 +331,7 @@ fn a_lane_of_another_class_is_rejected() {
     let instruction = fixture.watermark_instruction(
         administrator.pubkey(),
         fixture.lane_key(MessageClass::ConfigUpdate),
+        None,
         MessageClass::Allocate,
         2,
     );

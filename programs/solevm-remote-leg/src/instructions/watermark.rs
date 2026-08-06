@@ -6,6 +6,7 @@ use crate::control::{MessageClass, REPLAY_LANE_SEED, ReplayLane};
 use crate::errors::RemoteLegError;
 use crate::events::ReplayWatermarkAdvanced;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
+use crate::strategy::{REMOTE_POSITION_SEED, RemotePosition, TransferKind};
 
 #[derive(Accounts)]
 #[instruction(message_class: MessageClass)]
@@ -34,6 +35,13 @@ pub struct AdvanceReplayWatermark<'info> {
         bump = replay_lane.bump,
     )]
     pub replay_lane: Account<'info, ReplayLane>,
+
+    /// Required for the asset lanes, so an open transfer stays protected.
+    #[account(
+        seeds = [REMOTE_POSITION_SEED, remote_config.key().as_ref()],
+        bump = remote_position.bump,
+    )]
+    pub remote_position: Option<Account<'info, RemotePosition>>,
 }
 
 pub fn process_advance_replay_watermark(
@@ -75,6 +83,12 @@ pub fn process_advance_replay_watermark(
         RemoteLegError::WatermarkLagViolation
     );
 
+    check_obligation(
+        message_class,
+        new_minimum_sequence,
+        ctx.accounts.remote_position.as_deref(),
+    )?;
+
     lane.minimum_acceptable_sequence = new_minimum_sequence;
     let advanced_at = Clock::get()?.unix_timestamp;
 
@@ -89,5 +103,36 @@ pub fn process_advance_replay_watermark(
         advanced_at,
     });
 
+    Ok(())
+}
+
+/// Keeps the replay record of an unresolved transfer out of reach.
+///
+/// The watermark may reach the open sequence but never pass it.
+fn check_obligation(
+    message_class: MessageClass,
+    new_minimum_sequence: u64,
+    position: Option<&RemotePosition>,
+) -> Result<()> {
+    let kind = match message_class {
+        MessageClass::ConfigUpdate => return Ok(()),
+        MessageClass::Allocate => TransferKind::Allocate,
+        MessageClass::Recall => TransferKind::Recall,
+    };
+
+    let position = position.ok_or(RemoteLegError::InvalidRemotePosition)?;
+    require_eq!(
+        position.state_version,
+        STATE_VERSION,
+        RemoteLegError::InvalidStateVersion
+    );
+
+    if position.active_transfer_kind == kind {
+        require_gte!(
+            position.active_transfer_sequence,
+            new_minimum_sequence,
+            RemoteLegError::FinancialObligationBlocksWatermark
+        );
+    }
     Ok(())
 }

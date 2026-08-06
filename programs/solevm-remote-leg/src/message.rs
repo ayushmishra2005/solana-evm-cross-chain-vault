@@ -157,11 +157,9 @@ pub fn validate_inbound(
         RemoteLegError::SequenceBelowWatermark
     );
 
-    let expected = lane
-        .highest_consumed_sequence
-        .checked_add(1)
-        .ok_or(RemoteLegError::ArithmeticOverflow)?;
-    require_eq!(sequence, expected, RemoteLegError::InvalidSequence);
+    class
+        .sequence_rule()
+        .check(sequence, lane.highest_consumed_sequence)?;
 
     require!(
         message.header.previous_commitment.as_bytes() == &lane.message_commitment,

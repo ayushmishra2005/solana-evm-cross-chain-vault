@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+members = ["test-strategy"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -45,6 +46,8 @@ protocol-types = { path = "../../crates/protocol-types", default-features = fals
 [dev-dependencies]
 # Tests build canonical messages, so they need the owned encoder.
 protocol-types = { path = "../../crates/protocol-types", features = ["std"] }
+# Tests check the adapter call interface against the adapter itself.
+solevm-test-strategy = { path = "test-strategy", features = ["no-entrypoint"] }
 litesvm = "=0.15.2"
 mollusk-svm = "=0.14.0"
 solana-account = "=4.3.1"
@@ -53,6 +56,7 @@ solana-keypair = "=3.1.2"
 solana-signer = "=3.0.1"
 solana-transaction = "=4.1.5"
 solana-transaction-error = "=3.3.1"
+mollusk-svm-programs-token = "=0.14.0"
 
 [lints]
 workspace = true

@@ -132,6 +132,38 @@ impl MessageBuilder {
         self
     }
 
+    /// Edits the allocate body in place, for tests that bend one field.
+    pub fn allocate_body(mut self, edit: impl FnOnce(&mut AllocateBody)) -> Self {
+        let Body::Allocate(mut body) = self.body else {
+            panic!("builder does not hold an allocate body");
+        };
+        edit(&mut body);
+        self.body = Body::Allocate(body);
+        self
+    }
+
+    /// Edits the recall body in place, for tests that bend one field.
+    pub fn recall_body(mut self, edit: impl FnOnce(&mut RecallBody)) -> Self {
+        let Body::Recall(mut body) = self.body else {
+            panic!("builder does not hold a recall body");
+        };
+        edit(&mut body);
+        self.body = Body::Recall(body);
+        self
+    }
+
+    pub fn transfer_id(self, transfer_id: [u8; 32]) -> Self {
+        match self.body {
+            Body::Allocate(_) => {
+                self.allocate_body(|body| body.transfer_id = TransferId::new(transfer_id))
+            }
+            Body::Recall(_) => {
+                self.recall_body(|body| body.transfer_id = TransferId::new(transfer_id))
+            }
+            _ => panic!("builder does not hold a transfer body"),
+        }
+    }
+
     pub fn build(self) -> Message {
         Message {
             header: self.header,

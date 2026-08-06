@@ -8,7 +8,7 @@
 mod common;
 
 use protocol_types::{Commitment, MessageId, MessageType, decode_message, keccak256, layout};
-use solevm_remote_leg::message;
+use solevm_remote_leg::{MessageClass, message};
 
 use common::Fixture;
 use common::messages::MessageBuilder;
@@ -148,6 +148,49 @@ fn the_chain_accepts_a_message_only_when_its_shared_hashes_agree() {
 
     // The record proves the on chain Keccak matched the host Keccak.
     assert_eq!(fixture.record(1).message_id, id);
+}
+
+#[test]
+fn the_chain_decodes_an_allocation_through_the_shared_codec() {
+    let mut fixture = Fixture::deployed();
+    let bytes = fixture.allocate_bytes(common::ALLOCATE_TRANSFER_ID, 1_000_000, 1);
+    let id = message::message_id(&bytes).expect("id is computed");
+    let decoded = decode_message(&bytes).expect("the shared codec decodes");
+    assert_eq!(decoded.message_type(), MessageType::Allocate);
+
+    fixture
+        .allocate(common::ALLOCATE_TRANSFER_ID, 1, bytes)
+        .expect("allocation lands");
+
+    assert_eq!(
+        fixture.asset_record(MessageClass::Allocate, 1).message_id,
+        id
+    );
+    assert_eq!(fixture.lane(MessageClass::Allocate).message_commitment, {
+        let previous = [0u8; 32];
+        message::next_commitment(&previous, &id)
+    });
+}
+
+#[test]
+fn the_chain_decodes_a_recall_through_the_shared_codec() {
+    let mut fixture = Fixture::deployed();
+    fixture.fund_position(common::ALLOCATE_TRANSFER_ID, 1_000_000);
+
+    let bytes = fixture.recall_bytes(common::RECALL_TRANSFER_ID, 1_000_000, 1);
+    let id = message::message_id(&bytes).expect("id is computed");
+    assert_eq!(
+        decode_message(&bytes)
+            .expect("the shared codec decodes")
+            .message_type(),
+        MessageType::Recall
+    );
+
+    fixture
+        .recall(common::RECALL_TRANSFER_ID, 1, bytes)
+        .expect("recall lands");
+
+    assert_eq!(fixture.asset_record(MessageClass::Recall, 1).message_id, id);
 }
 
 #[test]

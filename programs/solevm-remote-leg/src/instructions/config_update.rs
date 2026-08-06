@@ -1,9 +1,6 @@
 //! Applies one canonical configuration message to the risk limits.
 
-use std::io::Write;
-
 use anchor_lang::prelude::*;
-use anchor_lang::system_program::{self, Allocate, Assign, Transfer};
 
 use crate::control::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, MessageClass, REPLAY_LANE_SEED, RISK_CONFIG_SEED,
@@ -11,7 +8,9 @@ use crate::control::{
 };
 use crate::errors::RemoteLegError;
 use crate::events::ConfigUpdated;
+use crate::instructions::allocate::ConsumedAddress;
 use crate::message::{self, ValidatedMessage};
+use crate::records;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
 
 const CLASS: MessageClass = MessageClass::ConfigUpdate;
@@ -110,13 +109,17 @@ pub fn handle_config_update(
     let sequence = message.header.sequence.get();
     let lane_id = ctx.accounts.config_update_lane.lane_id;
 
-    let record = RecordAddress::derive(&config_key, lane_id, sequence);
+    let record = ConsumedAddress::derive_for(CLASS, &config_key, lane_id, sequence);
     require_keys_eq!(
         ctx.accounts.consumed_message.key(),
         record.address,
         RemoteLegError::InvalidConsumedMessage
     );
-    check_record_is_free(&ctx.accounts.consumed_message)?;
+    records::check_available(
+        &ctx.accounts.consumed_message.to_account_info(),
+        RemoteLegError::ReplayDetected,
+        RemoteLegError::InvalidConsumedMessage,
+    )?;
 
     let previous_config_version = ctx.accounts.remote_config.config_version;
     let new_config_version = body.config_version.get();
@@ -160,13 +163,20 @@ pub fn handle_config_update(
 
     ctx.accounts.remote_config.config_version = new_config_version;
 
-    create_record(
-        &ctx.accounts.consumed_message,
-        &ctx.accounts.transport_verifier,
-        &ctx.accounts.system_program,
-        &config_key,
-        &record,
-        ConsumedMessage {
+    records::create_and_write(
+        &ctx.accounts.consumed_message.to_account_info(),
+        &ctx.accounts.transport_verifier.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        &[
+            CONSUMED_MESSAGE_SEED,
+            config_key.as_ref(),
+            &record.class,
+            &record.lane,
+            &record.sequence,
+            &[record.bump],
+        ],
+        ConsumedMessage::LEN,
+        &ConsumedMessage {
             state_version: STATE_VERSION,
             bump: record.bump,
             message_class: CLASS,
@@ -193,118 +203,5 @@ pub fn handle_config_update(
         updated_at,
     });
 
-    Ok(())
-}
-
-/// The canonical record address for one sequence, with its seed bytes.
-struct RecordAddress {
-    address: Pubkey,
-    bump: u8,
-    class: [u8; 1],
-    lane: [u8; 4],
-    sequence: [u8; 8],
-}
-
-impl RecordAddress {
-    fn derive(config_key: &Pubkey, lane_id: u32, sequence: u64) -> Self {
-        let class = [CLASS.to_u8()];
-        let lane = lane_id.to_le_bytes();
-        let sequence = sequence.to_le_bytes();
-        let (address, bump) = Pubkey::find_program_address(
-            &ConsumedMessage::seeds(config_key, &class, &lane, &sequence),
-            &crate::ID,
-        );
-        Self {
-            address,
-            bump,
-            class,
-            lane,
-            sequence,
-        }
-    }
-}
-
-/// Rejects anything that is not an empty system owned account.
-///
-/// Lamports alone are allowed, so a stranger cannot block a valid message.
-fn check_record_is_free(record: &UncheckedAccount) -> Result<()> {
-    let info = record.to_account_info();
-    if info.owner == &crate::ID {
-        return Err(RemoteLegError::ReplayDetected.into());
-    }
-    require_keys_eq!(
-        *info.owner,
-        system_program::ID,
-        RemoteLegError::InvalidConsumedMessage
-    );
-    require!(info.data_is_empty(), RemoteLegError::InvalidConsumedMessage);
-    Ok(())
-}
-
-/// Funds, allocates and assigns the record, then writes it.
-fn create_record<'info>(
-    record: &UncheckedAccount<'info>,
-    payer: &Signer<'info>,
-    system_program_account: &Program<'info, System>,
-    config_key: &Pubkey,
-    address: &RecordAddress,
-    value: ConsumedMessage,
-) -> Result<()> {
-    let signer_seeds: &[&[u8]] = &[
-        CONSUMED_MESSAGE_SEED,
-        config_key.as_ref(),
-        &address.class,
-        &address.lane,
-        &address.sequence,
-        &[address.bump],
-    ];
-    let signer = &[signer_seeds];
-
-    let space = ConsumedMessage::LEN;
-    let required = Rent::get()?.minimum_balance(space);
-    let current = record.lamports();
-    if current < required {
-        let missing = required
-            .checked_sub(current)
-            .ok_or(RemoteLegError::ArithmeticOverflow)?;
-        system_program::transfer(
-            CpiContext::new(
-                system_program_account.key(),
-                Transfer {
-                    from: payer.to_account_info(),
-                    to: record.to_account_info(),
-                },
-            ),
-            missing,
-        )?;
-    }
-
-    let width = u64::try_from(space).map_err(|_| RemoteLegError::ArithmeticOverflow)?;
-    system_program::allocate(
-        CpiContext::new_with_signer(
-            system_program_account.key(),
-            Allocate {
-                account_to_allocate: record.to_account_info(),
-            },
-            signer,
-        ),
-        width,
-    )?;
-    system_program::assign(
-        CpiContext::new_with_signer(
-            system_program_account.key(),
-            Assign {
-                account_to_assign: record.to_account_info(),
-            },
-            signer,
-        ),
-        &crate::ID,
-    )?;
-
-    let info = record.to_account_info();
-    let mut data = info.try_borrow_mut_data()?;
-    let mut slot: &mut [u8] = &mut data;
-    slot.write_all(ConsumedMessage::DISCRIMINATOR)?;
-    value.serialize(&mut slot)?;
     Ok(())
 }

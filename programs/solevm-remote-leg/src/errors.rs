@@ -96,4 +96,68 @@ pub enum RemoteLegError {
     RecordNotClosable,
     #[msg("rent destination is not the administrator")]
     InvalidRentDestination,
+    #[msg("strategy state is already initialized")]
+    StrategyStateAlreadyInitialized,
+    #[msg("strategy configuration fails its policy")]
+    InvalidStrategyConfig,
+    #[msg("remote position fails its policy")]
+    InvalidRemotePosition,
+    #[msg("adapter program is not the configured one")]
+    InvalidAdapterProgram,
+    #[msg("adapter state fails its policy")]
+    InvalidAdapterState,
+    #[msg("adapter authority fails its policy")]
+    InvalidAdapterAuthority,
+    #[msg("adapter vault fails its policy")]
+    InvalidAdapterVault,
+    #[msg("transfer record fails its policy")]
+    InvalidTransferRecord,
+    #[msg("transfer kind is not the expected one")]
+    InvalidTransferKind,
+    #[msg("transfer status is not the expected one")]
+    InvalidTransferStatus,
+    #[msg("transfer id already has a record")]
+    TransferAlreadyExists,
+    #[msg("transfer id has no record")]
+    TransferNotFound,
+    #[msg("another transfer cycle is still unresolved")]
+    UnresolvedCycle,
+    #[msg("there is no active transfer of this kind")]
+    NoActiveTransfer,
+    #[msg("allocation attribution is not complete")]
+    AllocationIncomplete,
+    #[msg("attribution would exceed the authorized amount")]
+    AttributionExceedsAuthorization,
+    #[msg("no custody assets are waiting for attribution")]
+    NoAttributableAssets,
+    #[msg("allocation exceeds the permitted remote principal")]
+    RemoteAllocationLimitExceeded,
+    #[msg("expected source balance is not usable")]
+    InvalidExpectedSourceBalance,
+    #[msg("minimum destination amount is not usable")]
+    InvalidMinimumDestinationAmount,
+    #[msg("attributed custody principal is too small")]
+    InsufficientAttributedCustody,
+    #[msg("remote principal is smaller than the request")]
+    InsufficientRemotePrincipal,
+    #[msg("strategy returned no liquid principal")]
+    InsufficientStrategyLiquidity,
+    #[msg("token balance moved by an unexpected amount")]
+    InvalidBalanceDelta,
+    #[msg("adapter principal moved by an unexpected amount")]
+    InvalidPrincipalDelta,
+    #[msg("realized loss is not usable")]
+    InvalidRealizedLoss,
+    #[msg("recall amount is not usable")]
+    InvalidRecallAmount,
+    #[msg("minimum return amount is not usable")]
+    InvalidMinimumReturn,
+    #[msg("no recalled custody is waiting to be sent")]
+    NoRecalledCustody,
+    #[msg("an unresolved transfer blocks the watermark")]
+    FinancialObligationBlocksWatermark,
+    #[msg("custody holds less than the accounted total")]
+    AccountingDeficit,
+    #[msg("amount does not fit the token amount type")]
+    AmountTooLarge,
 }

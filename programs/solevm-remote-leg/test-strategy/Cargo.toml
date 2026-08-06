@@ -1,0 +1,29 @@
+[package]
+name = "solevm-test-strategy"
+version = "0.1.0"
+description = "Deterministic strategy adapter used to exercise remote leg CPI"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/ayushkumarmishra/solana-evm-cross-chain-vault"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "solevm_test_strategy"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+anchor-debug = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "=1.1.2"
+anchor-spl = { version = "=1.1.2", default-features = false, features = ["token"] }
+
+[lints]
+workspace = true

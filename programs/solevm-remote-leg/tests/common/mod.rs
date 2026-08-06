@@ -20,8 +20,11 @@ use solana_transaction_error::TransactionError;
 use solevm_remote_leg::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED};
 use solevm_remote_leg::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, MessageClass,
-    REPLAY_LANE_SEED, RISK_CONFIG_SEED, RemoteConfig, RemoteLegError, ReplayLane, RiskConfig,
+    REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RemoteConfig, RemoteLegError,
+    RemotePosition, ReplayLane, RiskConfig, STRATEGY_CONFIG_SEED, StrategyConfig,
+    TRANSFER_RECORD_SEED, TransferRecord,
 };
+use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
 pub mod messages;
 
@@ -42,6 +45,9 @@ pub const MAX_DOWNWARD_DEVIATION_BPS: u16 = 1_000;
 pub const MAX_REPORT_AGE: u64 = 3_600;
 pub const INITIAL_CONFIG_COMMITMENT: [u8; 32] = [0xAA; 32];
 pub const WATERMARK_LAG: u64 = 2;
+pub const MAX_REMOTE_PRINCIPAL: u64 = 10_000_000;
+pub const ALLOCATE_TRANSFER_ID: [u8; 32] = [0x77; 32];
+pub const RECALL_TRANSFER_ID: [u8; 32] = [0x88; 32];
 
 /// The failure metadata is large, so it travels boxed.
 pub type TxResult = Result<(), Box<FailedTransactionMetadata>>;
@@ -77,6 +83,9 @@ pub struct Fixture {
     pub config: Pubkey,
     pub custody_authority: Pubkey,
     pub custody_authority_bump: u8,
+    pub adapter_state: Pubkey,
+    pub adapter_authority: Pubkey,
+    pub adapter_vault: Pubkey,
     pub params: InitializeParams,
 }
 
@@ -129,6 +138,9 @@ impl Fixture {
             config,
             custody_authority,
             custody_authority_bump,
+            adapter_state: Pubkey::default(),
+            adapter_authority: Pubkey::default(),
+            adapter_vault: Pubkey::new_unique(),
             params: InitializeParams {
                 deployment_id: DEPLOYMENT_ID,
                 vault_id: VAULT_ID,
@@ -600,9 +612,16 @@ impl Fixture {
         class: MessageClass,
         new_minimum_sequence: u64,
     ) -> TxResult {
+        // A leg without strategy state has no position to pass.
+        let position = match class {
+            MessageClass::ConfigUpdate => None,
+            _ if self.svm.get_account(&self.position_key()).is_none() => None,
+            _ => Some(self.position_key()),
+        };
         let instruction = self.watermark_instruction(
             authority.pubkey(),
             self.lane_key(class),
+            position,
             class,
             new_minimum_sequence,
         );
@@ -613,6 +632,7 @@ impl Fixture {
         &self,
         administrator: Pubkey,
         replay_lane: Pubkey,
+        remote_position: Option<Pubkey>,
         message_class: MessageClass,
         new_minimum_sequence: u64,
     ) -> Instruction {
@@ -620,6 +640,7 @@ impl Fixture {
             administrator,
             remote_config: self.config,
             replay_lane,
+            remote_position,
         }
         .to_account_metas(None);
 
@@ -691,6 +712,15 @@ impl Fixture {
         ConsumedMessage::try_deserialize(&mut account.data.as_slice()).expect("record decodes")
     }
 
+    /// The consumed record one asset lane wrote.
+    pub fn asset_record(&self, class: MessageClass, sequence: u64) -> ConsumedMessage {
+        let account = self
+            .svm
+            .get_account(&self.asset_record_key(class, sequence))
+            .expect("record exists");
+        ConsumedMessage::try_deserialize(&mut account.data.as_slice()).expect("record decodes")
+    }
+
     /// True when a record account holds program owned data.
     pub fn record_exists(&self, sequence: u64) -> bool {
         self.svm
@@ -710,6 +740,19 @@ impl Fixture {
         self.svm
             .get_account(&key)
             .map_or_else(Vec::new, |account| account.data)
+    }
+
+    /// Raises the highest consumed sequence a lane records.
+    ///
+    /// The normal flow keeps an open transfer at the top of its lane, so this
+    /// is the only way to reach the guard that protects it on its own.
+    pub fn set_lane_highest(&mut self, class: MessageClass, sequence: u64) {
+        let key = self.lane_key(class);
+        let mut account = self.svm.get_account(&key).expect("lane exists");
+        // The highest consumed sequence follows the header and the watermark.
+        let offset = 8 + 1 + 1 + 1 + 4 + 8;
+        account.data[offset..offset + 8].copy_from_slice(&sequence.to_le_bytes());
+        self.svm.set_account(key, account).unwrap();
     }
 
     /// Moves the chain clock so timestamp rules can be exercised.
@@ -773,6 +816,584 @@ impl Fixture {
             self.accept_next_update();
         }
     }
+
+    // Strategy plane
+
+    /// A leg with control state, a live adapter and strategy state.
+    pub fn deployed() -> Self {
+        let mut fixture = Self::ready();
+        fixture.install_adapter();
+        fixture
+            .initialize_strategy_state(MAX_REMOTE_PRINCIPAL)
+            .expect("strategy state initializes");
+        fixture
+    }
+
+    pub fn strategy_config_address(config: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[STRATEGY_CONFIG_SEED, config.as_ref()],
+            &solevm_remote_leg::ID,
+        )
+        .0
+    }
+
+    pub fn position_address(config: &Pubkey) -> Pubkey {
+        Pubkey::find_program_address(
+            &[REMOTE_POSITION_SEED, config.as_ref()],
+            &solevm_remote_leg::ID,
+        )
+        .0
+    }
+
+    pub fn transfer_address(config: &Pubkey, transfer_id: &[u8; 32]) -> (Pubkey, u8) {
+        Pubkey::find_program_address(
+            &[TRANSFER_RECORD_SEED, config.as_ref(), transfer_id],
+            &solevm_remote_leg::ID,
+        )
+    }
+
+    pub fn strategy(&self) -> Pubkey {
+        Self::strategy_config_address(&self.config)
+    }
+
+    pub fn position_key(&self) -> Pubkey {
+        Self::position_address(&self.config)
+    }
+
+    pub fn transfer_key(&self, transfer_id: &[u8; 32]) -> Pubkey {
+        Self::transfer_address(&self.config, transfer_id).0
+    }
+
+    pub fn asset_record_key(&self, class: MessageClass, sequence: u64) -> Pubkey {
+        Self::record_address(&self.config, class, CONTROL_LANE_ID, sequence).0
+    }
+
+    /// Deploys the adapter program and initializes its state.
+    pub fn install_adapter(&mut self) {
+        self.svm
+            .add_program(solevm_test_strategy::ID, &adapter_bytes())
+            .expect("adapter loads");
+
+        let (adapter_state, _) = Pubkey::find_program_address(
+            &[ADAPTER_STATE_SEED, self.config.as_ref()],
+            &solevm_test_strategy::ID,
+        );
+        let (adapter_authority, _) = Pubkey::find_program_address(
+            &[ADAPTER_AUTHORITY_SEED, adapter_state.as_ref()],
+            &solevm_test_strategy::ID,
+        );
+        self.adapter_state = adapter_state;
+        self.adapter_authority = adapter_authority;
+        self.write_token_account(self.adapter_vault, self.mint, adapter_authority, None, None);
+
+        let metas = solevm_test_strategy::accounts::InitializeAdapter {
+            payer: self.administrator.pubkey(),
+            adapter_state,
+            mint: self.mint,
+            adapter_token_vault: self.adapter_vault,
+            token_program: spl_token::ID,
+            system_program: anchor_lang::system_program::ID,
+        }
+        .to_account_metas(None);
+
+        let instruction = Instruction {
+            program_id: solevm_test_strategy::ID,
+            accounts: metas,
+            data: solevm_test_strategy::instruction::InitializeAdapter {
+                params: solevm_test_strategy::AdapterParams {
+                    remote_leg_program: solevm_remote_leg::ID,
+                    remote_config: self.config,
+                    test_authority: self.administrator.pubkey(),
+                    max_liquid_principal: u64::MAX,
+                    loss_bps: 0,
+                },
+            }
+            .data(),
+        };
+        let payer = self.administrator.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+            .expect("adapter initializes");
+    }
+
+    /// Shapes the adapter so one unwind path can be reproduced.
+    pub fn configure_adapter(
+        &mut self,
+        max_liquid_principal: u64,
+        loss_bps: u16,
+        deposits_paused: bool,
+    ) -> TxResult {
+        let metas = solevm_test_strategy::accounts::ConfigureAdapter {
+            test_authority: self.administrator.pubkey(),
+            adapter_state: self.adapter_state,
+        }
+        .to_account_metas(None);
+
+        let instruction = Instruction {
+            program_id: solevm_test_strategy::ID,
+            accounts: metas,
+            data: solevm_test_strategy::instruction::ConfigureAdapterTestConditions {
+                conditions: solevm_test_strategy::TestConditions {
+                    max_liquid_principal,
+                    loss_bps,
+                    deposits_paused,
+                },
+            }
+            .data(),
+        };
+        let payer = self.administrator.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn adapter(&self) -> solevm_test_strategy::AdapterState {
+        let account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter exists");
+        solevm_test_strategy::AdapterState::try_deserialize(&mut account.data.as_slice())
+            .expect("adapter decodes")
+    }
+
+    pub fn strategy_accounts(&self) -> StrategyAccounts {
+        StrategyAccounts {
+            administrator: self.administrator.pubkey(),
+            remote_config: self.config,
+            risk_config: self.risk(),
+            strategy_config: self.strategy(),
+            remote_position: self.position_key(),
+            adapter_program: solevm_test_strategy::ID,
+            adapter_state: self.adapter_state,
+            adapter_authority: self.adapter_authority,
+            adapter_token_vault: self.adapter_vault,
+            asset_mint: self.mint,
+            token_program: spl_token::ID,
+            system_program: anchor_lang::system_program::ID,
+        }
+    }
+
+    pub fn initialize_strategy_state(&mut self, max_remote_principal: u64) -> TxResult {
+        let accounts = self.strategy_accounts();
+        self.initialize_strategy_state_with(accounts, max_remote_principal)
+    }
+
+    pub fn initialize_strategy_state_with(
+        &mut self,
+        accounts: StrategyAccounts,
+        max_remote_principal: u64,
+    ) -> TxResult {
+        let instruction = self.strategy_state_instruction(accounts, max_remote_principal);
+        let signer = if accounts.administrator == self.administrator.pubkey() {
+            self.administrator.insecure_clone()
+        } else {
+            self.outsider.insecure_clone()
+        };
+        self.send(instruction, &[&signer])
+    }
+
+    pub fn strategy_state_instruction(
+        &self,
+        accounts: StrategyAccounts,
+        max_remote_principal: u64,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::InitializeStrategyState {
+            administrator: accounts.administrator,
+            remote_config: accounts.remote_config,
+            risk_config: accounts.risk_config,
+            strategy_config: accounts.strategy_config,
+            remote_position: accounts.remote_position,
+            adapter_program: accounts.adapter_program,
+            adapter_state: accounts.adapter_state,
+            adapter_authority: accounts.adapter_authority,
+            adapter_token_vault: accounts.adapter_token_vault,
+            asset_mint: accounts.asset_mint,
+            token_program: accounts.token_program,
+            system_program: accounts.system_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::InitializeStrategyState {
+                max_remote_principal,
+            }
+            .data(),
+        }
+    }
+
+    pub fn reconcile(&mut self) -> TxResult {
+        let instruction = self.reconcile_instruction(self.custody);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn reconcile_instruction(&self, custody_token_account: Pubkey) -> Instruction {
+        let metas = solevm_remote_leg::accounts::ReconcileCustody {
+            remote_config: self.config,
+            remote_position: self.position_key(),
+            custody_token_account,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::ReconcileCustody {}.data(),
+        }
+    }
+
+    pub fn allocate_accounts(&self, transfer_id: [u8; 32], sequence: u64) -> AssetAccounts {
+        AssetAccounts {
+            transport_verifier: self.verifier.pubkey(),
+            remote_config: self.config,
+            risk_config: self.risk(),
+            strategy_config: self.strategy(),
+            remote_position: self.position_key(),
+            replay_lane: self.lane_key(MessageClass::Allocate),
+            transfer_record: self.transfer_key(&transfer_id),
+            consumed_message: self.asset_record_key(MessageClass::Allocate, sequence),
+            system_program: anchor_lang::system_program::ID,
+        }
+    }
+
+    pub fn recall_accounts(&self, transfer_id: [u8; 32], sequence: u64) -> AssetAccounts {
+        AssetAccounts {
+            replay_lane: self.lane_key(MessageClass::Recall),
+            consumed_message: self.asset_record_key(MessageClass::Recall, sequence),
+            ..self.allocate_accounts(transfer_id, sequence)
+        }
+    }
+
+    pub fn allocate(&mut self, transfer_id: [u8; 32], sequence: u64, bytes: Vec<u8>) -> TxResult {
+        let accounts = self.allocate_accounts(transfer_id, sequence);
+        self.allocate_with(accounts, bytes)
+    }
+
+    pub fn allocate_with(&mut self, accounts: AssetAccounts, bytes: Vec<u8>) -> TxResult {
+        let instruction = self.allocate_instruction(accounts, bytes);
+        self.send_signed_by_verifier(instruction, accounts.transport_verifier)
+    }
+
+    pub fn allocate_instruction(&self, accounts: AssetAccounts, bytes: Vec<u8>) -> Instruction {
+        let metas = solevm_remote_leg::accounts::ProcessAllocate {
+            transport_verifier: accounts.transport_verifier,
+            remote_config: accounts.remote_config,
+            risk_config: accounts.risk_config,
+            strategy_config: accounts.strategy_config,
+            remote_position: accounts.remote_position,
+            allocate_lane: accounts.replay_lane,
+            transfer_record: accounts.transfer_record,
+            consumed_message: accounts.consumed_message,
+            system_program: accounts.system_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::ProcessAllocate {
+                message_bytes: bytes,
+            }
+            .data(),
+        }
+    }
+
+    pub fn recall(&mut self, transfer_id: [u8; 32], sequence: u64, bytes: Vec<u8>) -> TxResult {
+        let accounts = self.recall_accounts(transfer_id, sequence);
+        self.recall_with(accounts, bytes)
+    }
+
+    pub fn recall_with(&mut self, accounts: AssetAccounts, bytes: Vec<u8>) -> TxResult {
+        let instruction = self.recall_instruction(accounts, bytes);
+        self.send_signed_by_verifier(instruction, accounts.transport_verifier)
+    }
+
+    /// Signs with whichever key the accounts name as the transport verifier.
+    fn send_signed_by_verifier(&mut self, instruction: Instruction, verifier: Pubkey) -> TxResult {
+        let payer = self.administrator.insecure_clone();
+        if verifier == payer.pubkey() {
+            return self.send_as(instruction, &payer, &[&payer]);
+        }
+        let signer = if verifier == self.verifier.pubkey() {
+            self.verifier.insecure_clone()
+        } else {
+            self.outsider.insecure_clone()
+        };
+        self.send_as(instruction, &payer, &[&payer, &signer])
+    }
+
+    pub fn recall_instruction(&self, accounts: AssetAccounts, bytes: Vec<u8>) -> Instruction {
+        let metas = solevm_remote_leg::accounts::ProcessRecall {
+            transport_verifier: accounts.transport_verifier,
+            remote_config: accounts.remote_config,
+            risk_config: accounts.risk_config,
+            remote_position: accounts.remote_position,
+            recall_lane: accounts.replay_lane,
+            transfer_record: accounts.transfer_record,
+            consumed_message: accounts.consumed_message,
+            system_program: accounts.system_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::ProcessRecall {
+                message_bytes: bytes,
+            }
+            .data(),
+        }
+    }
+
+    pub fn attribute(&mut self, transfer_id: [u8; 32]) -> TxResult {
+        let instruction = self.attribute_instruction(self.transfer_key(&transfer_id), self.custody);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn attribute_instruction(
+        &self,
+        transfer_record: Pubkey,
+        custody_token_account: Pubkey,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::AttributeAllocation {
+            remote_config: self.config,
+            remote_position: self.position_key(),
+            transfer_record,
+            custody_token_account,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::AttributeAllocation {}.data(),
+        }
+    }
+
+    pub fn deploy(&mut self, maximum_amount: u64) -> TxResult {
+        let accounts = self.strategy_accounts();
+        self.deploy_with(accounts, maximum_amount)
+    }
+
+    pub fn deploy_with(&mut self, accounts: StrategyAccounts, maximum_amount: u64) -> TxResult {
+        let instruction = self.deploy_instruction(accounts, maximum_amount);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn deploy_instruction(
+        &self,
+        accounts: StrategyAccounts,
+        maximum_amount: u64,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::DeployToStrategy {
+            remote_config: accounts.remote_config,
+            strategy_config: accounts.strategy_config,
+            remote_position: accounts.remote_position,
+            custody_authority: self.custody_authority,
+            custody_token_account: self.custody,
+            adapter_program: accounts.adapter_program,
+            adapter_state: accounts.adapter_state,
+            adapter_authority: accounts.adapter_authority,
+            adapter_token_vault: accounts.adapter_token_vault,
+            asset_mint: accounts.asset_mint,
+            token_program: accounts.token_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::DeployToStrategy { maximum_amount }.data(),
+        }
+    }
+
+    pub fn withdraw(&mut self, transfer_id: [u8; 32], maximum_principal: u64) -> TxResult {
+        let accounts = self.strategy_accounts();
+        let record = self.transfer_key(&transfer_id);
+        let instruction = self.withdraw_instruction(accounts, record, maximum_principal);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn withdraw_instruction(
+        &self,
+        accounts: StrategyAccounts,
+        transfer_record: Pubkey,
+        maximum_principal: u64,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::WithdrawForRecall {
+            remote_config: accounts.remote_config,
+            strategy_config: accounts.strategy_config,
+            remote_position: accounts.remote_position,
+            transfer_record,
+            custody_authority: self.custody_authority,
+            custody_token_account: self.custody,
+            adapter_program: accounts.adapter_program,
+            adapter_state: accounts.adapter_state,
+            adapter_authority: accounts.adapter_authority,
+            adapter_token_vault: accounts.adapter_token_vault,
+            asset_mint: accounts.asset_mint,
+            token_program: accounts.token_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::WithdrawForRecall { maximum_principal }.data(),
+        }
+    }
+
+    pub fn send_recall(&mut self, transfer_id: [u8; 32], maximum_amount: u64) -> TxResult {
+        let record = self.transfer_key(&transfer_id);
+        let instruction = self.send_recall_instruction(record, self.escrow, maximum_amount);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn send_recall_instruction(
+        &self,
+        transfer_record: Pubkey,
+        outbound_escrow: Pubkey,
+        maximum_amount: u64,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::SendRecall {
+            remote_config: self.config,
+            remote_position: self.position_key(),
+            transfer_record,
+            custody_authority: self.custody_authority,
+            custody_token_account: self.custody,
+            outbound_escrow,
+            token_program: spl_token::ID,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::SendRecall { maximum_amount }.data(),
+        }
+    }
+
+    pub fn strategy_config(&self) -> StrategyConfig {
+        let account = self
+            .svm
+            .get_account(&self.strategy())
+            .expect("strategy exists");
+        StrategyConfig::try_deserialize(&mut account.data.as_slice()).expect("strategy decodes")
+    }
+
+    pub fn position(&self) -> RemotePosition {
+        let account = self
+            .svm
+            .get_account(&self.position_key())
+            .expect("position exists");
+        RemotePosition::try_deserialize(&mut account.data.as_slice()).expect("position decodes")
+    }
+
+    pub fn transfer(&self, transfer_id: &[u8; 32]) -> TransferRecord {
+        let account = self
+            .svm
+            .get_account(&self.transfer_key(transfer_id))
+            .expect("transfer exists");
+        TransferRecord::try_deserialize(&mut account.data.as_slice()).expect("transfer decodes")
+    }
+
+    pub fn transfer_exists(&self, transfer_id: &[u8; 32]) -> bool {
+        self.svm
+            .get_account(&self.transfer_key(transfer_id))
+            .is_some_and(|account| {
+                account.owner == solevm_remote_leg::ID && !account.data.is_empty()
+            })
+    }
+
+    /// Simulates assets arriving in a token account from the source chain.
+    pub fn credit(&mut self, key: Pubkey, amount: u64) {
+        let mut account = self.svm.get_account(&key).expect("token account exists");
+        let mut token = spl_token::state::Account::unpack(&account.data).expect("token decodes");
+        token.amount += amount;
+        token.pack_into_slice(&mut account.data);
+        self.svm.set_account(key, account).unwrap();
+    }
+
+    /// Accepts one allocation with the next valid sequence.
+    pub fn accept_allocation(&mut self, transfer_id: [u8; 32], amount: u64) -> u64 {
+        self.accept_allocation_at(transfer_id, amount, None)
+    }
+
+    pub fn accept_allocation_at(
+        &mut self,
+        transfer_id: [u8; 32],
+        amount: u64,
+        sequence: Option<u64>,
+    ) -> u64 {
+        let sequence =
+            sequence.unwrap_or(self.lane(MessageClass::Allocate).highest_consumed_sequence + 1);
+        let bytes = self.allocate_bytes(transfer_id, amount, sequence);
+        self.allocate(transfer_id, sequence, bytes)
+            .expect("allocation lands");
+        sequence
+    }
+
+    /// Encodes one Allocate against the current Allocate lane.
+    pub fn allocate_bytes(&self, transfer_id: [u8; 32], amount: u64, sequence: u64) -> Vec<u8> {
+        let lane = self.lane(MessageClass::Allocate);
+        messages::MessageBuilder::allocate()
+            .sequence(sequence)
+            .previous_commitment(lane.message_commitment)
+            .transfer_id(transfer_id)
+            .allocate_body(|body| {
+                body.amount = protocol_types::AssetAmount::new(u128::from(amount));
+                body.minimum_destination_amount =
+                    protocol_types::AssetAmount::new(u128::from(amount));
+                body.config_version =
+                    protocol_types::ConfigVersion::new(self.config().config_version);
+            })
+            .encode()
+    }
+
+    /// Accepts one recall with the next valid sequence.
+    pub fn accept_recall(&mut self, transfer_id: [u8; 32], amount: u64) -> u64 {
+        self.accept_recall_at(transfer_id, amount, None)
+    }
+
+    pub fn accept_recall_at(
+        &mut self,
+        transfer_id: [u8; 32],
+        amount: u64,
+        sequence: Option<u64>,
+    ) -> u64 {
+        let sequence =
+            sequence.unwrap_or(self.lane(MessageClass::Recall).highest_consumed_sequence + 1);
+        let bytes = self.recall_bytes(transfer_id, amount, sequence);
+        self.recall(transfer_id, sequence, bytes)
+            .expect("recall lands");
+        sequence
+    }
+
+    /// Encodes one Recall against the current Recall lane.
+    pub fn recall_bytes(&self, transfer_id: [u8; 32], amount: u64, sequence: u64) -> Vec<u8> {
+        let lane = self.lane(MessageClass::Recall);
+        messages::MessageBuilder::recall()
+            .sequence(sequence)
+            .previous_commitment(lane.message_commitment)
+            .transfer_id(transfer_id)
+            .recall_body(|body| {
+                body.requested_amount = protocol_types::AssetAmount::new(u128::from(amount));
+                body.minimum_return_amount = protocol_types::AssetAmount::new(u128::from(amount));
+                body.config_version =
+                    protocol_types::ConfigVersion::new(self.config().config_version);
+            })
+            .encode()
+    }
+
+    /// Brings one full allocation all the way into attributed principal.
+    pub fn fund_position(&mut self, transfer_id: [u8; 32], amount: u64) {
+        self.accept_allocation(transfer_id, amount);
+        self.credit(self.custody, amount);
+        self.attribute(transfer_id).expect("attribution lands");
+    }
 }
 
 /// Every account the control state instruction reads.
@@ -798,11 +1419,51 @@ pub struct UpdateAccounts {
     pub system_program: Pubkey,
 }
 
+/// Every account the strategy instructions read.
+#[derive(Clone, Copy, Debug)]
+pub struct StrategyAccounts {
+    pub administrator: Pubkey,
+    pub remote_config: Pubkey,
+    pub risk_config: Pubkey,
+    pub strategy_config: Pubkey,
+    pub remote_position: Pubkey,
+    pub adapter_program: Pubkey,
+    pub adapter_state: Pubkey,
+    pub adapter_authority: Pubkey,
+    pub adapter_token_vault: Pubkey,
+    pub asset_mint: Pubkey,
+    pub token_program: Pubkey,
+    pub system_program: Pubkey,
+}
+
+/// Every account an allocate or recall message instruction reads.
+#[derive(Clone, Copy, Debug)]
+pub struct AssetAccounts {
+    pub transport_verifier: Pubkey,
+    pub remote_config: Pubkey,
+    pub risk_config: Pubkey,
+    pub strategy_config: Pubkey,
+    pub remote_position: Pubkey,
+    pub replay_lane: Pubkey,
+    pub transfer_record: Pubkey,
+    pub consumed_message: Pubkey,
+    pub system_program: Pubkey,
+}
+
 /// Reads the program built by cargo build-sbf.
 pub fn program_bytes() -> Vec<u8> {
+    built_program("solevm_remote_leg")
+}
+
+/// Reads the strategy adapter built by cargo build-sbf.
+pub fn adapter_bytes() -> Vec<u8> {
+    built_program("solevm_test_strategy")
+}
+
+fn built_program(name: &str) -> Vec<u8> {
     let directory = std::env::var("SBF_OUT_DIR")
         .unwrap_or_else(|_| format!("{}/target/deploy", env!("CARGO_MANIFEST_DIR")));
-    let path = format!("{directory}/solevm_remote_leg.so");
+    let path = format!("{directory}/{name}.so");
     std::fs::read(&path).unwrap_or_else(|_| {
         panic!(
             "missing {path}, build it first with \
