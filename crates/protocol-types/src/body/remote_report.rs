@@ -165,9 +165,8 @@ impl RemoteReportBody {
                 IdentifierField::RemoteStateCommitment,
             ));
         }
-        if self.realized_loss > self.remote_principal {
-            return Err(ValidationError::RealizedLossAbovePrincipal);
-        }
+        // Realized loss covers the whole leg lifetime, so it outlives the
+        // principal that produced it.
         if self.probe_timestamp > times.observed_at {
             return Err(ValidationError::ProbeTimestampAfterObservation);
         }
@@ -298,16 +297,15 @@ mod tests {
     }
 
     #[test]
-    fn a_realized_loss_above_the_principal_rejects() {
+    fn a_fully_unwound_leg_still_reports_the_loss_it_took() {
         let body = RemoteReportBody {
-            remote_principal: AssetAmount::new(10),
-            realized_loss: AssetAmount::new(11),
+            remote_principal: AssetAmount::ZERO,
+            reported_value: AssetAmount::ZERO,
+            realized_loss: AssetAmount::new(50_000),
             ..RemoteReportBody::sample()
         };
-        assert_eq!(
-            body.validate(TIMES),
-            Err(ValidationError::RealizedLossAbovePrincipal)
-        );
+        assert_eq!(body.validate(TIMES), Ok(()));
+        assert_eq!(RemoteReportBody::decode(&encoded(&body)), Ok(body));
     }
 
     #[test]

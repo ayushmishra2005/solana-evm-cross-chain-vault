@@ -98,9 +98,7 @@ impl RecallSentBody {
         if self.principal_sent.is_zero() {
             return Err(ValidationError::ZeroAmount(AmountField::PrincipalSent));
         }
-        if self.actual_amount_sent.is_zero() {
-            return Err(ValidationError::ZeroAmount(AmountField::ActualAmountSent));
-        }
+        // A total loss sends nothing back, so a zero amount is a real result.
         if self.realized_loss > self.principal_sent {
             return Err(ValidationError::RealizedLossAbovePrincipal);
         }
@@ -185,15 +183,15 @@ mod tests {
     }
 
     #[test]
-    fn a_zero_actual_amount_sent_rejects() {
+    fn a_total_loss_sends_nothing_and_still_reports() {
         let body = RecallSentBody {
+            principal_sent: AssetAmount::new(500_000),
             actual_amount_sent: AssetAmount::ZERO,
+            realized_loss: AssetAmount::new(500_000),
             ..RecallSentBody::sample()
         };
-        assert_eq!(
-            body.validate(TIMES),
-            Err(ValidationError::ZeroAmount(AmountField::ActualAmountSent))
-        );
+        assert_eq!(body.validate(TIMES), Ok(()));
+        assert_eq!(RecallSentBody::decode(&encoded(&body)), Ok(body));
     }
 
     #[test]
