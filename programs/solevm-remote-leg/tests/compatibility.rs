@@ -194,6 +194,112 @@ fn the_chain_decodes_a_recall_through_the_shared_codec() {
 }
 
 #[test]
+fn the_published_report_matches_every_shared_function() {
+    let mut fixture = Fixture::ready_to_publish();
+    fixture.fund_position(common::ALLOCATE_TRANSFER_ID, 1_000_000);
+
+    let accounts = fixture.outbound_accounts(1);
+    let instruction = fixture.publish_report_instruction(accounts, 12);
+    let event: solevm_remote_leg::RemoteReportPublished = fixture.publish_and_capture(instruction);
+
+    let decoded = decode_message(&event.message_bytes).expect("the shared codec decodes");
+    assert_eq!(decoded.message_type(), MessageType::RemoteReport);
+    assert_eq!(event.message_bytes.len(), layout::REMOTE_REPORT_MESSAGE_LEN);
+    assert_eq!(layout::REMOTE_REPORT_MESSAGE_LEN, 400);
+
+    let encoded = decoded.encode().expect("the shared codec re-encodes");
+    assert_eq!(encoded.as_bytes(), event.message_bytes.as_slice());
+    assert_eq!(encoded.message_id().to_bytes(), event.message_id);
+    assert_eq!(
+        decoded.body_hash().expect("the body hashes").to_bytes(),
+        event.body_hash
+    );
+    assert_eq!(
+        protocol_types::next_commitment(
+            Commitment::new(event.previous_commitment),
+            MessageId::new(event.message_id)
+        )
+        .to_bytes(),
+        event.next_commitment
+    );
+}
+
+#[test]
+fn the_published_recall_notice_matches_every_shared_function() {
+    let mut fixture = Fixture::ready_to_publish();
+    settle_one_recall(&mut fixture);
+
+    let accounts = fixture.recall_sent_accounts(common::RECALL_TRANSFER_ID, 1);
+    let instruction = fixture.publish_recall_sent_instruction(accounts);
+    let event: solevm_remote_leg::RecallSentPublished = fixture.publish_and_capture(instruction);
+
+    let decoded = decode_message(&event.message_bytes).expect("the shared codec decodes");
+    assert_eq!(decoded.message_type(), MessageType::RecallSent);
+    assert_eq!(event.message_bytes.len(), layout::RECALL_SENT_MESSAGE_LEN);
+
+    let encoded = decoded.encode().expect("the shared codec re-encodes");
+    assert_eq!(encoded.as_bytes(), event.message_bytes.as_slice());
+    assert_eq!(encoded.message_id().to_bytes(), event.message_id);
+    assert_eq!(
+        decoded.body_hash().expect("the body hashes").to_bytes(),
+        event.body_hash
+    );
+    assert_eq!(
+        protocol_types::next_commitment(
+            Commitment::new(event.previous_commitment),
+            MessageId::new(event.message_id)
+        )
+        .to_bytes(),
+        event.next_commitment
+    );
+}
+
+#[test]
+fn every_outbound_message_stays_inside_the_transport_budget() {
+    assert_eq!(layout::REMOTE_REPORT_MESSAGE_LEN, 400);
+    const { assert!(layout::RECALL_SENT_MESSAGE_LEN <= 400) };
+    const { assert!(layout::MAX_MESSAGE_LEN <= 400) };
+}
+
+/// Drives one recall to a completed send so a notice can be published.
+fn settle_one_recall(fixture: &mut Fixture) {
+    let amount = 1_000_000;
+    fixture.fund_position(common::ALLOCATE_TRANSFER_ID, amount);
+    fixture.deploy(amount).expect("the deposit lands");
+    fixture.accept_recall(common::RECALL_TRANSFER_ID, amount);
+    fixture
+        .withdraw(common::RECALL_TRANSFER_ID, amount)
+        .expect("the withdrawal lands");
+    fixture
+        .send_recall(common::RECALL_TRANSFER_ID, amount)
+        .expect("the send lands");
+}
+
+#[test]
+fn the_program_holds_no_second_encoder() {
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut encoders = Vec::new();
+
+    for entry in walk(&source) {
+        let text = std::fs::read_to_string(&entry).expect("source file reads");
+        let shipped = text.split("#[cfg(test)]").next().unwrap_or_default();
+        if shipped.contains(".encode()") {
+            encoders.push(entry);
+        }
+    }
+
+    assert_eq!(
+        encoders.len(),
+        1,
+        "only the outbound builder may encode, found {encoders:?}"
+    );
+    assert!(
+        encoders[0].ends_with("outbound_message.rs"),
+        "the encoder lives in the wrong module"
+    );
+}
+
+#[test]
 fn the_program_holds_no_second_decoder() {
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut checked = 0;

@@ -8,6 +8,8 @@ use anchor_lang::solana_program::program_pack::Pack;
 use anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas};
 use anchor_spl::token::spl_token;
 use anchor_spl::token::spl_token::state::AccountState;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use litesvm::LiteSVM;
 use litesvm::types::FailedTransactionMetadata;
 use solana_account::Account;
@@ -20,9 +22,9 @@ use solana_transaction_error::TransactionError;
 use solevm_remote_leg::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED};
 use solevm_remote_leg::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, MessageClass,
-    REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RemoteConfig, RemoteLegError,
-    RemotePosition, ReplayLane, RiskConfig, STRATEGY_CONFIG_SEED, StrategyConfig,
-    TRANSFER_RECORD_SEED, TransferRecord,
+    OutboundLane, REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RecallSentMarker,
+    RemoteConfig, RemoteLegError, RemotePosition, ReplayLane, ReportRecord, RiskConfig,
+    STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED, TransferRecord,
 };
 use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
@@ -87,6 +89,7 @@ pub struct Fixture {
     pub adapter_authority: Pubkey,
     pub adapter_vault: Pubkey,
     pub params: InitializeParams,
+    pub last_logs: Vec<String>,
 }
 
 impl Fixture {
@@ -154,6 +157,7 @@ impl Fixture {
                 transport_verifier: Pubkey::new_unique(),
                 emergency_guardian: Pubkey::default(),
             },
+            last_logs: Vec::new(),
         };
         fixture.params.emergency_guardian = fixture.guardian.pubkey();
         fixture.params.transport_verifier = fixture.verifier.pubkey();
@@ -384,10 +388,12 @@ impl Fixture {
             signers,
             self.svm.latest_blockhash(),
         );
-        self.svm
-            .send_transaction(transaction)
-            .map(|_| ())
-            .map_err(Box::new)
+        let result = self.svm.send_transaction(transaction);
+        self.last_logs = match &result {
+            Ok(meta) => meta.logs.clone(),
+            Err(failure) => failure.meta.logs.clone(),
+        };
+        result.map(|_| ()).map_err(Box::new)
     }
 
     /// Rewrites the raw bytes of the configuration account.
@@ -1394,6 +1400,414 @@ impl Fixture {
         self.credit(self.custody, amount);
         self.attribute(transfer_id).expect("attribution lands");
     }
+
+    // Outbound reporting
+
+    pub fn outbound_lane_key(&self) -> Pubkey {
+        OutboundLane::address(&self.config, REPORT_LANE_ID).0
+    }
+
+    pub fn report_record_key(&self, sequence: u64) -> Pubkey {
+        ReportRecord::address(&self.config, REPORT_LANE_ID, sequence).0
+    }
+
+    pub fn recall_marker_key(&self, transfer_id: &[u8; 32]) -> Pubkey {
+        RecallSentMarker::address(&self.config, transfer_id).0
+    }
+
+    /// Every account the outbound instructions read.
+    pub fn outbound_accounts(&self, sequence: u64) -> OutboundAccounts {
+        OutboundAccounts {
+            payer: self.outsider.pubkey(),
+            remote_config: self.config,
+            risk_config: self.risk(),
+            strategy_config: self.strategy(),
+            remote_position: self.position_key(),
+            outbound_lane: self.outbound_lane_key(),
+            custody_token_account: self.custody,
+            adapter_state: self.adapter_state,
+            report_record: self.report_record_key(sequence),
+            system_program: anchor_lang::system_program::ID,
+        }
+    }
+
+    pub fn initialize_outbound_state(&mut self) -> TxResult {
+        let lane = self.outbound_lane_key();
+        let administrator = self.administrator.pubkey();
+        self.initialize_outbound_state_with(administrator, self.config, lane)
+    }
+
+    pub fn initialize_outbound_state_with(
+        &mut self,
+        administrator: Pubkey,
+        remote_config: Pubkey,
+        outbound_lane: Pubkey,
+    ) -> TxResult {
+        let metas = solevm_remote_leg::accounts::InitializeOutboundState {
+            administrator,
+            remote_config,
+            outbound_lane,
+            system_program: anchor_lang::system_program::ID,
+        }
+        .to_account_metas(None);
+
+        let instruction = Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::InitializeOutboundState {}.data(),
+        };
+        self.send_signed_by_named(instruction, administrator)
+    }
+
+    /// Signs with whichever known key the accounts name as the signer.
+    fn send_signed_by_named(&mut self, instruction: Instruction, signer: Pubkey) -> TxResult {
+        let payer = self.administrator.insecure_clone();
+        if signer == payer.pubkey() {
+            return self.send_as(instruction, &payer, &[&payer]);
+        }
+        let named = if signer == self.guardian.pubkey() {
+            self.guardian.insecure_clone()
+        } else if signer == self.verifier.pubkey() {
+            self.verifier.insecure_clone()
+        } else {
+            self.outsider.insecure_clone()
+        };
+        self.send_as(instruction, &payer, &[&payer, &named])
+    }
+
+    pub fn publish_report(&mut self, epoch_id: u64) -> TxResult {
+        let sequence = self.outbound_lane().next_sequence;
+        let accounts = self.outbound_accounts(sequence);
+        self.publish_report_with(accounts, epoch_id)
+    }
+
+    pub fn publish_report_with(&mut self, accounts: OutboundAccounts, epoch_id: u64) -> TxResult {
+        let instruction = self.publish_report_instruction(accounts, epoch_id);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn publish_report_instruction(
+        &self,
+        accounts: OutboundAccounts,
+        epoch_id: u64,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::PublishRemoteReport {
+            payer: accounts.payer,
+            remote_config: accounts.remote_config,
+            risk_config: accounts.risk_config,
+            strategy_config: accounts.strategy_config,
+            remote_position: accounts.remote_position,
+            outbound_lane: accounts.outbound_lane,
+            custody_token_account: accounts.custody_token_account,
+            adapter_state: accounts.adapter_state,
+            report_record: accounts.report_record,
+            system_program: accounts.system_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::PublishRemoteReport { epoch_id }.data(),
+        }
+    }
+
+    pub fn publish_recall_sent(&mut self, transfer_id: [u8; 32]) -> TxResult {
+        let sequence = self.outbound_lane().next_sequence;
+        let accounts = self.recall_sent_accounts(transfer_id, sequence);
+        self.publish_recall_sent_with(accounts)
+    }
+
+    pub fn recall_sent_accounts(&self, transfer_id: [u8; 32], sequence: u64) -> RecallSentAccounts {
+        RecallSentAccounts {
+            payer: self.outsider.pubkey(),
+            remote_config: self.config,
+            risk_config: self.risk(),
+            transfer_record: self.transfer_key(&transfer_id),
+            outbound_lane: self.outbound_lane_key(),
+            report_record: self.report_record_key(sequence),
+            recall_sent_marker: self.recall_marker_key(&transfer_id),
+            system_program: anchor_lang::system_program::ID,
+        }
+    }
+
+    pub fn publish_recall_sent_with(&mut self, accounts: RecallSentAccounts) -> TxResult {
+        let instruction = self.publish_recall_sent_instruction(accounts);
+        let payer = self.outsider.insecure_clone();
+        self.send_as(instruction, &payer, &[&payer])
+    }
+
+    pub fn publish_recall_sent_instruction(&self, accounts: RecallSentAccounts) -> Instruction {
+        let metas = solevm_remote_leg::accounts::PublishRecallSent {
+            payer: accounts.payer,
+            remote_config: accounts.remote_config,
+            risk_config: accounts.risk_config,
+            transfer_record: accounts.transfer_record,
+            outbound_lane: accounts.outbound_lane,
+            report_record: accounts.report_record,
+            recall_sent_marker: accounts.recall_sent_marker,
+            system_program: accounts.system_program,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::PublishRecallSent {}.data(),
+        }
+    }
+
+    pub fn outbound_lane(&self) -> OutboundLane {
+        let account = self
+            .svm
+            .get_account(&self.outbound_lane_key())
+            .expect("outbound lane exists");
+        OutboundLane::try_deserialize(&mut account.data.as_slice()).expect("lane decodes")
+    }
+
+    pub fn outbound_lane_exists(&self) -> bool {
+        self.svm
+            .get_account(&self.outbound_lane_key())
+            .is_some_and(|account| {
+                account.owner == solevm_remote_leg::ID && !account.data.is_empty()
+            })
+    }
+
+    pub fn report_record(&self, sequence: u64) -> ReportRecord {
+        let account = self
+            .svm
+            .get_account(&self.report_record_key(sequence))
+            .expect("report record exists");
+        ReportRecord::try_deserialize(&mut account.data.as_slice()).expect("record decodes")
+    }
+
+    pub fn report_record_exists(&self, sequence: u64) -> bool {
+        self.svm
+            .get_account(&self.report_record_key(sequence))
+            .is_some_and(|account| {
+                account.owner == solevm_remote_leg::ID && !account.data.is_empty()
+            })
+    }
+
+    pub fn recall_marker(&self, transfer_id: &[u8; 32]) -> RecallSentMarker {
+        let account = self
+            .svm
+            .get_account(&self.recall_marker_key(transfer_id))
+            .expect("marker exists");
+        RecallSentMarker::try_deserialize(&mut account.data.as_slice()).expect("marker decodes")
+    }
+
+    /// Sends a publication and returns the event it emitted.
+    pub fn publish_and_capture<T>(&mut self, instruction: Instruction) -> T
+    where
+        T: anchor_lang::Discriminator + anchor_lang::AnchorDeserialize,
+    {
+        let payer = self.outsider.insecure_clone();
+        self.svm.expire_blockhash();
+        let transaction = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&payer.pubkey()),
+            &[&payer],
+            self.svm.latest_blockhash(),
+        );
+        let meta = self
+            .svm
+            .send_transaction(transaction)
+            .expect("publication lands");
+        last_event(&meta.logs)
+    }
+
+    /// Sends one publication signed by a chosen payer and reads its event.
+    pub fn publish_and_capture_as<T>(&mut self, instruction: Instruction, payer: &Keypair) -> T
+    where
+        T: anchor_lang::Discriminator + anchor_lang::AnchorDeserialize,
+    {
+        self.svm.expire_blockhash();
+        let transaction = Transaction::new_signed_with_payer(
+            &[instruction],
+            Some(&payer.pubkey()),
+            &[payer],
+            self.svm.latest_blockhash(),
+        );
+        let meta = self
+            .svm
+            .send_transaction(transaction)
+            .expect("publication lands");
+        last_event(&meta.logs)
+    }
+
+    /// How many accounts this program owns right now.
+    pub fn owned_account_count(&self) -> usize {
+        [
+            self.config,
+            self.risk(),
+            self.strategy(),
+            self.position_key(),
+            self.outbound_lane_key(),
+        ]
+        .into_iter()
+        .chain((1..8).map(|sequence| self.report_record_key(sequence)))
+        .chain([
+            self.recall_marker_key(&ALLOCATE_TRANSFER_ID),
+            self.recall_marker_key(&RECALL_TRANSFER_ID),
+        ])
+        .filter(|key| {
+            self.svm
+                .get_account(key)
+                .is_some_and(|account| account.owner == solevm_remote_leg::ID)
+        })
+        .count()
+    }
+
+    /// Gives one account to a stranger, keeping its lamports and size.
+    pub fn give_account_to(&mut self, key: Pubkey, owner: Pubkey, space: usize) {
+        let lamports = self.svm.minimum_balance_for_rent_exemption(space);
+        self.svm
+            .set_account(
+                key,
+                Account {
+                    lamports,
+                    data: vec![0u8; space],
+                    owner,
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            )
+            .unwrap();
+    }
+
+    /// Forces a token balance, the way an outside transfer would.
+    pub fn set_token_amount(&mut self, key: Pubkey, amount: u64) {
+        let mut account = self.svm.get_account(&key).expect("token account exists");
+        let mut token = spl_token::state::Account::unpack(&account.data).expect("token decodes");
+        token.amount = amount;
+        token.pack_into_slice(&mut account.data);
+        self.svm.set_account(key, account).unwrap();
+    }
+
+    /// Rewrites the principal the adapter records, leaving its vault alone.
+    pub fn set_adapter_principal(&mut self, principal: u64) {
+        let mut account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter state exists");
+        let offset = solevm_remote_leg::adapter::PRINCIPAL_OFFSET;
+        account.data[offset..offset + 8].copy_from_slice(&principal.to_le_bytes());
+        self.svm.set_account(self.adapter_state, account).unwrap();
+    }
+
+    /// Rewrites one byte of an account, the way corruption would.
+    pub fn overwrite_byte(&mut self, key: Pubkey, offset: usize, value: u8) {
+        let mut account = self.svm.get_account(&key).expect("account exists");
+        account.data[offset] = value;
+        self.svm.set_account(key, account).unwrap();
+    }
+
+    /// Shortens the adapter account, as a smaller layout would.
+    pub fn truncate_adapter_state(&mut self, length: usize) {
+        let mut account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter state exists");
+        account.data.truncate(length);
+        self.svm.set_account(self.adapter_state, account).unwrap();
+    }
+
+    /// Hands the adapter account to another program.
+    pub fn reassign_adapter_state(&mut self, owner: Pubkey) {
+        let mut account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter state exists");
+        account.owner = owner;
+        self.svm.set_account(self.adapter_state, account).unwrap();
+    }
+
+    /// Rewrites the account tag the adapter wrote.
+    pub fn overwrite_adapter_tag(&mut self, tag: [u8; 8]) {
+        let mut account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter state exists");
+        account.data[..8].copy_from_slice(&tag);
+        self.svm.set_account(self.adapter_state, account).unwrap();
+    }
+
+    /// Principal the adapter records in its own account.
+    pub fn adapter_principal(&self) -> u64 {
+        let account = self
+            .svm
+            .get_account(&self.adapter_state)
+            .expect("adapter state exists");
+        let offset = solevm_remote_leg::adapter::PRINCIPAL_OFFSET;
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(&account.data[offset..offset + 8]);
+        u64::from_le_bytes(bytes)
+    }
+
+    /// Logs of the last transaction this fixture sent.
+    pub fn last_logs(&self) -> Vec<String> {
+        self.last_logs.clone()
+    }
+
+    /// A leg funded, deployed and ready to publish reports.
+    pub fn ready_to_publish() -> Self {
+        let mut fixture = Self::deployed();
+        fixture
+            .initialize_outbound_state()
+            .expect("outbound state initializes");
+        fixture
+    }
+}
+
+/// Every account the report publication instruction reads.
+#[derive(Clone, Copy, Debug)]
+pub struct OutboundAccounts {
+    pub payer: Pubkey,
+    pub remote_config: Pubkey,
+    pub risk_config: Pubkey,
+    pub strategy_config: Pubkey,
+    pub remote_position: Pubkey,
+    pub outbound_lane: Pubkey,
+    pub custody_token_account: Pubkey,
+    pub adapter_state: Pubkey,
+    pub report_record: Pubkey,
+    pub system_program: Pubkey,
+}
+
+/// Every account the recall notice instruction reads.
+#[derive(Clone, Copy, Debug)]
+pub struct RecallSentAccounts {
+    pub payer: Pubkey,
+    pub remote_config: Pubkey,
+    pub risk_config: Pubkey,
+    pub transfer_record: Pubkey,
+    pub outbound_lane: Pubkey,
+    pub report_record: Pubkey,
+    pub recall_sent_marker: Pubkey,
+    pub system_program: Pubkey,
+}
+
+/// Reads the last event of one type out of the transaction logs.
+///
+/// Anchor writes events as base64 program data, so the bytes travel whole.
+pub fn last_event<T>(logs: &[String]) -> T
+where
+    T: anchor_lang::Discriminator + anchor_lang::AnchorDeserialize,
+{
+    logs.iter()
+        .filter_map(|line| line.strip_prefix("Program data: "))
+        .filter_map(|payload| BASE64.decode(payload).ok())
+        .filter_map(|decoded| {
+            let (tag, body) = decoded.split_at_checked(8)?;
+            if tag != T::DISCRIMINATOR {
+                return None;
+            }
+            T::try_from_slice(body).ok()
+        })
+        .next_back()
+        .expect("an event of this type was emitted")
 }
 
 /// Every account the control state instruction reads.

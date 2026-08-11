@@ -10,9 +10,13 @@ pub mod control;
 pub mod custody;
 pub mod errors;
 pub mod events;
+pub mod hashing;
 pub mod instructions;
 pub mod message;
+pub mod outbound;
+pub mod outbound_message;
 pub mod records;
+pub mod remote_state;
 pub mod state;
 pub mod strategy;
 
@@ -23,12 +27,18 @@ pub use control::{
 pub use errors::RemoteLegError;
 pub use events::{
     AllocateAccepted, AllocationAttributed, AllocationCompleted, AssetsDeployed, ConfigUpdated,
-    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, RecallAccepted,
-    RecallAssetsSent, RecallCompleted, RecallCustodyReserved, RemoteLegFrozen,
-    RemoteLegInitialized, ReplayWatermarkAdvanced, StrategyStateInitialized,
-    StrategyWithdrawalCompleted,
+    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, OutboundStateInitialized,
+    RecallAccepted, RecallAssetsSent, RecallCompleted, RecallCustodyReserved, RecallSentPublished,
+    RemoteLegFrozen, RemoteLegInitialized, RemoteReportPublished, ReplayWatermarkAdvanced,
+    StrategyStateInitialized, StrategyWithdrawalCompleted,
 };
 pub use instructions::*;
+pub use outbound::{
+    FIRST_OUTBOUND_SEQUENCE, OUTBOUND_LANE_SEED, OutboundLane, RECALL_SENT_MARKER_SEED,
+    REPORT_RECORD_SEED, RecallSentMarker, ReportRecord, ReportType,
+};
+pub use outbound_message::MAX_REPORT_LEN;
+pub use remote_state::{REMOTE_STATE_DOMAIN, REMOTE_STATE_PREIMAGE_LEN, RemoteStateView};
 pub use state::{
     CUSTODY_AUTHORITY_SEED, MIN_CONFIG_VERSION, REMOTE_CONFIG_RESERVED, REMOTE_CONFIG_SEED,
     REQUIRED_MINT_DECIMALS, RemoteConfig, STATE_VERSION,
@@ -121,5 +131,17 @@ pub mod solevm_remote_leg {
 
     pub fn send_recall(ctx: Context<SendRecall>, maximum_amount: u64) -> Result<()> {
         instructions::send::process_send_recall(ctx, maximum_amount)
+    }
+
+    pub fn initialize_outbound_state(ctx: Context<InitializeOutboundState>) -> Result<()> {
+        instructions::outbound_state::process_initialize_outbound_state(ctx)
+    }
+
+    pub fn publish_remote_report(ctx: Context<PublishRemoteReport>, epoch_id: u64) -> Result<()> {
+        instructions::publish_report::process_publish_remote_report(ctx, epoch_id)
+    }
+
+    pub fn publish_recall_sent(ctx: Context<PublishRecallSent>) -> Result<()> {
+        instructions::publish_recall_sent::process_publish_recall_sent(ctx)
     }
 }

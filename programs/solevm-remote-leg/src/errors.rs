@@ -160,4 +160,42 @@ pub enum RemoteLegError {
     AccountingDeficit,
     #[msg("amount does not fit the token amount type")]
     AmountTooLarge,
+    #[msg("outbound state is already initialized")]
+    OutboundStateAlreadyInitialized,
+    #[msg("outbound lane account is not the configured one")]
+    InvalidOutboundLane,
+    #[msg("report record account is not usable")]
+    InvalidReportRecord,
+    #[msg("report type does not match the record")]
+    InvalidReportType,
+    #[msg("report sequence is not the next one")]
+    InvalidReportSequence,
+    #[msg("publication timestamp is not usable")]
+    InvalidPublicationTimestamp,
+    #[msg("this sequence already holds a published report")]
+    ReportAlreadyPublished,
+    #[msg("recall has not finished unwinding")]
+    RecallNotComplete,
+    #[msg("this recall already published its notice")]
+    RecallSentAlreadyPublished,
+    #[msg("recall record does not match the notice")]
+    InvalidRecallIdentity,
+    #[msg("remote state cannot be committed")]
+    InvalidRemoteState,
+    #[msg("remote state commitment is not usable")]
+    InvalidRemoteStateCommitment,
+    #[msg("reported value does not match remote principal")]
+    InvalidReportedValue,
+    #[msg("encoded message has an unexpected length")]
+    InvalidEncodedLength,
+    #[msg("encoded message is above the transport budget")]
+    ReportTooLarge,
+    #[msg("destination reference is not the configured escrow")]
+    InvalidDestinationReference,
+    #[msg("probe state is not the canonical no probe value")]
+    InvalidProbeState,
+    #[msg("adapter account layout does not match the pinned one")]
+    AdapterStateMismatch,
+    #[msg("canonical message could not be built")]
+    InvalidOutboundMessage,
 }

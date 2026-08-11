@@ -21,16 +21,16 @@ use solevm_remote_leg::MessageClass;
 
 const STRATEGY_STATE_LIMIT: u64 = 45_000;
 const RECONCILE_LIMIT: u64 = 15_000;
-const ALLOCATE_LIMIT: u64 = 170_000;
+const ALLOCATE_LIMIT: u64 = 78_000;
 const ATTRIBUTE_LIMIT: u64 = 25_000;
 const DEPLOY_LIMIT: u64 = 60_000;
-const RECALL_LIMIT: u64 = 170_000;
+const RECALL_LIMIT: u64 = 78_000;
 const WITHDRAW_LIMIT: u64 = 70_000;
 const SEND_LIMIT: u64 = 32_000;
 /// A rejection before any account work stays cheap.
 const REJECTED_LIMIT: u64 = 20_000;
 /// A rejection after decoding still pays for the canonical message.
-const REJECTED_MESSAGE_LIMIT: u64 = 120_000;
+const REJECTED_MESSAGE_LIMIT: u64 = 50_000;
 
 const AMOUNT: u64 = 1_000_000;
 

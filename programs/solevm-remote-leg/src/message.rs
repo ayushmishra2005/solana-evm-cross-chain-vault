@@ -4,17 +4,15 @@
 //! This module only binds a decoded message to the state of this deployment.
 
 use anchor_lang::prelude::*;
-use protocol_types::{DecodeError, Header, MESSAGE_ID_DOMAIN, Message, keccak256, layout};
+use protocol_types::{COMMITMENT_DOMAIN, DecodeError, Header, MESSAGE_ID_DOMAIN, Message, layout};
 
 use crate::control::{MessageClass, ReplayLane};
 use crate::errors::RemoteLegError;
+use crate::hashing;
 use crate::state::RemoteConfig;
 
 /// Largest canonical message the protocol defines.
 pub const MAX_MESSAGE_LEN: usize = layout::MAX_MESSAGE_LEN;
-
-/// Width of the domain tag plus the largest message.
-const PREIMAGE_LEN: usize = MESSAGE_ID_DOMAIN.len() + MAX_MESSAGE_LEN;
 
 /// A message that passed every rule, with the id of its exact bytes.
 #[derive(Clone, Copy, Debug)]
@@ -27,33 +25,18 @@ pub struct ValidatedMessage {
 ///
 /// The bytes are hashed as received, so a re-encode can never change the id.
 pub fn message_id(encoded: &[u8]) -> Result<[u8; 32]> {
-    let domain = MESSAGE_ID_DOMAIN;
-    let mut preimage = [0u8; PREIMAGE_LEN];
-    let (head, tail) = preimage.split_at_mut(domain.len());
-    head.copy_from_slice(domain);
-    let body = tail
-        .get_mut(..encoded.len())
-        .ok_or(RemoteLegError::MessageTooLarge)?;
-    body.copy_from_slice(encoded);
-
-    let width = domain
-        .len()
-        .checked_add(encoded.len())
-        .ok_or(RemoteLegError::ArithmeticOverflow)?;
-    let slot = preimage
-        .get(..width)
-        .ok_or(RemoteLegError::MessageTooLarge)?;
-    Ok(keccak256(slot))
+    require_gte!(
+        MAX_MESSAGE_LEN,
+        encoded.len(),
+        RemoteLegError::MessageTooLarge
+    );
+    Ok(hashing::keccak256_parts(&[MESSAGE_ID_DOMAIN, encoded]))
 }
 
 /// Next link of the lane hash chain.
 #[must_use]
 pub fn next_commitment(previous: &[u8; 32], message_id: &[u8; 32]) -> [u8; 32] {
-    protocol_types::next_commitment(
-        protocol_types::Commitment::new(*previous),
-        protocol_types::MessageId::new(*message_id),
-    )
-    .to_bytes()
+    hashing::keccak256_parts(&[COMMITMENT_DOMAIN, previous, message_id])
 }
 
 /// Reads the chain clock and narrows it to the protocol time type.
@@ -175,6 +158,7 @@ pub fn validate_inbound(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hashing::keccak256;
     use protocol_types::{Commitment, MessageId};
 
     #[test]

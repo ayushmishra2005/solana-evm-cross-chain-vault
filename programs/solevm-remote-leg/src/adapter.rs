@@ -22,6 +22,12 @@ pub const PRINCIPAL_OFFSET: usize = 236;
 /// Width of the adapter principal field.
 pub const PRINCIPAL_LEN: usize = 8;
 
+/// Account tag the adapter writes in front of its state.
+pub const STATE_DISCRIMINATOR: [u8; 8] = [88, 130, 126, 170, 183, 106, 151, 212];
+
+/// Exact width of the adapter state account.
+pub const STATE_LEN: usize = 262;
+
 /// Accounts every adapter call shares, in their fixed order.
 pub struct AdapterCall<'info> {
     pub adapter_program: AccountInfo<'info>,
@@ -105,6 +111,30 @@ impl<'info> AdapterCall<'info> {
         invoke_signed(&instruction, infos, &[signer_seeds])?;
         Ok(())
     }
+}
+
+/// Checks the adapter account still has the layout this program was built for.
+///
+/// The adapter is immutable and fixed by configuration, so any difference
+/// means the account is not the one the leg deployed into.
+pub fn check_layout(adapter_state: &AccountInfo, adapter_program: &Pubkey) -> Result<()> {
+    require_keys_eq!(
+        *adapter_state.owner,
+        *adapter_program,
+        RemoteLegError::AdapterStateMismatch
+    );
+
+    let data = adapter_state.try_borrow_data()?;
+    require_eq!(data.len(), STATE_LEN, RemoteLegError::AdapterStateMismatch);
+
+    let tag = data
+        .get(..STATE_DISCRIMINATOR.len())
+        .ok_or(RemoteLegError::AdapterStateMismatch)?;
+    require!(
+        tag == STATE_DISCRIMINATOR,
+        RemoteLegError::AdapterStateMismatch
+    );
+    Ok(())
 }
 
 /// Reads the principal the adapter records in its own account.

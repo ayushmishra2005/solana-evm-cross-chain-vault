@@ -223,6 +223,52 @@ pub struct RecallCompleted {
     pub completed_at: i64,
 }
 
+/// Emitted once, when the outbound report lane is created.
+#[event]
+#[derive(Debug)]
+pub struct OutboundStateInitialized {
+    pub remote_config: Pubkey,
+    pub outbound_lane: Pubkey,
+    pub lane_id: u32,
+    pub next_sequence: u64,
+    pub initialized_at: i64,
+}
+
+/// Emitted for every published RemoteReport, with its canonical bytes.
+#[event]
+#[derive(Debug)]
+pub struct RemoteReportPublished {
+    pub remote_config: Pubkey,
+    pub report_record: Pubkey,
+    pub lane_id: u32,
+    pub sequence: u64,
+    pub message_id: [u8; 32],
+    pub body_hash: [u8; 32],
+    pub previous_commitment: [u8; 32],
+    pub next_commitment: [u8; 32],
+    pub encoded_len: u16,
+    pub message_bytes: Vec<u8>,
+    pub published_at: i64,
+}
+
+/// Emitted for every published RecallSent, with its canonical bytes.
+#[event]
+#[derive(Debug)]
+pub struct RecallSentPublished {
+    pub remote_config: Pubkey,
+    pub report_record: Pubkey,
+    pub transfer_id: [u8; 32],
+    pub lane_id: u32,
+    pub sequence: u64,
+    pub message_id: [u8; 32],
+    pub body_hash: [u8; 32],
+    pub previous_commitment: [u8; 32],
+    pub next_commitment: [u8; 32],
+    pub encoded_len: u16,
+    pub message_bytes: Vec<u8>,
+    pub published_at: i64,
+}
+
 /// Emitted when a settled record is closed and its rent returns.
 #[event]
 #[derive(Debug)]
