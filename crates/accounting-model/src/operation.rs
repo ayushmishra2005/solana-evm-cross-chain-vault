@@ -1,4 +1,4 @@
-use crate::amount::{AccountId, AssetAmount, EpochId, ShareAmount, Timestamp};
+use crate::amount::{AccountId, AssetAmount, EpochId, ShareAmount, Timestamp, TransferId};
 
 /// Every state change the model accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,4 +52,31 @@ pub enum Operation {
     Freeze {
         actor: AccountId,
     },
+    BeginAllocate {
+        actor: AccountId,
+        transfer_id: TransferId,
+        amount: AssetAmount,
+    },
+    CompleteAllocation {
+        transfer_id: TransferId,
+        reported_value: AssetAmount,
+    },
+    BeginRecall {
+        actor: AccountId,
+        transfer_id: TransferId,
+        amount: AssetAmount,
+    },
+    AcceptRecallSent {
+        transfer_id: TransferId,
+        principal: AssetAmount,
+        actual: AssetAmount,
+        loss: AssetAmount,
+    },
+    ObserveInbound {
+        amount: AssetAmount,
+    },
+    ApplyRemoteValuation {
+        reported_value: AssetAmount,
+    },
+    LockRemoteValuation,
 }

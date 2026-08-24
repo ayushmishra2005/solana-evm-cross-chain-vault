@@ -14,6 +14,11 @@ sha3 = { version = "=0.12.0", default-features = false }
 [dev-dependencies]
 proptest = "=1.11.0"
 
+[[bin]]
+name = "protocol-codec-ffi"
+path = "src/bin/protocol_codec_ffi.rs"
+required-features = ["std"]
+
 [features]
 # Without features the crate is no_std and allocation free.
 default = ["std"]

@@ -1,7 +1,9 @@
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::amount::{AccountId, AssetAmount, ConfigVersion, EpochId, ShareAmount, Timestamp};
+use crate::amount::{
+    AccountId, AssetAmount, ConfigVersion, EpochId, ShareAmount, Timestamp, TransferId,
+};
 use crate::error::Rejection;
 use crate::math::{self, PricingBasis};
 use crate::request::{DepositRequest, RedeemRequest, RequestKey, RequestState};
@@ -17,6 +19,14 @@ pub enum VaultState {
 pub enum EpochPhase {
     Open,
     CutOff,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CycleKind {
+    #[default]
+    None,
+    Allocate,
+    Recall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,21 +73,34 @@ pub struct Buckets {
     pub idle_backing: AssetAmount,
     pub claim_reserve: AssetAmount,
     pub unattributed_balance: AssetAmount,
+    pub unattributed_inbound: AssetAmount,
+    pub outbound_in_transit: AssetAmount,
+    pub accepted_remote_value: AssetAmount,
+    pub inbound_in_transit: AssetAmount,
 }
 
 impl Buckets {
-    fn total(&self) -> Result<AssetAmount, Rejection> {
+    fn physical(&self) -> Result<AssetAmount, Rejection> {
         self.pending_deposit_escrow
             .checked_add(self.idle_backing)?
             .checked_add(self.claim_reserve)?
-            .checked_add(self.unattributed_balance)
+            .checked_add(self.unattributed_balance)?
+            .checked_add(self.unattributed_inbound)
+    }
+
+    fn total(&self) -> Result<AssetAmount, Rejection> {
+        self.physical()?
+            .checked_add(self.outbound_in_transit)?
+            .checked_add(self.accepted_remote_value)?
+            .checked_add(self.inbound_in_transit)
     }
 
     /// Buckets that never back the share price.
     fn excluded_from_nav(&self) -> Result<AssetAmount, Rejection> {
         self.pending_deposit_escrow
             .checked_add(self.claim_reserve)?
-            .checked_add(self.unattributed_balance)
+            .checked_add(self.unattributed_balance)?
+            .checked_add(self.unattributed_inbound)
     }
 }
 
@@ -223,6 +246,16 @@ pub struct State {
     pub claimable_deposit_shares: ShareAmount,
     pub burned_redemption_shares: ShareAmount,
     pub initial_asset_supply: AssetAmount,
+    pub remote_principal_cap: AssetAmount,
+    pub recognized_loss: AssetAmount,
+    pub external_inflow: AssetAmount,
+    pub pending_recall_id: TransferId,
+    pub pending_recall_principal: AssetAmount,
+    pub active_cycle: CycleKind,
+    pub active_transfer_id: TransferId,
+    pub active_amount: AssetAmount,
+    pub used_transfer_ids: BTreeSet<TransferId>,
+    pub epoch_valuation_locked: BTreeMap<EpochId, AssetAmount>,
 }
 
 impl State {
@@ -281,13 +314,41 @@ impl State {
             claimable_deposit_shares: ShareAmount::ZERO,
             burned_redemption_shares: ShareAmount::ZERO,
             initial_asset_supply: supply,
+            remote_principal_cap: AssetAmount::ZERO,
+            recognized_loss: AssetAmount::ZERO,
+            external_inflow: AssetAmount::ZERO,
+            pending_recall_id: TransferId::ZERO,
+            pending_recall_principal: AssetAmount::ZERO,
+            active_cycle: CycleKind::None,
+            active_transfer_id: TransferId::ZERO,
+            active_amount: AssetAmount::ZERO,
+            used_transfer_ids: BTreeSet::new(),
+            epoch_valuation_locked: BTreeMap::new(),
         })
     }
 
     /// Assets that back the share price. Escrow and reserves are excluded.
     #[must_use]
     pub const fn managed_nav(&self) -> AssetAmount {
-        self.buckets.idle_backing
+        self.managed_backing()
+    }
+
+    #[must_use]
+    pub const fn managed_backing(&self) -> AssetAmount {
+        let mut total = self.buckets.idle_backing.raw();
+        total = total.saturating_add(self.buckets.outbound_in_transit.raw());
+        total = total.saturating_add(self.buckets.accepted_remote_value.raw());
+        total = total.saturating_add(self.buckets.inbound_in_transit.raw());
+        AssetAmount::new(total)
+    }
+
+    #[must_use]
+    pub fn has_remote_exposure(&self) -> bool {
+        !self.buckets.outbound_in_transit.is_zero()
+            || !self.buckets.accepted_remote_value.is_zero()
+            || !self.buckets.inbound_in_transit.is_zero()
+            || !self.remote_principal_cap.is_zero()
+            || !self.pending_recall_principal.is_zero()
     }
 
     #[must_use]

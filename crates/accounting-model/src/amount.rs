@@ -149,3 +149,26 @@ impl ConfigVersion {
         self.0
     }
 }
+
+/// Identity of one cross-chain transfer. Never reused.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TransferId([u8; 32]);
+
+impl TransferId {
+    pub const ZERO: Self = Self([0u8; 32]);
+
+    #[must_use]
+    pub const fn new(raw: [u8; 32]) -> Self {
+        Self(raw)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> [u8; 32] {
+        self.0
+    }
+
+    #[must_use]
+    pub fn is_zero(self) -> bool {
+        self.0 == [0u8; 32]
+    }
+}

@@ -207,7 +207,7 @@ contract AccountingTest is VaultTestBase {
         assertEq(
             vault.accountedAssets(),
             vault.idleBacking() + vault.pendingDepositEscrow() + vault.claimReserve()
-                + vault.unattributedBalance()
+                + vault.unattributedBalance() + vault.unattributedInbound()
         );
     }
 

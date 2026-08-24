@@ -97,8 +97,23 @@ pub fn check_invariants(state: &State) -> Result<(), Violation> {
 
 fn check_asset_conservation(state: &State) -> Result<(), Violation> {
     let held = state.total_account_assets()?;
-    let bucketed = state.total_bucket_assets()?;
-    if held.checked_add(bucketed)? == state.initial_asset_supply {
+    let physical = state
+        .buckets
+        .pending_deposit_escrow
+        .checked_add(state.buckets.idle_backing)?
+        .checked_add(state.buckets.claim_reserve)?
+        .checked_add(state.buckets.unattributed_balance)?;
+    let off_evm = state
+        .buckets
+        .outbound_in_transit
+        .checked_add(state.buckets.inbound_in_transit)?
+        .checked_add(state.remote_principal_cap)?
+        .checked_add(state.recognized_loss)?;
+    let accounted = held.checked_add(physical)?.checked_add(off_evm)?;
+    let issued = state
+        .initial_asset_supply
+        .checked_add(state.external_inflow)?;
+    if accounted == issued {
         Ok(())
     } else {
         Err(Violation::AssetConservation)
@@ -279,6 +294,9 @@ fn check_finalized_terms(state: &State) -> Result<(), Violation> {
 
 /// Settlement rounds in favour of the vault, so the price can only rise.
 fn check_price_never_falls(state: &State) -> Result<(), Violation> {
+    if !state.recognized_loss.is_zero() {
+        return Ok(());
+    }
     let mut earlier: Option<&EpochTerms> = None;
     for outcome in state.epochs.values() {
         let Some(terms) = outcome.finalized() else {

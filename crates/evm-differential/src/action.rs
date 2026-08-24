@@ -1,4 +1,6 @@
-use accounting_model::{AccountId, AssetAmount, EpochId, Operation, ShareAmount, Timestamp};
+use accounting_model::{
+    AccountId, AssetAmount, EpochId, Operation, ShareAmount, Timestamp, TransferId,
+};
 
 /// Number of ordinary users in every scenario.
 pub const USER_COUNT: usize = 4;
@@ -44,10 +46,17 @@ pub enum ActionKind {
     Unpause = 12,
     Freeze = 13,
     AbortEpoch = 14,
+    BeginAllocate = 15,
+    CompleteAllocation = 16,
+    BeginRecall = 17,
+    AcceptRecallSent = 18,
+    ObserveInbound = 19,
+    ApplyRemoteValuation = 20,
+    LockRemoteValuation = 21,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 22] = [
         Self::RequestDeposit,
         Self::CancelDeposit,
         Self::RequestRedeem,
@@ -63,6 +72,13 @@ impl ActionKind {
         Self::Unpause,
         Self::Freeze,
         Self::AbortEpoch,
+        Self::BeginAllocate,
+        Self::CompleteAllocation,
+        Self::BeginRecall,
+        Self::AcceptRecallSent,
+        Self::ObserveInbound,
+        Self::ApplyRemoteValuation,
+        Self::LockRemoteValuation,
     ];
 
     #[must_use]
@@ -98,6 +114,13 @@ impl ActionKind {
             Self::Unpause => "Unpause",
             Self::Freeze => "Freeze",
             Self::AbortEpoch => "AbortEpoch",
+            Self::BeginAllocate => "BeginAllocate",
+            Self::CompleteAllocation => "CompleteAllocation",
+            Self::BeginRecall => "BeginRecall",
+            Self::AcceptRecallSent => "AcceptRecallSent",
+            Self::ObserveInbound => "ObserveInbound",
+            Self::ApplyRemoteValuation => "ApplyRemoteValuation",
+            Self::LockRemoteValuation => "LockRemoteValuation",
         }
     }
 }
@@ -110,6 +133,14 @@ pub struct Action {
     pub amount: u128,
     pub epoch: u64,
     pub timestamp: u64,
+    pub aux0: u128,
+    pub aux1: u128,
+}
+
+fn transfer_id_from(aux0: u128) -> TransferId {
+    let mut raw = [0u8; 32];
+    raw[16..32].copy_from_slice(&aux0.to_be_bytes());
+    TransferId::new(raw)
 }
 
 impl Action {
@@ -127,6 +158,8 @@ impl Action {
             amount,
             epoch,
             timestamp,
+            aux0: 0,
+            aux1: 0,
         }
     }
 
@@ -159,6 +192,33 @@ impl Action {
             ActionKind::Unpause => Operation::Unpause { actor: account },
             ActionKind::Freeze => Operation::Freeze { actor: account },
             ActionKind::AbortEpoch => Operation::AbortEpoch { actor: account },
+            ActionKind::BeginAllocate => Operation::BeginAllocate {
+                actor: account,
+                transfer_id: transfer_id_from(self.aux0),
+                amount: AssetAmount::new(self.amount),
+            },
+            ActionKind::CompleteAllocation => Operation::CompleteAllocation {
+                transfer_id: transfer_id_from(self.aux0),
+                reported_value: AssetAmount::new(self.amount),
+            },
+            ActionKind::BeginRecall => Operation::BeginRecall {
+                actor: account,
+                transfer_id: transfer_id_from(self.aux0),
+                amount: AssetAmount::new(self.amount),
+            },
+            ActionKind::AcceptRecallSent => Operation::AcceptRecallSent {
+                transfer_id: transfer_id_from(self.aux0),
+                principal: AssetAmount::new(self.amount),
+                actual: AssetAmount::new(self.aux1),
+                loss: AssetAmount::new(self.amount.saturating_sub(self.aux1)),
+            },
+            ActionKind::ObserveInbound => Operation::ObserveInbound {
+                amount: AssetAmount::new(self.amount),
+            },
+            ActionKind::ApplyRemoteValuation => Operation::ApplyRemoteValuation {
+                reported_value: AssetAmount::new(self.amount),
+            },
+            ActionKind::LockRemoteValuation => Operation::LockRemoteValuation,
         }
     }
 }
@@ -191,6 +251,7 @@ mod tests {
     fn kinds_keep_their_wire_numbers() {
         assert_eq!(ActionKind::RequestDeposit.raw(), 0);
         assert_eq!(ActionKind::AbortEpoch.raw(), 14);
+        assert_eq!(ActionKind::LockRemoteValuation.raw(), 21);
         for (index, kind) in ActionKind::ALL.iter().enumerate() {
             assert_eq!(usize::from(kind.raw()), index);
         }

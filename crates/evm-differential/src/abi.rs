@@ -27,6 +27,11 @@ sol! {
         uint256[4] actorShares;
         uint256[4] actorDepositAssets;
         uint256[4] actorRedeemShares;
+        uint256 unattributedInbound;
+        uint256 outboundInTransit;
+        uint256 acceptedRemoteValue;
+        uint256 inboundInTransit;
+        uint256 remotePrincipalCap;
     }
 
     /// One operation with the outcome the model produced.
@@ -38,6 +43,8 @@ sol! {
         uint64 timestamp;
         uint8 expectedResult;
         uint256 expectedReturn;
+        uint256 aux0;
+        uint256 aux1;
     }
 
     /// What one settled epoch owes a single user.
@@ -117,6 +124,11 @@ impl From<&Snapshot> for AbiSnapshot {
             actorShares: words(&shot.actor_shares),
             actorDepositAssets: words(&shot.actor_deposit_assets),
             actorRedeemShares: words(&shot.actor_redeem_shares),
+            unattributedInbound: word(shot.unattributed_inbound),
+            outboundInTransit: word(shot.outbound_in_transit),
+            acceptedRemoteValue: word(shot.accepted_remote_value),
+            inboundInTransit: word(shot.inbound_in_transit),
+            remotePrincipalCap: word(shot.remote_principal_cap),
         }
     }
 }
@@ -180,6 +192,8 @@ impl From<&Scenario> for AbiScenario {
                     timestamp: entry.action.timestamp,
                     expectedResult: entry.result.raw(),
                     expectedReturn: word(entry.return_value),
+                    aux0: word(entry.action.aux0),
+                    aux1: word(entry.action.aux1),
                 })
                 .collect(),
             snapshots: scenario.snapshots.iter().map(AbiSnapshot::from).collect(),

@@ -322,7 +322,21 @@ impl Builder {
 
     /// Applies one operation at the current clock and records the outcome.
     pub fn exec(&mut self, kind: ActionKind, actor: u8, amount: u128, epoch: u64) {
-        let action = Action::new(kind, actor, amount, epoch, self.now);
+        self.exec_aux(kind, actor, amount, epoch, 0, 0);
+    }
+
+    pub fn exec_aux(
+        &mut self,
+        kind: ActionKind,
+        actor: u8,
+        amount: u128,
+        epoch: u64,
+        aux0: u128,
+        aux1: u128,
+    ) {
+        let mut action = Action::new(kind, actor, amount, epoch, self.now);
+        action.aux0 = aux0;
+        action.aux1 = aux1;
         let expected_return = self.return_value(action);
 
         let (result, return_value) = match apply(&self.state, action.to_operation()) {
@@ -378,6 +392,7 @@ impl Builder {
                 .redeem_requests
                 .get(&key)
                 .map_or(0, |request| request.shares.raw()),
+            ActionKind::ObserveInbound => action.amount,
             _ => 0,
         }
     }

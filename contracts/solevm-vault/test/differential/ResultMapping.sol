@@ -3,7 +3,10 @@ pragma solidity 0.8.30;
 
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
+import {RemoteAccounting} from "../../src/RemoteAccounting.sol";
+import {SolEVMVault} from "../../src/SolEVMVault.sol";
 import {ISolEVMVault} from "../../src/interfaces/ISolEVMVault.sol";
+import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {Code} from "./DifferentialTypes.sol";
 
 /// @notice Turns vault revert data into the result codes the generator uses.
@@ -64,6 +67,54 @@ library ResultMapping {
             return Code.TIMESTAMP_NOT_MONOTONIC;
         }
         if (selector == ISolEVMVault.InvariantViolation.selector) return Code.ARITHMETIC_FAILURE;
+        if (selector == SolEVMVault.RemoteValuationRequired.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == SolEVMVault.ValuationAlreadyFixed.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == SolEVMVault.InvalidAssetAttribution.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == SolEVMVault.InsufficientRemotePrincipal.selector) {
+            return Code.INSUFFICIENT_LIQUIDITY;
+        }
+        if (selector == SolEVMVault.RemoteAccountingNotBound.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.Unauthorized.selector) return Code.UNAUTHORIZED;
+        if (selector == RemoteAccounting.ActiveTransferExists.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.NoActiveTransfer.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.WrongTransferId.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.TransferIdReused.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.ZeroTransferId.selector) return Code.ZERO_AMOUNT;
+        if (selector == RemoteAccounting.AllocateNotAllowed.selector) {
+            return Code.INVALID_VAULT_STATE;
+        }
+        if (selector == RemoteAccounting.InsufficientRemotePrincipal.selector) {
+            return Code.INSUFFICIENT_LIQUIDITY;
+        }
+        if (selector == RemoteAccounting.InvalidRecallSentAmounts.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.InvalidReportEpoch.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.StaleValuation.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.ValuationAlreadyFixed.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == ProtocolCodec.ZeroAmount.selector) return Code.ZERO_AMOUNT;
         return Code.UNKNOWN;
     }
 

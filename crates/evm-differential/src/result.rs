@@ -118,6 +118,15 @@ pub fn code_for(kind: ActionKind, rejection: Rejection) -> ResultCode {
         Rejection::ArithmeticOverflow
         | Rejection::ArithmeticUnderflow
         | Rejection::DivisionByZero => ResultCode::ArithmeticFailure,
+        Rejection::ActiveTransferExists
+        | Rejection::NoActiveTransfer
+        | Rejection::TransferIdReused
+        | Rejection::InvalidRecallSentAmounts
+        | Rejection::RemoteValuationRequired
+        | Rejection::ValuationAlreadyFixed
+        | Rejection::InvalidAssetAttribution => ResultCode::InvalidConfiguration,
+        Rejection::InsufficientRemotePrincipal => ResultCode::InsufficientLiquidity,
+        Rejection::AllocateNotAllowed => ResultCode::InvalidVaultState,
         _ => ResultCode::ArithmeticFailure,
     }
 }
@@ -127,7 +136,7 @@ mod tests {
     use super::*;
 
     /// Every rejection the model can produce, so a new variant breaks the build.
-    const ALL: [Rejection; 27] = [
+    const ALL: [Rejection; 36] = [
         Rejection::InvalidVaultState,
         Rejection::EpochNotOpen,
         Rejection::EpochAlreadyOpen,
@@ -155,6 +164,15 @@ mod tests {
         Rejection::InvalidConfiguration,
         Rejection::DuplicateAccount,
         Rejection::TimestampNotMonotonic,
+        Rejection::ActiveTransferExists,
+        Rejection::NoActiveTransfer,
+        Rejection::TransferIdReused,
+        Rejection::InsufficientRemotePrincipal,
+        Rejection::InvalidRecallSentAmounts,
+        Rejection::RemoteValuationRequired,
+        Rejection::ValuationAlreadyFixed,
+        Rejection::AllocateNotAllowed,
+        Rejection::InvalidAssetAttribution,
     ];
 
     #[test]

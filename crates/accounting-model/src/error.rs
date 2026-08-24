@@ -31,6 +31,15 @@ pub enum Rejection {
     InvalidConfiguration,
     DuplicateAccount,
     TimestampNotMonotonic,
+    ActiveTransferExists,
+    NoActiveTransfer,
+    TransferIdReused,
+    InsufficientRemotePrincipal,
+    InvalidRecallSentAmounts,
+    RemoteValuationRequired,
+    ValuationAlreadyFixed,
+    AllocateNotAllowed,
+    InvalidAssetAttribution,
 }
 
 impl Rejection {
@@ -64,6 +73,15 @@ impl Rejection {
             Self::InvalidConfiguration => "configuration is invalid",
             Self::DuplicateAccount => "an account appears more than once",
             Self::TimestampNotMonotonic => "timestamp moves backwards",
+            Self::ActiveTransferExists => "an unresolved transfer cycle already exists",
+            Self::NoActiveTransfer => "no unresolved transfer cycle exists",
+            Self::TransferIdReused => "transfer id has already been used",
+            Self::InsufficientRemotePrincipal => "remote principal is too low",
+            Self::InvalidRecallSentAmounts => "recall sent amounts do not conserve principal",
+            Self::RemoteValuationRequired => "a post-cutoff remote valuation is required",
+            Self::ValuationAlreadyFixed => "remote valuation for this epoch is already fixed",
+            Self::AllocateNotAllowed => "a new allocation is not allowed in this state",
+            Self::InvalidAssetAttribution => "inbound assets cannot be attributed",
         }
     }
 }
@@ -81,7 +99,7 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    const ALL: [Rejection; 27] = [
+    const ALL: [Rejection; 36] = [
         Rejection::InvalidVaultState,
         Rejection::EpochNotOpen,
         Rejection::EpochAlreadyOpen,
@@ -109,6 +127,15 @@ mod tests {
         Rejection::InvalidConfiguration,
         Rejection::DuplicateAccount,
         Rejection::TimestampNotMonotonic,
+        Rejection::ActiveTransferExists,
+        Rejection::NoActiveTransfer,
+        Rejection::TransferIdReused,
+        Rejection::InsufficientRemotePrincipal,
+        Rejection::InvalidRecallSentAmounts,
+        Rejection::RemoteValuationRequired,
+        Rejection::ValuationAlreadyFixed,
+        Rejection::AllocateNotAllowed,
+        Rejection::InvalidAssetAttribution,
     ];
 
     #[test]

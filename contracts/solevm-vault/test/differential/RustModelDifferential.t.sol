@@ -4,9 +4,13 @@ pragma solidity 0.8.30;
 import {Test} from "forge-std/Test.sol";
 import {console} from "forge-std/console.sol";
 
+import {RemoteAccounting} from "../../src/RemoteAccounting.sol";
 import {SolEVMVault} from "../../src/SolEVMVault.sol";
+import {IRemoteAccounting} from "../../src/interfaces/IRemoteAccounting.sol";
 import {ISolEVMVault, SettledEpoch} from "../../src/interfaces/ISolEVMVault.sol";
+import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {MockAsset} from "../mocks/MockAsset.sol";
+import {TestMessageAuthenticator} from "../mocks/TestMessageAuthenticator.sol";
 import {Action, Code, EpochTerms, Op, Scenario, Snapshot} from "./DifferentialTypes.sol";
 import {Actors, ResultMapping} from "./ResultMapping.sol";
 
@@ -87,12 +91,12 @@ contract RustModelDifferentialTest is Test {
         assertEq(uint256(count), 14, "count");
         assertEq(parts.length, 14, "parts");
 
-        bool[7] memory families;
+        bool[8] memory families;
         for (uint256 i = 0; i < parts.length; ++i) {
             Scenario memory scenario = abi.decode(parts[i], (Scenario));
 
             assertEq(uint256(scenario.index), i, "scenario index");
-            assertLt(scenario.family, 7, "family");
+            assertLt(scenario.family, 8, "family");
             families[scenario.family] = true;
             assertGt(scenario.epochDuration, 0, "epoch duration");
             assertGt(scenario.minDeposit, 0, "minimum deposit");
@@ -103,7 +107,7 @@ contract RustModelDifferentialTest is Test {
             uint64 previous = scenario.startTimestamp;
             for (uint256 step = 0; step < scenario.actions.length; ++step) {
                 Action memory action = scenario.actions[step];
-                assertLt(action.kind, 15, "action kind");
+                assertLt(action.kind, 22, "action kind");
                 assertLt(action.actor, 6, "actor slot");
                 assertLe(action.expectedResult, Code.ARITHMETIC_FAILURE, "result code");
                 assertGe(action.timestamp, previous, "time moves forward");
@@ -159,6 +163,24 @@ contract RustModelDifferentialTest is Test {
             "svUSD"
         );
 
+        TestMessageAuthenticator authenticator = new TestMessageAuthenticator();
+        authenticator.setApproveAll(true);
+        IRemoteAccounting.Identities memory identities = IRemoteAccounting.Identities({
+            evmChainId: 1,
+            solanaChainId: 2,
+            evmApplication: ProtocolCodec.applicationFromAddress(address(uint160(0xE1))),
+            solanaApplication: keccak256("solana-app"),
+            deploymentId: keccak256("deployment"),
+            vaultId: keccak256("vault"),
+            outboundLaneId: 1,
+            inboundLaneId: 2,
+            expectedDestinationReference: keccak256("destination-ref")
+        });
+        RemoteAccounting coordinator =
+            new RemoteAccounting(vault, authenticator, makeAddr("outbound-sink"), identities);
+        vm.prank(Actors.ADMIN);
+        vault.bindRemoteAccounting(address(coordinator));
+
         address[USER_COUNT] memory users;
         for (uint256 i = 0; i < USER_COUNT; ++i) {
             users[i] = Actors.addressOf(uint8(i));
@@ -180,7 +202,7 @@ contract RustModelDifferentialTest is Test {
             vm.warp(action.timestamp);
             Snapshot memory before = _capture(vault, token, users);
 
-            (uint8 code, uint256 returned) = _invoke(vault, action, users);
+            (uint8 code, uint256 returned) = _invoke(vault, coordinator, token, action, users);
             Snapshot memory got = _capture(vault, token, users);
             totalOperations += 1;
 
@@ -206,10 +228,16 @@ contract RustModelDifferentialTest is Test {
     }
 
     /// Sends one operation and maps the outcome onto a shared code.
-    function _invoke(SolEVMVault vault, Action memory action, address[USER_COUNT] memory users)
-        private
-        returns (uint8 code, uint256 returned)
-    {
+    function _invoke(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        MockAsset token,
+        Action memory action,
+        address[USER_COUNT] memory users
+    ) private returns (uint8 code, uint256 returned) {
+        if (action.kind >= Op.BEGIN_ALLOCATE) {
+            return _invokeRemote(vault, coordinator, token, action, users);
+        }
         bytes memory payload = _payload(action);
         vm.prank(_actorAddress(action.actor, users));
         (bool ok, bytes memory data) = address(vault).call(payload);
@@ -217,6 +245,202 @@ contract RustModelDifferentialTest is Test {
         if (!ok) return (_codeFor(data), 0);
         if (data.length == 32) returned = abi.decode(data, (uint256));
         return (Code.SUCCESS, returned);
+    }
+
+    function _invokeRemote(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        MockAsset token,
+        Action memory action,
+        address[USER_COUNT] memory users
+    ) private returns (uint8 code, uint256 returned) {
+        if (action.kind == Op.BEGIN_ALLOCATE) {
+            return _callAs(
+                address(coordinator),
+                _actorAddress(action.actor, users),
+                _allocatePayload(coordinator, action)
+            );
+        }
+        if (action.kind == Op.BEGIN_RECALL) {
+            return _callAs(
+                address(coordinator),
+                _actorAddress(action.actor, users),
+                _recallPayload(coordinator, action)
+            );
+        }
+        if (
+            action.kind == Op.COMPLETE_ALLOCATION || action.kind == Op.APPLY_REMOTE_VALUATION
+                || action.kind == Op.LOCK_REMOTE_VALUATION
+        ) {
+            return _callAs(
+                address(coordinator),
+                _actorAddress(action.actor, users),
+                _reportPayload(vault, coordinator, action)
+            );
+        }
+        if (action.kind == Op.ACCEPT_RECALL_SENT) {
+            return _callAs(
+                address(coordinator),
+                _actorAddress(action.actor, users),
+                _recallSentPayload(vault, coordinator, action)
+            );
+        }
+        if (action.kind == Op.OBSERVE_INBOUND) {
+            token.mint(address(vault), action.amount);
+            return _callAs(address(vault), address(this), abi.encodeCall(vault.observeInbound, ()));
+        }
+        return (_codeFor(hex"deadbeef"), 0);
+    }
+
+    function _allocatePayload(RemoteAccounting coordinator, Action memory action)
+        private
+        view
+        returns (bytes memory)
+    {
+        uint64 nowAt = uint64(block.timestamp);
+        return abi.encodeCall(
+            coordinator.allocate,
+            (
+                bytes32(action.aux0),
+                uint128(action.amount),
+                uint128(action.amount),
+                nowAt + 1 days,
+                nowAt,
+                nowAt,
+                nowAt + 7 days
+            )
+        );
+    }
+
+    function _recallPayload(RemoteAccounting coordinator, Action memory action)
+        private
+        view
+        returns (bytes memory)
+    {
+        uint64 nowAt = uint64(block.timestamp);
+        return abi.encodeCall(
+            coordinator.recall,
+            (
+                bytes32(action.aux0),
+                uint128(action.amount),
+                uint128(1),
+                nowAt + 1 days,
+                nowAt,
+                nowAt,
+                nowAt + 7 days
+            )
+        );
+    }
+
+    function _reportPayload(SolEVMVault vault, RemoteAccounting coordinator, Action memory action)
+        private
+        view
+        returns (bytes memory)
+    {
+        bytes32 completed =
+            action.kind == Op.COMPLETE_ALLOCATION ? bytes32(action.aux0) : bytes32(0);
+        uint128 reported = action.kind == Op.LOCK_REMOTE_VALUATION
+            ? uint128(vault.acceptedRemoteValue())
+            : uint128(action.amount);
+        return abi.encodeCall(
+            coordinator.processRemoteReport,
+            (_encodeReport(vault, coordinator, reported, completed))
+        );
+    }
+
+    function _recallSentPayload(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        Action memory action
+    ) private view returns (bytes memory) {
+        uint128 principal = uint128(action.amount);
+        uint128 actual = uint128(action.aux1);
+        return abi.encodeCall(
+            coordinator.processRecallSent,
+            (_encodeRecallSent(
+                    vault, coordinator, bytes32(action.aux0), principal, actual, principal - actual
+                ))
+        );
+    }
+
+    function _callAs(address target, address actor, bytes memory payload)
+        private
+        returns (uint8 code, uint256 returned)
+    {
+        vm.prank(actor);
+        (bool ok, bytes memory data) = target.call(payload);
+        if (!ok) return (_codeFor(data), 0);
+        if (data.length == 32) returned = abi.decode(data, (uint256));
+        return (Code.SUCCESS, returned);
+    }
+
+    function _inboundHeader(RemoteAccounting coordinator)
+        private
+        view
+        returns (ProtocolCodec.Header memory header)
+    {
+        uint64 nowAt = uint64(block.timestamp);
+        header = ProtocolCodec.Header({
+            sourceChain: coordinator.solanaChainId(),
+            destinationChain: coordinator.evmChainId(),
+            sourceApplication: coordinator.solanaApplication(),
+            destinationApplication: coordinator.evmApplication(),
+            deploymentId: coordinator.deploymentId(),
+            vaultId: coordinator.boundVaultId(),
+            laneId: coordinator.inboundLaneId(),
+            sequence: coordinator.inboundExpectedSequence(),
+            previousCommitment: coordinator.inboundLatestCommitment(),
+            observedAt: nowAt,
+            publishedAt: nowAt,
+            expiresAt: nowAt + 7 days
+        });
+    }
+
+    function _encodeReport(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        uint128 reportedValue,
+        bytes32 completedTransferId
+    ) private view returns (bytes memory) {
+        uint64 epochId = vault.currentEpochId();
+        if (epochId == 0) epochId = 1;
+        return ProtocolCodec.encodeRemoteReport(
+            _inboundHeader(coordinator),
+            ProtocolCodec.RemoteReportBody({
+                epochId: epochId,
+                remotePrincipal: uint128(vault.remotePrincipalCap()),
+                reportedValue: reportedValue,
+                realizedLoss: coordinator.lastInboundCumulativeLoss(),
+                unattributedBalance: 0,
+                latestCompletedTransferId: completedTransferId,
+                probeStatus: ProtocolCodec.PROBE_NOT_REQUIRED,
+                probeTimestamp: 0,
+                configVersion: uint64(vault.configVersion()),
+                remoteStateCommitment: keccak256("remote-state")
+            })
+        );
+    }
+
+    function _encodeRecallSent(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        bytes32 transferId,
+        uint128 principal,
+        uint128 actual,
+        uint128 loss
+    ) private view returns (bytes memory) {
+        return ProtocolCodec.encodeRecallSent(
+            _inboundHeader(coordinator),
+            ProtocolCodec.RecallSentBody({
+                transferId: transferId,
+                principalSent: principal,
+                actualAmountSent: actual,
+                realizedLoss: loss,
+                destinationReference: coordinator.expectedDestinationReference(),
+                sentTimestamp: uint64(block.timestamp),
+                configVersion: uint64(vault.configVersion())
+            })
+        );
     }
 
     function _payload(Action memory action) private pure returns (bytes memory) {
@@ -309,6 +533,11 @@ contract RustModelDifferentialTest is Test {
         }
 
         shot.consumedMask = _consumedMask(vault, users);
+        shot.unattributedInbound = vault.unattributedInbound();
+        shot.outboundInTransit = vault.outboundInTransit();
+        shot.acceptedRemoteValue = vault.acceptedRemoteValue();
+        shot.inboundInTransit = vault.inboundInTransit();
+        shot.remotePrincipalCap = vault.remotePrincipalCap();
     }
 
     /// One bit per consumed claim or refund, matching the generator layout.
@@ -354,6 +583,11 @@ contract RustModelDifferentialTest is Test {
         _eq(want.epochDepositAssets, got.epochDepositAssets, label, "epochDepositAssets");
         _eq(want.epochRedeemShares, got.epochRedeemShares, label, "epochRedeemShares");
         _eq(want.consumedMask, got.consumedMask, label, "consumedMask");
+        _eq(want.unattributedInbound, got.unattributedInbound, label, "unattributedInbound");
+        _eq(want.outboundInTransit, got.outboundInTransit, label, "outboundInTransit");
+        _eq(want.acceptedRemoteValue, got.acceptedRemoteValue, label, "acceptedRemoteValue");
+        _eq(want.inboundInTransit, got.inboundInTransit, label, "inboundInTransit");
+        _eq(want.remotePrincipalCap, got.remotePrincipalCap, label, "remotePrincipalCap");
 
         for (uint256 i = 0; i < USER_COUNT; ++i) {
             _eq(want.actorAssets[i], got.actorAssets[i], label, "actor asset balance");

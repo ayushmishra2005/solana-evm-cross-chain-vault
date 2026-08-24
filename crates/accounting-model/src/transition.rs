@@ -1,9 +1,11 @@
-use crate::amount::{AccountId, AssetAmount, EpochId, ShareAmount, Timestamp};
+use crate::amount::{AccountId, AssetAmount, EpochId, ShareAmount, Timestamp, TransferId};
 use crate::error::Rejection;
 use crate::math;
 use crate::operation::Operation;
 use crate::request::RequestKey;
-use crate::state::{AbortedTerms, Epoch, EpochOutcome, EpochPhase, EpochTerms, State, VaultState};
+use crate::state::{
+    AbortedTerms, CycleKind, Epoch, EpochOutcome, EpochPhase, EpochTerms, State, VaultState,
+};
 
 /// Applies one operation and returns the next state.
 ///
@@ -34,6 +36,31 @@ pub fn apply(state: &State, operation: Operation) -> Result<State, Rejection> {
         Operation::Pause { actor } => pause(&mut next, actor)?,
         Operation::Unpause { actor } => unpause(&mut next, actor)?,
         Operation::Freeze { actor } => freeze(&mut next, actor)?,
+        Operation::BeginAllocate {
+            actor,
+            transfer_id,
+            amount,
+        } => begin_allocate(&mut next, actor, transfer_id, amount)?,
+        Operation::CompleteAllocation {
+            transfer_id,
+            reported_value,
+        } => complete_allocation(&mut next, transfer_id, reported_value)?,
+        Operation::BeginRecall {
+            actor,
+            transfer_id,
+            amount,
+        } => begin_recall(&mut next, actor, transfer_id, amount)?,
+        Operation::AcceptRecallSent {
+            transfer_id,
+            principal,
+            actual,
+            loss,
+        } => accept_recall_sent(&mut next, transfer_id, principal, actual, loss)?,
+        Operation::ObserveInbound { amount } => observe_inbound(&mut next, amount)?,
+        Operation::ApplyRemoteValuation { reported_value } => {
+            apply_remote_valuation(&mut next, reported_value)?;
+        }
+        Operation::LockRemoteValuation => lock_remote_valuation(&mut next)?,
     }
     Ok(next)
 }
@@ -234,7 +261,15 @@ fn finalize_epoch(state: &mut State) -> Result<(), Rejection> {
         return Err(Rejection::EpochAlreadyFinalized);
     }
 
-    let basis = state.pre_settlement_basis(&epoch);
+    let mut basis = state.pre_settlement_basis(&epoch);
+    if state.has_remote_exposure() {
+        let locked = state
+            .epoch_valuation_locked
+            .get(&epoch.id)
+            .copied()
+            .ok_or(Rejection::RemoteValuationRequired)?;
+        basis.total_assets = locked;
+    }
     let deposit_assets = epoch.pending_deposit_assets;
     let redeem_shares = epoch.pending_redeem_shares;
     let redeem_assets = math::shares_to_assets(redeem_shares, basis)?;
@@ -521,4 +556,221 @@ fn require_guardian_or_admin(state: &State, actor: AccountId) -> Result<(), Reje
     } else {
         Err(Rejection::UnauthorizedActor)
     }
+}
+
+fn require_admin(state: &State, actor: AccountId) -> Result<(), Rejection> {
+    if actor == state.authority.admin {
+        Ok(())
+    } else {
+        Err(Rejection::UnauthorizedActor)
+    }
+}
+
+fn require_fresh_transfer(state: &State, transfer_id: TransferId) -> Result<(), Rejection> {
+    if transfer_id.is_zero() {
+        return Err(Rejection::ZeroAmount);
+    }
+    if state.used_transfer_ids.contains(&transfer_id) {
+        return Err(Rejection::TransferIdReused);
+    }
+    Ok(())
+}
+
+fn require_no_cycle(state: &State) -> Result<(), Rejection> {
+    if state.active_cycle != CycleKind::None {
+        return Err(Rejection::ActiveTransferExists);
+    }
+    Ok(())
+}
+
+fn clear_cycle(state: &mut State) {
+    state.active_cycle = CycleKind::None;
+    state.active_transfer_id = TransferId::ZERO;
+    state.active_amount = AssetAmount::ZERO;
+}
+
+fn set_accepted(state: &mut State, reported_value: AssetAmount) {
+    state.buckets.accepted_remote_value = if reported_value.raw() < state.remote_principal_cap.raw()
+    {
+        reported_value
+    } else {
+        state.remote_principal_cap
+    };
+}
+
+fn begin_allocate(
+    state: &mut State,
+    actor: AccountId,
+    transfer_id: TransferId,
+    amount: AssetAmount,
+) -> Result<(), Rejection> {
+    require_admin(state, actor)?;
+    require_active(state)?;
+    let epoch = require_open_epoch(state)?;
+    if epoch.phase != EpochPhase::Open {
+        return Err(Rejection::AllocateNotAllowed);
+    }
+    require_no_cycle(state)?;
+    require_fresh_transfer(state, transfer_id)?;
+    if amount.is_zero() {
+        return Err(Rejection::ZeroAmount);
+    }
+    let idle = state
+        .buckets
+        .idle_backing
+        .checked_sub(amount)
+        .map_err(|_| Rejection::InsufficientRedemptionLiquidity)?;
+    state.buckets.idle_backing = idle;
+    state.buckets.outbound_in_transit = state.buckets.outbound_in_transit.checked_add(amount)?;
+    let _ = state.used_transfer_ids.insert(transfer_id);
+    state.active_cycle = CycleKind::Allocate;
+    state.active_transfer_id = transfer_id;
+    state.active_amount = amount;
+    Ok(())
+}
+
+fn complete_allocation(
+    state: &mut State,
+    transfer_id: TransferId,
+    reported_value: AssetAmount,
+) -> Result<(), Rejection> {
+    if state.active_cycle != CycleKind::Allocate {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if state.active_transfer_id != transfer_id {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    let amount = state.active_amount;
+    state.buckets.outbound_in_transit = state.buckets.outbound_in_transit.checked_sub(amount)?;
+    state.remote_principal_cap = state.remote_principal_cap.checked_add(amount)?;
+    set_accepted(state, reported_value);
+    clear_cycle(state);
+    Ok(())
+}
+
+fn begin_recall(
+    state: &mut State,
+    actor: AccountId,
+    transfer_id: TransferId,
+    amount: AssetAmount,
+) -> Result<(), Rejection> {
+    require_admin(state, actor)?;
+    require_no_cycle(state)?;
+    require_fresh_transfer(state, transfer_id)?;
+    if amount.is_zero() {
+        return Err(Rejection::ZeroAmount);
+    }
+    if amount > state.remote_principal_cap {
+        return Err(Rejection::InsufficientRemotePrincipal);
+    }
+    state.pending_recall_id = transfer_id;
+    state.pending_recall_principal = amount;
+    let _ = state.used_transfer_ids.insert(transfer_id);
+    state.active_cycle = CycleKind::Recall;
+    state.active_transfer_id = transfer_id;
+    state.active_amount = amount;
+    Ok(())
+}
+
+fn accept_recall_sent(
+    state: &mut State,
+    transfer_id: TransferId,
+    principal: AssetAmount,
+    actual: AssetAmount,
+    loss: AssetAmount,
+) -> Result<(), Rejection> {
+    if state.active_cycle != CycleKind::Recall {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if state.active_transfer_id != transfer_id {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if principal > state.active_amount {
+        return Err(Rejection::InvalidRecallSentAmounts);
+    }
+    if actual.checked_add(loss)? != principal {
+        return Err(Rejection::InvalidRecallSentAmounts);
+    }
+    if principal > state.remote_principal_cap {
+        return Err(Rejection::InsufficientRemotePrincipal);
+    }
+    let accepted_decrease = if state.buckets.accepted_remote_value < principal {
+        state.buckets.accepted_remote_value
+    } else {
+        principal
+    };
+    state.remote_principal_cap = state.remote_principal_cap.checked_sub(principal)?;
+    state.buckets.accepted_remote_value = state
+        .buckets
+        .accepted_remote_value
+        .checked_sub(accepted_decrease)?;
+    state.recognized_loss = state.recognized_loss.checked_add(loss)?;
+
+    let from_unattributed = if actual < state.buckets.unattributed_inbound {
+        actual
+    } else {
+        state.buckets.unattributed_inbound
+    };
+    state.buckets.unattributed_inbound = state
+        .buckets
+        .unattributed_inbound
+        .checked_sub(from_unattributed)?;
+    state.buckets.idle_backing = state.buckets.idle_backing.checked_add(from_unattributed)?;
+    state.buckets.inbound_in_transit = state
+        .buckets
+        .inbound_in_transit
+        .checked_add(actual.checked_sub(from_unattributed)?)?;
+    state.pending_recall_id = TransferId::ZERO;
+    state.pending_recall_principal = AssetAmount::ZERO;
+    clear_cycle(state);
+    Ok(())
+}
+
+fn observe_inbound(state: &mut State, amount: AssetAmount) -> Result<(), Rejection> {
+    if amount.is_zero() {
+        return Err(Rejection::ZeroAmount);
+    }
+    let mut remaining = amount;
+    if !state.buckets.inbound_in_transit.is_zero() {
+        let attributed = if remaining < state.buckets.inbound_in_transit {
+            remaining
+        } else {
+            state.buckets.inbound_in_transit
+        };
+        state.buckets.inbound_in_transit =
+            state.buckets.inbound_in_transit.checked_sub(attributed)?;
+        state.buckets.idle_backing = state.buckets.idle_backing.checked_add(attributed)?;
+        remaining = remaining.checked_sub(attributed)?;
+    }
+    if remaining.is_zero() {
+        return Ok(());
+    }
+    if !state.pending_recall_principal.is_zero() {
+        state.buckets.unattributed_inbound =
+            state.buckets.unattributed_inbound.checked_add(remaining)?;
+    } else {
+        state.external_inflow = state.external_inflow.checked_add(remaining)?;
+        state.buckets.unattributed_balance =
+            state.buckets.unattributed_balance.checked_add(remaining)?;
+    }
+    Ok(())
+}
+
+fn apply_remote_valuation(state: &mut State, reported_value: AssetAmount) -> Result<(), Rejection> {
+    set_accepted(state, reported_value);
+    Ok(())
+}
+
+fn lock_remote_valuation(state: &mut State) -> Result<(), Rejection> {
+    let epoch = state.epoch.ok_or(Rejection::EpochNotOpen)?;
+    if epoch.phase != EpochPhase::CutOff {
+        return Err(Rejection::EpochNotCutOff);
+    }
+    if state.epoch_valuation_locked.contains_key(&epoch.id) {
+        return Err(Rejection::ValuationAlreadyFixed);
+    }
+    let _ = state
+        .epoch_valuation_locked
+        .insert(epoch.id, state.managed_backing());
+    Ok(())
 }

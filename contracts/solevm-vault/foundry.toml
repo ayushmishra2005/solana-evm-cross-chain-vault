@@ -9,7 +9,8 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 bytecode_hash = "none"
-gas_reports = ["SolEVMVault"]
+gas_reports = ["SolEVMVault", "RemoteAccounting"]
+ffi = true
 
 [lint]
 # Public immutables keep lowerCamelCase so accessors read like the rest of the API.

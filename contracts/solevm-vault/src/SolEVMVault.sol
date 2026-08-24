@@ -28,6 +28,24 @@ import {VaultMath} from "./libraries/VaultMath.sol";
 contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
+    event RemoteAccountingBound(address indexed coordinator);
+    event OutboundOpened(uint256 amount, address sink);
+    event AllocationAccepted(uint256 amount, uint256 acceptedValue);
+    event RecallRecorded(bytes32 indexed transferId, uint256 amount);
+    event RecallSettled(uint256 principal, uint256 actual, uint256 loss);
+    event InboundAssetsObserved(uint256 amount, uint256 total);
+    event InboundAssetsAttributed(uint256 amount, uint256 inboundRemaining);
+    event RemoteValuationApplied(uint256 reportedValue, uint256 acceptedValue);
+    event EpochRemoteValuationFixed(uint64 indexed epochId, uint256 pricingAssets);
+
+    error RemoteAccountingAlreadyBound();
+    error RemoteAccountingBindAfterActivity();
+    error RemoteAccountingNotBound();
+    error RemoteValuationRequired();
+    error ValuationAlreadyFixed();
+    error InvalidAssetAttribution();
+    error InsufficientRemotePrincipal(uint256 available, uint256 requested);
+
     /// Upper bound on priced controllers per epoch, so finalization stays bounded.
     uint256 public constant MAX_DEPOSIT_REQUESTS_PER_EPOCH = 32;
     uint256 public constant MAX_REDEEM_REQUESTS_PER_EPOCH = 32;
@@ -45,12 +63,32 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
 
     /// Assets received for requests that have not settled yet.
     uint256 public pendingDepositEscrow;
-    /// The only bucket that backs the share price.
+    /// Local liquid assets that back shares and can pay redemptions.
     uint256 public idleBacking;
     /// Assets set aside for finalized redemption claims.
     uint256 public claimReserve;
     /// Assets that arrived without a request behind them.
     uint256 public unattributedBalance;
+    /// Returning remote assets observed before a matching RecallSent.
+    uint256 public unattributedInbound;
+    /// Assets that left EVM custody and are not yet remote principal.
+    uint256 public outboundInTransit;
+    /// Principal-capped accepted remote value included in NAV.
+    uint256 public acceptedRemoteValue;
+    /// Assets Solana says it sent that have not been observed on EVM.
+    uint256 public inboundInTransit;
+    /// EVM-authorized remote principal basis. Accepted value cannot exceed this.
+    uint256 public remotePrincipalCap;
+    /// Cumulative loss recognized from RecallSent. Informational, not a bucket.
+    uint256 public recognizedLoss;
+
+    /// Permanently bound remote-leg coordinator. Zero until bound once.
+    address public remoteAccounting;
+    bytes32 public pendingRecallId;
+    uint256 public pendingRecallPrincipal;
+
+    mapping(uint64 epochId => bool) public epochRemoteValuationLocked;
+    mapping(uint64 epochId => uint256) public lockedPricingAssets;
 
     VaultStatus public vaultStatus;
 
@@ -256,7 +294,13 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
 
         _recordSurplus();
 
-        step.totalAssets = idleBacking;
+        if (epochRemoteValuationLocked[step.epochId]) {
+            step.totalAssets = lockedPricingAssets[step.epochId];
+        } else if (_hasRemoteExposure()) {
+            revert RemoteValuationRequired();
+        } else {
+            step.totalAssets = idleBacking;
+        }
         step.totalSupply = totalSupply();
         step.depositAssets = epochDepositAssets;
         step.redeemShares = epochRedeemShares;
@@ -265,8 +309,8 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
         step.redeemAssets =
             VaultMath.sharesToAssets(step.redeemShares, step.totalAssets, step.totalSupply);
 
-        if (step.redeemAssets > step.totalAssets) {
-            revert InsufficientLiquidity(step.totalAssets, step.redeemAssets);
+        if (step.redeemAssets > idleBacking) {
+            revert InsufficientLiquidity(idleBacking, step.redeemAssets);
         }
 
         step.owedShares = _priceDepositClaims(step);
@@ -289,7 +333,7 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
             redeemDust: step.redeemAssets - step.owedAssets
         });
 
-        idleBacking = step.totalAssets - step.redeemAssets + step.depositAssets;
+        idleBacking = idleBacking - step.redeemAssets + step.depositAssets;
         pendingDepositEscrow -= step.depositAssets;
         claimReserve += step.redeemAssets;
 
@@ -434,7 +478,8 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
         emit VaultUnpaused(msg.sender);
     }
 
-    /// @notice Freezing is terminal. Only claims, abort and refunds remain.
+    /// @notice Freezing is terminal. Claims, abort, refunds, inbound
+    /// reconciliation and remote unwind remain. New allocation does not.
     function freeze() external {
         _requireAdminOrGuardian();
         if (vaultStatus == VaultStatus.Frozen) revert InvalidVaultStatus(vaultStatus);
@@ -444,16 +489,109 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
 
     // Reconciliation
 
-    /// @notice Records assets that arrived without a request. Moves nothing and
-    /// never changes the share price.
+    /// @notice Records assets that arrived without a request. Matching inbound
+    /// transit is attributed to idle backing; anything else stays unattributed.
     function reconcile() external nonReentrant returns (uint256 surplus) {
         return _recordSurplus();
+    }
+
+    /// @notice Same observation path as `reconcile`. Named for inbound receipt.
+    function observeInbound() external nonReentrant returns (uint256 surplus) {
+        return _recordSurplus();
+    }
+
+    /// @notice Binds the remote coordinator once. Rebinding is permanently refused.
+    function bindRemoteAccounting(address coordinator) external {
+        if (msg.sender != admin) revert Unauthorized(msg.sender);
+        if (coordinator == address(0) || coordinator == address(this)) revert InvalidAddress();
+        if (remoteAccounting != address(0)) revert RemoteAccountingAlreadyBound();
+        if (_economicActivityStarted()) revert RemoteAccountingBindAfterActivity();
+        remoteAccounting = coordinator;
+        emit RemoteAccountingBound(coordinator);
+    }
+
+    function beginOutbound(uint256 amount, address sink) external nonReentrant {
+        _requireRemoteAccounting();
+        _recordSurplus();
+        if (amount == 0) revert ZeroAmount();
+        if (sink == address(0) || sink == address(this)) revert InvalidAddress();
+        if (idleBacking < amount) revert InsufficientLiquidity(idleBacking, amount);
+
+        idleBacking -= amount;
+        outboundInTransit += amount;
+        _pushExact(sink, amount);
+        emit OutboundOpened(amount, sink);
+    }
+
+    function completeAllocation(uint256 amount, uint256 reportedValue) external {
+        _requireRemoteAccounting();
+        if (amount == 0) revert ZeroAmount();
+        if (outboundInTransit < amount) revert InvalidAssetAttribution();
+
+        outboundInTransit -= amount;
+        remotePrincipalCap += amount;
+        _setAcceptedRemoteValue(reportedValue);
+        emit AllocationAccepted(amount, acceptedRemoteValue);
+    }
+
+    function applyRemoteValuation(uint256 reportedValue) external {
+        _requireRemoteAccounting();
+        _setAcceptedRemoteValue(reportedValue);
+        emit RemoteValuationApplied(reportedValue, acceptedRemoteValue);
+    }
+
+    function beginRecall(bytes32 transferId, uint256 amount) external {
+        _requireRemoteAccounting();
+        if (transferId == bytes32(0) || amount == 0) revert ZeroAmount();
+        pendingRecallId = transferId;
+        pendingRecallPrincipal = amount;
+        emit RecallRecorded(transferId, amount);
+    }
+
+    function applyRecallSent(uint256 principal, uint256 actual, uint256 loss) external {
+        _requireRemoteAccounting();
+        if (principal == 0) revert ZeroAmount();
+        if (principal > remotePrincipalCap) {
+            revert InsufficientRemotePrincipal(remotePrincipalCap, principal);
+        }
+        if (actual > type(uint256).max - loss || actual + loss != principal) {
+            revert InvalidAssetAttribution();
+        }
+
+        uint256 acceptedDecrease = acceptedRemoteValue < principal ? acceptedRemoteValue : principal;
+        remotePrincipalCap -= principal;
+        acceptedRemoteValue -= acceptedDecrease;
+        recognizedLoss += loss;
+
+        uint256 fromUnattributed = actual < unattributedInbound ? actual : unattributedInbound;
+        if (fromUnattributed != 0) {
+            unattributedInbound -= fromUnattributed;
+            idleBacking += fromUnattributed;
+            emit InboundAssetsAttributed(fromUnattributed, inboundInTransit);
+        }
+        inboundInTransit += actual - fromUnattributed;
+
+        pendingRecallId = bytes32(0);
+        pendingRecallPrincipal = 0;
+        emit RecallSettled(principal, actual, loss);
+    }
+
+    function lockRemoteValuation(uint64 epochId) external {
+        _requireRemoteAccounting();
+        if (epochRemoteValuationLocked[epochId]) revert ValuationAlreadyFixed();
+        epochRemoteValuationLocked[epochId] = true;
+        lockedPricingAssets[epochId] = managedBacking();
+        emit EpochRemoteValuationFixed(epochId, lockedPricingAssets[epochId]);
     }
 
     // Views
 
     function managedNav() external view returns (uint256) {
-        return idleBacking;
+        return managedBacking();
+    }
+
+    function managedBacking() public view returns (uint256) {
+        return idleBacking + outboundInTransit + acceptedRemoteValue + inboundInTransit;
     }
 
     function settledEpoch(uint64 epochId) external view returns (SettledEpoch memory) {
@@ -502,7 +640,8 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
 
     /// @notice Assets the vault believes it holds across every bucket.
     function accountedAssets() public view returns (uint256) {
-        return pendingDepositEscrow + idleBacking + claimReserve + unattributedBalance;
+        return pendingDepositEscrow + idleBacking + claimReserve + unattributedBalance
+            + unattributedInbound;
     }
 
     function supportsInterface(bytes4 interfaceId) public view override returns (bool) {
@@ -595,11 +734,51 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
         uint256 actual = asset.balanceOf(address(this));
         if (actual < accounted) revert AccountingDeficit(accounted, actual);
         surplus = actual - accounted;
-        if (surplus != 0) {
-            uint256 total = unattributedBalance + surplus;
-            unattributedBalance = total;
-            emit UnattributedAssetsReconciled(surplus, total);
+        if (surplus == 0) {
+            return 0;
         }
+
+        uint256 remaining = surplus;
+        if (inboundInTransit != 0) {
+            uint256 attributed = remaining < inboundInTransit ? remaining : inboundInTransit;
+            idleBacking += attributed;
+            inboundInTransit -= attributed;
+            remaining -= attributed;
+            emit InboundAssetsAttributed(attributed, inboundInTransit);
+        }
+        if (remaining != 0 && pendingRecallPrincipal != 0) {
+            uint256 total = unattributedInbound + remaining;
+            unattributedInbound = total;
+            emit InboundAssetsObserved(remaining, total);
+        } else if (remaining != 0) {
+            uint256 total = unattributedBalance + remaining;
+            unattributedBalance = total;
+            emit UnattributedAssetsReconciled(remaining, total);
+        }
+    }
+
+    function _setAcceptedRemoteValue(uint256 reportedValue) private {
+        acceptedRemoteValue =
+            reportedValue < remotePrincipalCap ? reportedValue : remotePrincipalCap;
+    }
+
+    function _hasRemoteExposure() private view returns (bool) {
+        return outboundInTransit != 0 || acceptedRemoteValue != 0 || inboundInTransit != 0
+            || remotePrincipalCap != 0 || pendingRecallPrincipal != 0;
+    }
+
+    function _economicActivityStarted() private view returns (bool) {
+        return totalSupply() != 0 || pendingDepositEscrow != 0 || idleBacking != 0
+            || claimReserve != 0 || unattributedBalance != 0 || unattributedInbound != 0
+            || outboundInTransit != 0 || acceptedRemoteValue != 0 || inboundInTransit != 0
+            || remotePrincipalCap != 0 || recognizedLoss != 0 || pendingRecallPrincipal != 0
+            || epochDepositAssets != 0 || epochRedeemShares != 0 || currentEpochId != 0
+            || currentEpochPhase != EpochPhase.Open || lastCutoffAt != 0;
+    }
+
+    function _requireRemoteAccounting() private view {
+        if (remoteAccounting == address(0)) revert RemoteAccountingNotBound();
+        if (msg.sender != remoteAccounting) revert Unauthorized(msg.sender);
     }
 
     function _requireNoDeficit() private view {

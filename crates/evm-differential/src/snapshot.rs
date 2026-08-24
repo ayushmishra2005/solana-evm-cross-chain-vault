@@ -31,6 +31,11 @@ pub struct Snapshot {
     pub actor_shares: [u128; USER_COUNT],
     pub actor_deposit_assets: [u128; USER_COUNT],
     pub actor_redeem_shares: [u128; USER_COUNT],
+    pub unattributed_inbound: u128,
+    pub outbound_in_transit: u128,
+    pub accepted_remote_value: u128,
+    pub inbound_in_transit: u128,
+    pub remote_principal_cap: u128,
 }
 
 /// Bit position of one consumption flag inside the mask.
@@ -77,7 +82,8 @@ impl Snapshot {
                 .raw()
                 .saturating_add(state.buckets.idle_backing.raw())
                 .saturating_add(state.buckets.claim_reserve.raw())
-                .saturating_add(state.buckets.unattributed_balance.raw()),
+                .saturating_add(state.buckets.unattributed_balance.raw())
+                .saturating_add(state.buckets.unattributed_inbound.raw()),
             status: match state.vault_state {
                 VaultState::Active => 0,
                 VaultState::Paused => 1,
@@ -94,6 +100,11 @@ impl Snapshot {
             actor_shares: [0; USER_COUNT],
             actor_deposit_assets: [0; USER_COUNT],
             actor_redeem_shares: [0; USER_COUNT],
+            unattributed_inbound: state.buckets.unattributed_inbound.raw(),
+            outbound_in_transit: state.buckets.outbound_in_transit.raw(),
+            accepted_remote_value: state.buckets.accepted_remote_value.raw(),
+            inbound_in_transit: state.buckets.inbound_in_transit.raw(),
+            remote_principal_cap: state.remote_principal_cap.raw(),
         };
 
         if let Some(epoch) = state.epoch {

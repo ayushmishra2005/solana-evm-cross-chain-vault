@@ -3,7 +3,7 @@ use crate::rng::Rng;
 use crate::scenario::{BuildError, Builder, Scenario, Setup};
 
 /// Number of scenario families the generator cycles through.
-pub const FAMILY_COUNT: u8 = 7;
+pub const FAMILY_COUNT: u8 = 8;
 
 pub const FAMILY_DEPOSIT: u8 = 0;
 pub const FAMILY_REDEMPTION: u8 = 1;
@@ -12,6 +12,7 @@ pub const FAMILY_MULTI_EPOCH: u8 = 3;
 pub const FAMILY_PAUSE: u8 = 4;
 pub const FAMILY_FREEZE: u8 = 5;
 pub const FAMILY_REJECTION: u8 = 6;
+pub const FAMILY_XCHAIN: u8 = 7;
 
 #[must_use]
 pub const fn family_name(family: u8) -> &'static str {
@@ -23,6 +24,7 @@ pub const fn family_name(family: u8) -> &'static str {
         FAMILY_PAUSE => "PauseBehavior",
         FAMILY_FREEZE => "FreezeAndAbort",
         FAMILY_REJECTION => "RejectionTrace",
+        FAMILY_XCHAIN => "CrossChainAccounting",
         _ => "Unknown",
     }
 }
@@ -70,6 +72,7 @@ pub fn generate(setup: Setup, rng: &mut Rng, rounds: u32) -> Result<Scenario, Bu
         FAMILY_MULTI_EPOCH => multi_epoch(&mut builder, rng, setup, rounds),
         FAMILY_PAUSE => pause_behavior(&mut builder, rng, setup),
         FAMILY_FREEZE => freeze_and_abort(&mut builder, rng, setup),
+        FAMILY_XCHAIN => xchain_accounting(&mut builder, rng, setup),
         _ => rejection_trace(&mut builder, rng, setup),
     }
     builder.finish()
@@ -411,4 +414,38 @@ fn rejection_trace(builder: &mut Builder, rng: &mut Rng, setup: Setup) {
     open_next(builder, rng);
     builder.exec_simple(ActionKind::OpenNextEpoch, 0);
     builder.exec_simple(ActionKind::CutoffEpoch, 0);
+}
+
+fn xchain_accounting(builder: &mut Builder, rng: &mut Rng, setup: Setup) {
+    bootstrap_shares(builder, rng, setup);
+    open_next(builder, rng);
+
+    let idle = builder.state().buckets.idle_backing.raw();
+    let amount = if idle >= 4 { idle / 4 } else { idle };
+    if amount == 0 {
+        rejection_trace(builder, rng, setup);
+        return;
+    }
+
+    builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, amount, 0, 1, 0);
+    builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, amount, 0, 2, 0);
+    builder.exec_aux(
+        ActionKind::CompleteAllocation,
+        0,
+        amount.saturating_mul(2),
+        0,
+        1,
+        0,
+    );
+
+    cutoff(builder, rng);
+    builder.exec_aux(ActionKind::LockRemoteValuation, 0, 0, 0, 0, 0);
+    finalize(builder, rng);
+    open_next(builder, rng);
+
+    builder.exec_aux(ActionKind::BeginRecall, ADMIN_SLOT, amount, 0, 2, 0);
+    builder.exec_simple(ActionKind::Freeze, ADMIN_SLOT);
+    builder.exec_aux(ActionKind::AcceptRecallSent, 0, amount, 0, 2, amount);
+    builder.exec_aux(ActionKind::ObserveInbound, 0, amount, 0, 0, 0);
+    builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, amount, 0, 3, 0);
 }

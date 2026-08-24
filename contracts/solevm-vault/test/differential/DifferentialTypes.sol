@@ -25,6 +25,11 @@ struct Snapshot {
     uint256[4] actorShares;
     uint256[4] actorDepositAssets;
     uint256[4] actorRedeemShares;
+    uint256 unattributedInbound;
+    uint256 outboundInTransit;
+    uint256 acceptedRemoteValue;
+    uint256 inboundInTransit;
+    uint256 remotePrincipalCap;
 }
 
 /// One operation with the outcome the model produced.
@@ -36,6 +41,8 @@ struct Action {
     uint64 timestamp;
     uint8 expectedResult;
     uint256 expectedReturn;
+    uint256 aux0;
+    uint256 aux1;
 }
 
 /// What one settled epoch owes a single user.
@@ -97,6 +104,13 @@ library Op {
     uint8 internal constant UNPAUSE = 12;
     uint8 internal constant FREEZE = 13;
     uint8 internal constant ABORT_EPOCH = 14;
+    uint8 internal constant BEGIN_ALLOCATE = 15;
+    uint8 internal constant COMPLETE_ALLOCATION = 16;
+    uint8 internal constant BEGIN_RECALL = 17;
+    uint8 internal constant ACCEPT_RECALL_SENT = 18;
+    uint8 internal constant OBSERVE_INBOUND = 19;
+    uint8 internal constant APPLY_REMOTE_VALUATION = 20;
+    uint8 internal constant LOCK_REMOTE_VALUATION = 21;
 
     function name(uint8 kind) internal pure returns (string memory) {
         if (kind == REQUEST_DEPOSIT) return "RequestDeposit";
@@ -114,6 +128,13 @@ library Op {
         if (kind == UNPAUSE) return "Unpause";
         if (kind == FREEZE) return "Freeze";
         if (kind == ABORT_EPOCH) return "AbortEpoch";
+        if (kind == BEGIN_ALLOCATE) return "BeginAllocate";
+        if (kind == COMPLETE_ALLOCATION) return "CompleteAllocation";
+        if (kind == BEGIN_RECALL) return "BeginRecall";
+        if (kind == ACCEPT_RECALL_SENT) return "AcceptRecallSent";
+        if (kind == OBSERVE_INBOUND) return "ObserveInbound";
+        if (kind == APPLY_REMOTE_VALUATION) return "ApplyRemoteValuation";
+        if (kind == LOCK_REMOTE_VALUATION) return "LockRemoteValuation";
         return "Unknown";
     }
 }

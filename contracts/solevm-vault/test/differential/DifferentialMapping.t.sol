@@ -156,7 +156,7 @@ contract DifferentialMappingTest is Test {
     }
 
     function test_operation_codes_have_unique_names() public pure {
-        for (uint8 kind = 0; kind < 15; ++kind) {
+        for (uint8 kind = 0; kind < 22; ++kind) {
             string memory name = Op.name(kind);
             assertTrue(keccak256(bytes(name)) != keccak256(bytes("Unknown")), "kind is unnamed");
             for (uint8 other = 0; other < kind; ++other) {
@@ -166,7 +166,7 @@ contract DifferentialMappingTest is Test {
                 );
             }
         }
-        assertEq(Op.name(15), "Unknown");
+        assertEq(Op.name(22), "Unknown");
     }
 
     /// The scenario layout must survive an encode and decode round trip, so a
@@ -191,7 +191,9 @@ contract DifferentialMappingTest is Test {
             epochId: 5,
             timestamp: 1_700_000_500,
             expectedResult: Code.CLAIM_ALREADY_CONSUMED,
-            expectedReturn: 77
+            expectedReturn: 77,
+            aux0: 0,
+            aux1: 0
         });
 
         scenario.snapshots = new Snapshot[](1);

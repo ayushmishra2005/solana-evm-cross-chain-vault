@@ -61,15 +61,19 @@ abstract contract VaultInvariantsBase is Test {
 
     /// 1. Managed NAV is the idle bucket and nothing else.
     function invariant_managed_nav_equals_idle_backing() public view {
-        assertEq(vault.managedNav(), vault.idleBacking());
+        assertEq(
+            vault.managedNav(),
+            vault.idleBacking() + vault.outboundInTransit() + vault.acceptedRemoteValue()
+                + vault.inboundInTransit()
+        );
     }
 
     /// 2, 3 and 4. Escrow, reserves and donations sit outside NAV.
     function invariant_excluded_buckets_stay_outside_nav() public view {
         assertEq(
             vault.accountedAssets(),
-            vault.managedNav() + vault.pendingDepositEscrow() + vault.claimReserve()
-                + vault.unattributedBalance()
+            vault.pendingDepositEscrow() + vault.idleBacking() + vault.claimReserve()
+                + vault.unattributedBalance() + vault.unattributedInbound()
         );
     }
 
@@ -182,7 +186,12 @@ abstract contract VaultInvariantsBase is Test {
     /// 15. Donations never reach the share price.
     function invariant_donations_never_reach_nav() public view {
         assertLe(vault.unattributedBalance(), handler.ghostDonated());
-        assertEq(vault.managedNav(), vault.idleBacking());
+        assertLe(vault.acceptedRemoteValue(), vault.remotePrincipalCap());
+        assertEq(
+            vault.managedNav(),
+            vault.idleBacking() + vault.outboundInTransit() + vault.acceptedRemoteValue()
+                + vault.inboundInTransit()
+        );
     }
 
     /// 7 and 8. No entitlement is consumed more often than it was created.
