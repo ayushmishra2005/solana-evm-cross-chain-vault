@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["test-strategy"]
+members = ["test-strategy", "e2e"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

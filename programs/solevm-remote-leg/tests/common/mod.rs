@@ -50,6 +50,11 @@ pub const WATERMARK_LAG: u64 = 2;
 pub const MAX_REMOTE_PRINCIPAL: u64 = 10_000_000;
 pub const ALLOCATE_TRANSFER_ID: [u8; 32] = [0x77; 32];
 pub const RECALL_TRANSFER_ID: [u8; 32] = [0x88; 32];
+/// keccak256("destination-ref") — bound to the EVM expected destination.
+pub const E2E_DESTINATION_REFERENCE: [u8; 32] = [
+    0xf6, 0xdd, 0x08, 0x4d, 0xd7, 0x3a, 0x0a, 0x71, 0xa5, 0x82, 0x55, 0x05, 0x94, 0x92, 0x1f, 0x2c,
+    0x54, 0x72, 0x40, 0x04, 0x20, 0x60, 0x9c, 0xe6, 0x0e, 0x1a, 0x45, 0xcd, 0x58, 0x48, 0x64, 0x15,
+];
 
 /// The failure metadata is large, so it travels boxed.
 pub type TxResult = Result<(), Box<FailedTransactionMetadata>>;
@@ -98,6 +103,27 @@ impl Fixture {
     }
 
     pub fn with_mint_decimals(decimals: u8) -> Self {
+        Self::construct(decimals, false)
+    }
+
+    /// A fully initialized leg with fixed keys and the EVM destination reference.
+    pub fn e2e() -> Self {
+        let mut fixture = Self::construct(MINT_DECIMALS, true);
+        fixture.initialize().expect("leg initializes");
+        fixture
+            .initialize_control_state()
+            .expect("control state initializes");
+        fixture.install_adapter();
+        fixture
+            .initialize_strategy_state(MAX_REMOTE_PRINCIPAL)
+            .expect("strategy state initializes");
+        fixture
+            .initialize_outbound_state()
+            .expect("outbound state initializes");
+        fixture
+    }
+
+    fn construct(decimals: u8, deterministic: bool) -> Self {
         let mut svm = LiteSVM::new();
         svm.add_program(solevm_remote_leg::ID, &program_bytes())
             .expect("program loads");
@@ -106,10 +132,26 @@ impl Fixture {
         clock.unix_timestamp = START_TIMESTAMP;
         svm.set_sysvar(&clock);
 
-        let administrator = Keypair::new();
-        let guardian = Keypair::new();
-        let outsider = Keypair::new();
-        let verifier = Keypair::new();
+        let administrator = if deterministic {
+            seeded_keypair(1)
+        } else {
+            Keypair::new()
+        };
+        let guardian = if deterministic {
+            seeded_keypair(2)
+        } else {
+            Keypair::new()
+        };
+        let outsider = if deterministic {
+            seeded_keypair(3)
+        } else {
+            Keypair::new()
+        };
+        let verifier = if deterministic {
+            seeded_keypair(4)
+        } else {
+            Keypair::new()
+        };
         for signer in [&administrator, &guardian, &outsider, &verifier] {
             svm.airdrop(&signer.pubkey(), 10_000_000_000).unwrap();
         }
@@ -123,10 +165,31 @@ impl Fixture {
             &solevm_remote_leg::ID,
         );
 
-        let mint = Pubkey::new_unique();
-        let custody = Pubkey::new_unique();
-        let escrow = Pubkey::new_unique();
-        let escrow_owner = Pubkey::new_unique();
+        let mint = if deterministic {
+            Pubkey::new_from_array([0xA1; 32])
+        } else {
+            Pubkey::new_unique()
+        };
+        let custody = if deterministic {
+            Pubkey::new_from_array([0xA2; 32])
+        } else {
+            Pubkey::new_unique()
+        };
+        let escrow = if deterministic {
+            Pubkey::new_from_array(E2E_DESTINATION_REFERENCE)
+        } else {
+            Pubkey::new_unique()
+        };
+        let escrow_owner = if deterministic {
+            Pubkey::new_from_array([0xA4; 32])
+        } else {
+            Pubkey::new_unique()
+        };
+        let adapter_vault = if deterministic {
+            Pubkey::new_from_array([0xA5; 32])
+        } else {
+            Pubkey::new_unique()
+        };
 
         let mut fixture = Self {
             svm,
@@ -143,7 +206,7 @@ impl Fixture {
             custody_authority_bump,
             adapter_state: Pubkey::default(),
             adapter_authority: Pubkey::default(),
-            adapter_vault: Pubkey::new_unique(),
+            adapter_vault,
             params: InitializeParams {
                 deployment_id: DEPLOYMENT_ID,
                 vault_id: VAULT_ID,
@@ -1839,15 +1902,32 @@ pub fn adapter_bytes() -> Vec<u8> {
 }
 
 fn built_program(name: &str) -> Vec<u8> {
-    let directory = std::env::var("SBF_OUT_DIR")
-        .unwrap_or_else(|_| format!("{}/target/deploy", env!("CARGO_MANIFEST_DIR")));
-    let path = format!("{directory}/{name}.so");
-    std::fs::read(&path).unwrap_or_else(|_| {
-        panic!(
-            "missing {path}, build it first with \
-             cargo-build-sbf --tools-version v1.54"
-        )
-    })
+    let mut paths = Vec::new();
+    if let Ok(directory) = std::env::var("SBF_OUT_DIR") {
+        paths.push(format!("{directory}/{name}.so"));
+    }
+    paths.push(format!(
+        "{}/target/deploy/{name}.so",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    paths.push(format!(
+        "{}/../target/deploy/{name}.so",
+        env!("CARGO_MANIFEST_DIR")
+    ));
+    for path in &paths {
+        if let Ok(bytes) = std::fs::read(path) {
+            return bytes;
+        }
+    }
+    panic!(
+        "missing {name}.so, looked in {}, build it first with \
+         cargo-build-sbf --tools-version v1.54",
+        paths.join(", ")
+    );
+}
+
+fn seeded_keypair(slot: u8) -> Keypair {
+    Keypair::new_from_array([slot; 32])
 }
 
 /// Numeric code Anchor reports for one program error.

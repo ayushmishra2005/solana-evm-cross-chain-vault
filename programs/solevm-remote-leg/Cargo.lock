@@ -4174,6 +4174,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "solevm-e2e"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "base64 0.22.1",
+ "litesvm",
+ "protocol-types",
+ "serde",
+ "serde_json",
+ "solana-account",
+ "solana-instruction",
+ "solana-keypair",
+ "solana-signer",
+ "solana-transaction",
+ "solana-transaction-error",
+ "solevm-remote-leg",
+ "solevm-test-strategy",
+ "xchain-sim",
+]
+
+[[package]]
 name = "solevm-remote-leg"
 version = "0.1.0"
 dependencies = [
@@ -4583,6 +4605,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
+]
+
+[[package]]
+name = "xchain-sim"
+version = "0.1.0"
+dependencies = [
+ "protocol-types",
 ]
 
 [[package]]
