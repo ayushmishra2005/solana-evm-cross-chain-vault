@@ -4,11 +4,11 @@ A Solana–EVM cross-chain asynchronous vault protocol with canonical accounting
 
 ## What this project does
 
-Users interact with a vault on EVM. The EVM side owns the canonical shares, processes deposits and redemptions through asynchronous epochs, settles NAV and manages user claims. Capital may be allocated from the vault to a remote strategy leg on Solana.
+Users interact with a vault on EVM. The EVM side owns the canonical shares, user liabilities, epochs, NAV, claims and remote-leg accounting. Capital may be allocated from the vault to a remote strategy leg on Solana.
 
 The Solana leg custodies only the assets allocated to it. It never issues vault shares and has no direct relationship with depositors. The canonical EVM vault remains the sole authority on share ownership and liabilities.
 
-Control messages (Allocate, Recall, ConfigUpdate) and asset transfers travel independently. A cross-chain message proves that a message arrived—it does not prove that the assets arrived. The protocol is designed around this separation.
+Control messages (Allocate, Recall, ConfigUpdate) and asset transfers travel independently.
 
 > A cross-chain message proves that a message arrived. It does not prove that the assets arrived.
 
@@ -47,9 +47,9 @@ flowchart LR
     A2 --> E
 ```
 
-Message transport and asset transport are separate paths. The EVM vault is the canonical source of truth for shares and NAV. The Solana leg executes strategy operations and reports back.
+Message transport and asset transport are separate paths. The EVM vault is the canonical source of truth for shares, user liabilities and NAV, including remote capital. The Solana leg executes strategy operations and reports back. It does not own shares or canonical NAV.
 
-In the current repository, transport and bridge execution are simulated deterministically. No real bridge is integrated.
+In the current repository, transport is simulated deterministically. No real bridge is integrated.
 
 ## Components
 
@@ -83,9 +83,9 @@ Models independent deterministic delivery of control messages and asset transfer
 contracts/solevm-vault
 ```
 
-The canonical EVM vault. ERC-20 vault shares with asynchronous deposit and redemption epochs. Pull-based claims with exact dust accounting. Pause and freeze behavior. Foundry fuzz and invariant testing.
+The canonical EVM vault and its cross-chain accounting. ERC-20 vault shares with asynchronous deposit and redemption epochs. Pull-based claims with exact dust accounting. Pause and freeze behavior. Canonical NAV includes idle backing, outbound transit, principal-capped remote value and inbound transit. Realized remote loss reduces that value. Foundry fuzz and invariant testing.
 
-This is not a drop-in ERC-4626 vault—the asynchronous epoch model differs from the synchronous preview/conversion interface of that standard.
+This is not a drop-in ERC-4626 vault—the asynchronous epoch model differs from the synchronous preview/conversion interface of that standard. The EVM contracts do not execute Solana strategy logic.
 
 ### Rust-to-Solidity differential harness
 
@@ -101,27 +101,40 @@ Generates deterministic scenarios from the Rust accounting model. The Foundry ha
 programs/solevm-remote-leg
 ```
 
-An Anchor-based program that custodies SPL Token assets allocated from the EVM vault. Processes canonical Allocate and Recall messages with replay protection. Tracks transfer attribution, deployed principal and realized loss. Publishes RemoteReport and RecallSent messages through an ordered outbound lane.
+An Anchor-based program that custodies SPL Token assets allocated from the EVM vault. Accepts Allocate, Recall and ConfigUpdate on one inbound control lane with commitment chaining and replay protection. Tracks attributed custody, deployed strategy principal, recalls, realized loss, unattributed assets and outbound reporting state. Publishes RemoteReport and RecallSent on an ordered outbound lane.
 
 The included strategy adapter is a deterministic test harness, not a production yield strategy.
+
+### Full-system E2E
+
+```
+contracts/solevm-vault/test/e2e
+programs/solevm-remote-leg/e2e
+```
+
+Deterministic scenarios that connect the live EVM vault, independent message and asset transport, the live Solana remote leg, the strategy adapter, RemoteReport / RecallSent and EVM cross-chain accounting. Foundry runs the Solidity contracts; LiteSVM runs the Solana program; xchain-sim schedules the two transports; protocol-types supplies the canonical encoding. Orchestration crosses process boundaries through a deterministic FFI harness.
 
 ## Key design decisions
 
 ### EVM owns canonical accounting
 
-Only the EVM vault owns vault shares, user liabilities, canonical NAV, epoch settlement and finalized claims. The Solana leg has no authority over these.
+Only the EVM vault owns vault shares, user liabilities, epochs, canonical NAV, finalized claims, outbound transit, remote accounting, inbound transit and realized remote loss. The Solana leg has no authority over these.
 
 ### Solana owns only remote strategy state
 
-The Solana leg tracks attributed remote principal, strategy deployment, custody balances, realized loss, recall state and unattributed assets. It does not know the vault's total NAV or share count.
+The Solana leg tracks attributed custody, deployed strategy principal, recalls, realized loss, unattributed assets and outbound reporting state. It does not know the vault's total NAV or share count.
 
 ### Message arrival is not asset receipt
 
-Assets become attributed principal only after both the message and the assets are independently observed. A message alone does not increase remote principal.
+Assets become attributed principal only after both the message and the assets are independently observed. A message alone does not increase remote principal. RecallSent is not EVM asset receipt.
+
+### One inbound control lane
+
+Allocate, Recall and ConfigUpdate share the configured EVM→Solana control lane: one ordered sequence and one commitment chain. A consumed sequence cannot be reused by another message type.
 
 ### Remote profit is principal-capped in schema v1
 
-The current report policy does not allow an unaudited remote report to create unrealized profit above the principal already allocated. This is intentional for the initial schema.
+Accepted remote capital contributes to canonical value and is principal-capped under schema v1. Unrealized remote profit is not supported. Outbound transit remains accounted for while capital leaves EVM. After RecallSent, inbound transit remains accounted for until the assets are observed on EVM. Realized remote loss reduces canonical value.
 
 ### One unresolved remote transfer cycle
 
@@ -153,6 +166,8 @@ canonical Recall message
 → realized loss measured from observable state
 → recovered assets sent to fixed outbound escrow
 → RecallSent published
+→ EVM inbound transit updates
+→ recalled assets arrive independently
 ```
 
 ### Reporting
@@ -177,6 +192,9 @@ The repository uses multiple verification approaches:
 - Mollusk compute regression tests for instruction cost
 - Golden-vector protocol tests for canonical message encoding
 - Deterministic transport fault simulation
+- Deterministic cross-chain E2E scenarios
+
+The E2E suite exercises live EVM production contracts and live Solana remote-leg instructions with exact canonical payloads. Message and asset transport stay independent. Scenarios cover the healthy allocation and recall path plus delay, reorder, duplication, drop, partial loss, total loss and freeze during unwind.
 
 All current test suites pass.
 
@@ -185,15 +203,20 @@ All current test suites pass.
 The test suites exercise properties including:
 
 - Message receipt alone cannot increase remote principal
-- Unattributed assets remain outside accepted principal
-- Replay cannot execute a message twice
+- Asset arrival alone cannot authorize remote principal
+- Unattributed custody is excluded from accepted principal
+- Replay cannot execute financial state twice
+- Same control-lane sequence cannot be reused across message types
 - Strategy CPI is restricted to configured program and accounts
 - Same-epoch EVM deposits cannot fund same-epoch redemptions
 - Claims remain pull-based
+- RecallSent is separate from EVM asset receipt
+- Realized loss is applied once
 - Total-loss recall remains representable
 - Freeze blocks new remote exposure while preserving safe unwind
-- Reported remote value cannot exceed schema-v1 principal policy
 - Failed publication does not consume an outbound sequence
+- Principal-capped remote reports cannot create schema-v1 unrealized profit
+- Financial buckets do not double-count value
 
 ## Repository structure
 
@@ -233,7 +256,7 @@ PROPTEST_CASES=250000 cargo test --release -p xchain-sim --test properties
 
 ### Solidity
 
-Install Foundry, then from `contracts/solevm-vault`:
+Install Foundry, then from `contracts/solevm-vault`. The default suite includes the cross-chain E2E tests, which need the Solana SBF artifacts from the next section.
 
 ```bash
 forge install foundry-rs/forge-std@v1.16.2 --no-git --shallow
@@ -256,11 +279,26 @@ From `programs/solevm-remote-leg`:
 
 ```bash
 cargo-build-sbf --tools-version v1.54
+cargo-build-sbf --tools-version v1.54 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
 
 cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+```
+
+### Cross-chain E2E
+
+Requires Python 3, Cargo and both Solana SBF artifacts from the Solana section. From `contracts/solevm-vault`:
+
+```bash
+forge test --match-contract CrossChainE2ETest
+```
+
+From `programs/solevm-remote-leg`:
+
+```bash
+cargo test -p solevm-e2e
 ```
 
 ### Differential testing
@@ -293,15 +331,11 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 - No production oracle is integrated
 - No production Solana yield strategy is included
 - No keeper or indexer is required for the current test architecture
+- The EVM test environment uses a test authenticator rather than a real bridge authenticator
 - The system has not been audited
 - The repository is not presented as production-ready
 - One unresolved remote allocation or recall cycle is supported
 - Classic SPL Token is supported by the Solana leg, not Token-2022
-
-## Next
-
-- Deterministic end-to-end cross-chain scenarios
-- Packaging and release documentation
 
 ## License
 
