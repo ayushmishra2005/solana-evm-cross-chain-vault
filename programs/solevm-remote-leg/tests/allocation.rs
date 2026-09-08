@@ -16,7 +16,7 @@ const AMOUNT: u64 = 1_000_000;
 
 /// A valid allocation message for the next sequence of the allocate lane.
 fn next_allocate(fixture: &Fixture, transfer_id: [u8; 32], amount: u64) -> (u64, Vec<u8>) {
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let sequence = lane.highest_consumed_sequence + 1;
     let bytes = MessageBuilder::allocate()
         .sequence(sequence)
@@ -69,10 +69,10 @@ fn accepting_a_message_alone_never_increases_principal() {
 #[test]
 fn the_allocate_lane_advances_its_commitment() {
     let mut fixture = Fixture::deployed();
-    let before = fixture.lane(MessageClass::Allocate).message_commitment;
+    let before = fixture.control_lane().message_commitment;
     fixture.accept_allocation(ID, AMOUNT);
 
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     assert_ne!(lane.message_commitment, before);
     assert_eq!(lane.highest_consumed_sequence, 1);
 }
@@ -80,7 +80,7 @@ fn the_allocate_lane_advances_its_commitment() {
 #[test]
 fn the_expected_source_balance_is_stored_without_being_verified() {
     let mut fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -112,7 +112,7 @@ fn a_signer_that_is_not_the_verifier_is_rejected() {
 #[test]
 fn a_body_config_version_out_of_step_is_rejected() {
     let mut fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -129,7 +129,7 @@ fn a_body_config_version_out_of_step_is_rejected() {
 #[test]
 fn a_message_for_another_lane_is_rejected() {
     let mut fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -171,12 +171,12 @@ fn a_recall_message_is_rejected_on_the_allocate_lane() {
 // Sequence policy
 
 #[test]
-fn a_sequence_gap_is_accepted_on_the_allocate_lane() {
+fn a_sequence_gap_is_rejected_on_the_control_lane() {
     let mut fixture = Fixture::deployed();
     fixture.fund_position(ID, AMOUNT);
 
     let second = [0x79; 32];
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(7)
         .previous_commitment(lane.message_commitment)
@@ -187,13 +187,11 @@ fn a_sequence_gap_is_accepted_on_the_allocate_lane() {
         })
         .encode();
 
-    fixture.allocate(second, 7, bytes).expect("gap is allowed");
-    assert_eq!(
-        fixture
-            .lane(MessageClass::Allocate)
-            .highest_consumed_sequence,
-        7
+    expect_error(
+        fixture.allocate(second, 7, bytes),
+        RemoteLegError::InvalidSequence,
     );
+    assert_eq!(fixture.control_lane().highest_consumed_sequence, 1);
 }
 
 #[test]
@@ -202,7 +200,7 @@ fn a_sequence_equal_to_the_highest_consumed_is_rejected() {
     fixture.fund_position(ID, AMOUNT);
 
     let second = [0x79; 32];
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -218,7 +216,7 @@ fn a_sequence_equal_to_the_highest_consumed_is_rejected() {
 #[test]
 fn a_stale_sequence_becomes_unusable_after_a_newer_one_lands() {
     let mut fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let stale = MessageBuilder::allocate()
         .sequence(2)
         .previous_commitment(lane.message_commitment)
@@ -264,7 +262,7 @@ fn a_sequence_below_the_watermark_is_rejected() {
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::Allocate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     let bytes = MessageBuilder::allocate()
@@ -355,7 +353,7 @@ fn an_allocation_exactly_at_the_ceiling_is_accepted() {
 #[test]
 fn a_minimum_above_the_authorized_amount_is_rejected_by_the_codec() {
     let fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -372,7 +370,7 @@ fn a_minimum_above_the_authorized_amount_is_rejected_by_the_codec() {
 #[test]
 fn an_amount_above_the_token_range_is_rejected() {
     let mut fixture = Fixture::deployed();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::allocate()
         .sequence(1)
         .previous_commitment(lane.message_commitment)
@@ -433,16 +431,13 @@ fn a_transfer_record_at_a_foreign_address_is_rejected() {
 #[test]
 fn a_rejected_allocation_leaves_every_account_unchanged() {
     let mut fixture = Fixture::deployed();
-    let lane_before = fixture.raw_data(fixture.lane_key(MessageClass::Allocate));
+    let lane_before = fixture.raw_data(fixture.control_lane_key());
     let position_before = fixture.raw_data(fixture.position_key());
 
     let (sequence, bytes) = next_allocate(&fixture, ID, MAX_REMOTE_PRINCIPAL + 1);
     assert!(fixture.allocate(ID, sequence, bytes).is_err());
 
-    assert_eq!(
-        fixture.raw_data(fixture.lane_key(MessageClass::Allocate)),
-        lane_before
-    );
+    assert_eq!(fixture.raw_data(fixture.control_lane_key()), lane_before);
     assert_eq!(fixture.raw_data(fixture.position_key()), position_before);
     assert!(!fixture.transfer_exists(&ID));
 }

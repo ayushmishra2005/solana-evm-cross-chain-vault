@@ -140,9 +140,7 @@ pub fn validate_inbound(
         RemoteLegError::SequenceBelowWatermark
     );
 
-    class
-        .sequence_rule()
-        .check(sequence, lane.highest_consumed_sequence)?;
+    ReplayLane::SEQUENCE_RULE.check(sequence, lane.highest_consumed_sequence)?;
 
     require!(
         message.header.previous_commitment.as_bytes() == &lane.message_commitment,

@@ -1,9 +1,9 @@
-//! One time setup of the risk configuration and the three replay lanes.
+//! One time setup of the risk configuration and the inbound control lane.
 
 use anchor_lang::prelude::*;
 
 use crate::control::{
-    MessageClass, REPLAY_LANE_SEED, RISK_CONFIG_RESERVED, RISK_CONFIG_SEED, ReplayLane, RiskConfig,
+    REPLAY_LANE_SEED, RISK_CONFIG_RESERVED, RISK_CONFIG_SEED, ReplayLane, RiskConfig,
 };
 use crate::errors::RemoteLegError;
 use crate::events::ControlStateInitialized;
@@ -71,40 +71,11 @@ pub struct InitializeControlState<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[MessageClass::Allocate.to_u8()],
             &remote_config.control_lane_id.to_le_bytes(),
         ],
         bump,
     )]
-    pub allocate_lane: Account<'info, ReplayLane>,
-
-    #[account(
-        init,
-        payer = administrator,
-        space = ReplayLane::LEN,
-        seeds = [
-            REPLAY_LANE_SEED,
-            remote_config.key().as_ref(),
-            &[MessageClass::Recall.to_u8()],
-            &remote_config.control_lane_id.to_le_bytes(),
-        ],
-        bump,
-    )]
-    pub recall_lane: Account<'info, ReplayLane>,
-
-    #[account(
-        init,
-        payer = administrator,
-        space = ReplayLane::LEN,
-        seeds = [
-            REPLAY_LANE_SEED,
-            remote_config.key().as_ref(),
-            &[MessageClass::ConfigUpdate.to_u8()],
-            &remote_config.control_lane_id.to_le_bytes(),
-        ],
-        bump,
-    )]
-    pub config_update_lane: Account<'info, ReplayLane>,
+    pub control_lane: Account<'info, ReplayLane>,
 
     pub system_program: Program<'info, System>,
 }
@@ -139,37 +110,16 @@ pub fn process_initialize_control_state(
         reserved: [0u8; RISK_CONFIG_RESERVED],
     });
 
-    let lanes = [
-        (
-            &mut ctx.accounts.allocate_lane,
-            MessageClass::Allocate,
-            ctx.bumps.allocate_lane,
-        ),
-        (
-            &mut ctx.accounts.recall_lane,
-            MessageClass::Recall,
-            ctx.bumps.recall_lane,
-        ),
-        (
-            &mut ctx.accounts.config_update_lane,
-            MessageClass::ConfigUpdate,
-            ctx.bumps.config_update_lane,
-        ),
-    ];
-
-    for (lane, message_class, bump) in lanes {
-        lane.set_inner(ReplayLane {
-            state_version: STATE_VERSION,
-            bump,
-            message_class,
-            lane_id,
-            minimum_acceptable_sequence: ReplayLane::FIRST_SEQUENCE,
-            highest_consumed_sequence: 0,
-            message_commitment: [0u8; 32],
-            mandatory_watermark_lag: params.mandatory_watermark_lag,
-            last_accepted_at: 0,
-        });
-    }
+    ctx.accounts.control_lane.set_inner(ReplayLane {
+        state_version: STATE_VERSION,
+        bump: ctx.bumps.control_lane,
+        lane_id,
+        minimum_acceptable_sequence: ReplayLane::FIRST_SEQUENCE,
+        highest_consumed_sequence: 0,
+        message_commitment: [0u8; 32],
+        mandatory_watermark_lag: params.mandatory_watermark_lag,
+        last_accepted_at: 0,
+    });
 
     emit!(ControlStateInitialized {
         remote_config: config.key(),

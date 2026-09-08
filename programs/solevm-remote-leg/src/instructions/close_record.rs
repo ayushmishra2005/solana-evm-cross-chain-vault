@@ -28,8 +28,7 @@ pub struct CloseConsumedMessage<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[replay_lane.message_class.to_u8()],
-            &replay_lane.lane_id.to_le_bytes(),
+            &remote_config.control_lane_id.to_le_bytes(),
         ],
         bump = replay_lane.bump,
     )]
@@ -41,7 +40,6 @@ pub struct CloseConsumedMessage<'info> {
         seeds = [
             CONSUMED_MESSAGE_SEED,
             remote_config.key().as_ref(),
-            &[consumed_message.message_class.to_u8()],
             &consumed_message.lane_id.to_le_bytes(),
             &consumed_message.sequence.to_le_bytes(),
         ],
@@ -59,14 +57,15 @@ pub fn process_close_consumed_message(ctx: Context<CloseConsumedMessage>) -> Res
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
-    require!(
-        record.message_class == lane.message_class,
-        RemoteLegError::InvalidConsumedMessage
-    );
     require_eq!(
         record.lane_id,
         lane.lane_id,
         RemoteLegError::InvalidConsumedMessage
+    );
+    require_eq!(
+        lane.lane_id,
+        ctx.accounts.remote_config.control_lane_id,
+        RemoteLegError::InvalidLane
     );
     require_gt!(
         lane.minimum_acceptable_sequence,

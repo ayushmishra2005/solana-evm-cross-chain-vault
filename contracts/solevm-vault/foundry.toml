@@ -11,6 +11,7 @@ via_ir = false
 bytecode_hash = "none"
 gas_reports = ["SolEVMVault", "RemoteAccounting"]
 ffi = true
+fs_permissions = [{ access = "read", path = "./testdata" }]
 
 [lint]
 # Public immutables keep lowerCamelCase so accessors read like the rest of the API.

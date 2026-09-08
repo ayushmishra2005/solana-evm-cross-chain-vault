@@ -31,27 +31,35 @@ abstract contract RemoteTestBase is VaultTestBase {
         authenticator = new TestMessageAuthenticator();
         authenticator.setApproveAll(true);
 
-        evmApp = ProtocolCodec.applicationFromAddress(makeAddr("evm-app"));
-        solanaApp = keccak256("solana-app");
-        deploymentId = keccak256("deployment");
-        vaultId = keccak256("vault");
-        destRef = keccak256("destination-ref");
-
-        IRemoteAccounting.Identities memory identities = IRemoteAccounting.Identities({
-            evmChainId: EVM_CHAIN,
-            solanaChainId: SOLANA_CHAIN,
-            evmApplication: evmApp,
-            solanaApplication: solanaApp,
-            deploymentId: deploymentId,
-            vaultId: vaultId,
-            outboundLaneId: OUTBOUND_LANE,
-            inboundLaneId: INBOUND_LANE,
-            expectedDestinationReference: destRef
-        });
+        IRemoteAccounting.Identities memory identities = _identities();
+        evmApp = identities.evmApplication;
+        solanaApp = identities.solanaApplication;
+        deploymentId = identities.deploymentId;
+        vaultId = identities.vaultId;
+        destRef = identities.expectedDestinationReference;
 
         coordinator = new RemoteAccounting(vault, authenticator, sink, identities);
         vm.prank(admin);
         vault.bindRemoteAccounting(address(coordinator));
+    }
+
+    function _identities()
+        internal
+        virtual
+        returns (IRemoteAccounting.Identities memory identities)
+    {
+        identities =
+            IRemoteAccounting.Identities({
+                evmChainId: EVM_CHAIN,
+                solanaChainId: SOLANA_CHAIN,
+                evmApplication: ProtocolCodec.applicationFromAddress(makeAddr("evm-app")),
+                solanaApplication: keccak256("solana-app"),
+                deploymentId: keccak256("deployment"),
+                vaultId: keccak256("vault"),
+                outboundLaneId: OUTBOUND_LANE,
+                inboundLaneId: INBOUND_LANE,
+                expectedDestinationReference: keccak256("destination-ref")
+            });
     }
 
     function _times()
@@ -83,13 +91,13 @@ abstract contract RemoteTestBase is VaultTestBase {
     function _inboundHeader() internal view returns (ProtocolCodec.Header memory header) {
         uint64 nowAt = uint64(block.timestamp);
         header = ProtocolCodec.Header({
-            sourceChain: SOLANA_CHAIN,
-            destinationChain: EVM_CHAIN,
+            sourceChain: coordinator.solanaChainId(),
+            destinationChain: coordinator.evmChainId(),
             sourceApplication: solanaApp,
             destinationApplication: evmApp,
             deploymentId: deploymentId,
             vaultId: vaultId,
-            laneId: INBOUND_LANE,
+            laneId: coordinator.inboundLaneId(),
             sequence: coordinator.inboundExpectedSequence(),
             previousCommitment: coordinator.inboundLatestCommitment(),
             observedAt: nowAt,

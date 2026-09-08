@@ -8,7 +8,7 @@ use common::{
     ALLOCATE_TRANSFER_ID, Fixture, MAX_REMOTE_PRINCIPAL, RECALL_TRANSFER_ID, expect_error,
 };
 use solana_signer::Signer;
-use solevm_remote_leg::{MessageClass, RemoteLegError, TransferStatus};
+use solevm_remote_leg::{RemoteLegError, TransferStatus};
 
 const AMOUNT: u64 = 1_000_000;
 
@@ -131,13 +131,13 @@ fn a_frozen_leg_still_closes_a_consumed_record() {
     let administrator = fixture.administrator.insecure_clone();
     fixture.freeze(&administrator).expect("freeze lands");
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 3)
+        .advance_watermark(&administrator, 3)
         .expect("watermark advances while frozen");
 
     let record = fixture.record_key(1);
     let instruction = fixture.close_record_instruction(
         administrator.pubkey(),
-        fixture.lane_key(MessageClass::ConfigUpdate),
+        fixture.control_lane_key(),
         record,
     );
     let outsider = fixture.outsider.insecure_clone();

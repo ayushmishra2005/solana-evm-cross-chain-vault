@@ -32,8 +32,8 @@ fn the_configuration_keeps_its_size() {
 fn the_control_accounts_keep_their_sizes() {
     assert_eq!(RiskConfig::INIT_SPACE, 104);
     assert_eq!(RiskConfig::LEN, DISCRIMINATOR_LEN + 104);
-    assert_eq!(ReplayLane::INIT_SPACE, 71);
-    assert_eq!(ReplayLane::LEN, DISCRIMINATOR_LEN + 71);
+    assert_eq!(ReplayLane::INIT_SPACE, 70);
+    assert_eq!(ReplayLane::LEN, DISCRIMINATOR_LEN + 70);
     assert_eq!(ConsumedMessage::INIT_SPACE, 47);
     assert_eq!(ConsumedMessage::LEN, DISCRIMINATOR_LEN + 47);
 }
@@ -216,6 +216,33 @@ fn the_position_keeps_its_field_order() {
     assert_eq!(
         offset_of(&bytes, &position.latest_completed_transfer_id),
         92
+    );
+}
+
+#[test]
+fn the_replay_lane_keeps_its_field_order() {
+    let lane = ReplayLane {
+        state_version: 1,
+        bump: 254,
+        lane_id: 0x1111_1111,
+        minimum_acceptable_sequence: 0x2222_2222_2222_2222,
+        highest_consumed_sequence: 0x3333_3333_3333_3333,
+        message_commitment: [0xA1; 32],
+        mandatory_watermark_lag: 0x4444_4444_4444_4444,
+        last_accepted_at: 0x5555_5555_5555_5555,
+    };
+    let bytes = stored(&lane);
+
+    assert_eq!(bytes.len(), ReplayLane::LEN);
+    assert_eq!(offset_of(&bytes, &lane.lane_id.to_le_bytes()), 10);
+    assert_eq!(
+        offset_of(&bytes, &lane.highest_consumed_sequence.to_le_bytes()),
+        8 + ReplayLane::HIGHEST_CONSUMED_OFFSET
+    );
+    assert_eq!(offset_of(&bytes, &lane.message_commitment), 30);
+    assert_eq!(
+        offset_of(&bytes, &lane.mandatory_watermark_lag.to_le_bytes()),
+        62
     );
 }
 

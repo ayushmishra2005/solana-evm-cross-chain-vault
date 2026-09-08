@@ -21,10 +21,10 @@ use solana_transaction_error::TransactionError;
 
 use solevm_remote_leg::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED};
 use solevm_remote_leg::{
-    CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, MessageClass,
-    OutboundLane, REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RecallSentMarker,
-    RemoteConfig, RemoteLegError, RemotePosition, ReplayLane, ReportRecord, RiskConfig,
-    STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED, TransferRecord,
+    CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, OutboundLane,
+    REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RecallSentMarker, RemoteConfig,
+    RemoteLegError, RemotePosition, ReplayLane, ReportRecord, RiskConfig, STRATEGY_CONFIG_SEED,
+    StrategyConfig, TRANSFER_RECORD_SEED, TransferRecord,
 };
 use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
@@ -454,30 +454,19 @@ impl Fixture {
         Pubkey::find_program_address(&[RISK_CONFIG_SEED, config.as_ref()], &solevm_remote_leg::ID).0
     }
 
-    pub fn lane_address(config: &Pubkey, class: MessageClass, lane_id: u32) -> Pubkey {
+    pub fn lane_address(config: &Pubkey, lane_id: u32) -> Pubkey {
         Pubkey::find_program_address(
-            &[
-                REPLAY_LANE_SEED,
-                config.as_ref(),
-                &[class.to_u8()],
-                &lane_id.to_le_bytes(),
-            ],
+            &[REPLAY_LANE_SEED, config.as_ref(), &lane_id.to_le_bytes()],
             &solevm_remote_leg::ID,
         )
         .0
     }
 
-    pub fn record_address(
-        config: &Pubkey,
-        class: MessageClass,
-        lane_id: u32,
-        sequence: u64,
-    ) -> (Pubkey, u8) {
+    pub fn record_address(config: &Pubkey, lane_id: u32, sequence: u64) -> (Pubkey, u8) {
         Pubkey::find_program_address(
             &[
                 CONSUMED_MESSAGE_SEED,
                 config.as_ref(),
-                &[class.to_u8()],
                 &lane_id.to_le_bytes(),
                 &sequence.to_le_bytes(),
             ],
@@ -489,18 +478,12 @@ impl Fixture {
         Self::risk_config_address(&self.config)
     }
 
-    pub fn lane_key(&self, class: MessageClass) -> Pubkey {
-        Self::lane_address(&self.config, class, CONTROL_LANE_ID)
+    pub fn control_lane_key(&self) -> Pubkey {
+        Self::lane_address(&self.config, CONTROL_LANE_ID)
     }
 
     pub fn record_key(&self, sequence: u64) -> Pubkey {
-        Self::record_address(
-            &self.config,
-            MessageClass::ConfigUpdate,
-            CONTROL_LANE_ID,
-            sequence,
-        )
-        .0
+        Self::record_address(&self.config, CONTROL_LANE_ID, sequence).0
     }
 
     pub fn control_accounts(&self) -> ControlAccounts {
@@ -508,9 +491,7 @@ impl Fixture {
             administrator: self.administrator.pubkey(),
             remote_config: self.config,
             risk_config: self.risk(),
-            allocate_lane: self.lane_key(MessageClass::Allocate),
-            recall_lane: self.lane_key(MessageClass::Recall),
-            config_update_lane: self.lane_key(MessageClass::ConfigUpdate),
+            control_lane: self.control_lane_key(),
             system_program: anchor_lang::system_program::ID,
         }
     }
@@ -548,9 +529,7 @@ impl Fixture {
             administrator: accounts.administrator,
             remote_config: accounts.remote_config,
             risk_config: accounts.risk_config,
-            allocate_lane: accounts.allocate_lane,
-            recall_lane: accounts.recall_lane,
-            config_update_lane: accounts.config_update_lane,
+            control_lane: accounts.control_lane,
             system_program: accounts.system_program,
         }
         .to_account_metas(None);
@@ -567,7 +546,7 @@ impl Fixture {
             transport_verifier: self.verifier.pubkey(),
             remote_config: self.config,
             risk_config: self.risk(),
-            config_update_lane: self.lane_key(MessageClass::ConfigUpdate),
+            control_lane: self.control_lane_key(),
             consumed_message: self.record_key(sequence),
             system_program: anchor_lang::system_program::ID,
         }
@@ -599,7 +578,7 @@ impl Fixture {
             transport_verifier: accounts.transport_verifier,
             remote_config: accounts.remote_config,
             risk_config: accounts.risk_config,
-            config_update_lane: accounts.config_update_lane,
+            control_lane: accounts.control_lane,
             consumed_message: accounts.consumed_message,
             system_program: accounts.system_program,
         }
@@ -615,20 +594,16 @@ impl Fixture {
     pub fn advance_watermark(
         &mut self,
         authority: &Keypair,
-        class: MessageClass,
         new_minimum_sequence: u64,
     ) -> TxResult {
-        // A leg without strategy state has no position to pass.
-        let position = match class {
-            MessageClass::ConfigUpdate => None,
-            _ if self.svm.get_account(&self.position_key()).is_none() => None,
-            _ => Some(self.position_key()),
-        };
+        let position = self
+            .svm
+            .get_account(&self.position_key())
+            .map(|_| self.position_key());
         let instruction = self.watermark_instruction(
             authority.pubkey(),
-            self.lane_key(class),
+            self.control_lane_key(),
             position,
-            class,
             new_minimum_sequence,
         );
         self.send(instruction, &[&authority.insecure_clone()])
@@ -639,7 +614,6 @@ impl Fixture {
         administrator: Pubkey,
         replay_lane: Pubkey,
         remote_position: Option<Pubkey>,
-        message_class: MessageClass,
         new_minimum_sequence: u64,
     ) -> Instruction {
         let metas = solevm_remote_leg::accounts::AdvanceReplayWatermark {
@@ -654,7 +628,6 @@ impl Fixture {
             program_id: solevm_remote_leg::ID,
             accounts: metas,
             data: solevm_remote_leg::instruction::AdvanceReplayWatermark {
-                message_class,
                 new_minimum_sequence,
             }
             .data(),
@@ -669,7 +642,7 @@ impl Fixture {
     pub fn close_record_to(&mut self, sequence: u64, rent_destination: Pubkey) -> TxResult {
         let instruction = self.close_record_instruction(
             rent_destination,
-            self.lane_key(MessageClass::ConfigUpdate),
+            self.control_lane_key(),
             self.record_key(sequence),
         );
         let payer = self.outsider.insecure_clone();
@@ -702,10 +675,10 @@ impl Fixture {
         RiskConfig::try_deserialize(&mut account.data.as_slice()).expect("risk decodes")
     }
 
-    pub fn lane(&self, class: MessageClass) -> ReplayLane {
+    pub fn control_lane(&self) -> ReplayLane {
         let account = self
             .svm
-            .get_account(&self.lane_key(class))
+            .get_account(&self.control_lane_key())
             .expect("lane exists");
         ReplayLane::try_deserialize(&mut account.data.as_slice()).expect("lane decodes")
     }
@@ -718,13 +691,9 @@ impl Fixture {
         ConsumedMessage::try_deserialize(&mut account.data.as_slice()).expect("record decodes")
     }
 
-    /// The consumed record one asset lane wrote.
-    pub fn asset_record(&self, class: MessageClass, sequence: u64) -> ConsumedMessage {
-        let account = self
-            .svm
-            .get_account(&self.asset_record_key(class, sequence))
-            .expect("record exists");
-        ConsumedMessage::try_deserialize(&mut account.data.as_slice()).expect("record decodes")
+    /// The consumed record written for one control-lane sequence.
+    pub fn asset_record(&self, sequence: u64) -> ConsumedMessage {
+        self.record(sequence)
     }
 
     /// True when a record account holds program owned data.
@@ -748,15 +717,14 @@ impl Fixture {
             .map_or_else(Vec::new, |account| account.data)
     }
 
-    /// Raises the highest consumed sequence a lane records.
+    /// Raises the highest consumed sequence the control lane records.
     ///
-    /// The normal flow keeps an open transfer at the top of its lane, so this
+    /// The normal flow keeps an open transfer at the top of the lane, so this
     /// is the only way to reach the guard that protects it on its own.
-    pub fn set_lane_highest(&mut self, class: MessageClass, sequence: u64) {
-        let key = self.lane_key(class);
+    pub fn set_lane_highest(&mut self, sequence: u64) {
+        let key = self.control_lane_key();
         let mut account = self.svm.get_account(&key).expect("lane exists");
-        // The highest consumed sequence follows the header and the watermark.
-        let offset = 8 + 1 + 1 + 1 + 4 + 8;
+        let offset = 8 + ReplayLane::HIGHEST_CONSUMED_OFFSET;
         account.data[offset..offset + 8].copy_from_slice(&sequence.to_le_bytes());
         self.svm.set_account(key, account).unwrap();
     }
@@ -799,7 +767,7 @@ impl Fixture {
 
     /// Builds and sends the next valid update, returning its message id.
     pub fn accept_next_update(&mut self) -> [u8; 32] {
-        let lane = self.lane(MessageClass::ConfigUpdate);
+        let lane = self.control_lane();
         let sequence = lane.highest_consumed_sequence + 1;
         let version = self.config().config_version;
 
@@ -870,8 +838,8 @@ impl Fixture {
         Self::transfer_address(&self.config, transfer_id).0
     }
 
-    pub fn asset_record_key(&self, class: MessageClass, sequence: u64) -> Pubkey {
-        Self::record_address(&self.config, class, CONTROL_LANE_ID, sequence).0
+    pub fn asset_record_key(&self, sequence: u64) -> Pubkey {
+        self.record_key(sequence)
     }
 
     /// Deploys the adapter program and initializes its state.
@@ -1054,17 +1022,17 @@ impl Fixture {
             risk_config: self.risk(),
             strategy_config: self.strategy(),
             remote_position: self.position_key(),
-            replay_lane: self.lane_key(MessageClass::Allocate),
+            replay_lane: self.control_lane_key(),
             transfer_record: self.transfer_key(&transfer_id),
-            consumed_message: self.asset_record_key(MessageClass::Allocate, sequence),
+            consumed_message: self.asset_record_key(sequence),
             system_program: anchor_lang::system_program::ID,
         }
     }
 
     pub fn recall_accounts(&self, transfer_id: [u8; 32], sequence: u64) -> AssetAccounts {
         AssetAccounts {
-            replay_lane: self.lane_key(MessageClass::Recall),
-            consumed_message: self.asset_record_key(MessageClass::Recall, sequence),
+            replay_lane: self.control_lane_key(),
+            consumed_message: self.asset_record_key(sequence),
             ..self.allocate_accounts(transfer_id, sequence)
         }
     }
@@ -1086,7 +1054,7 @@ impl Fixture {
             risk_config: accounts.risk_config,
             strategy_config: accounts.strategy_config,
             remote_position: accounts.remote_position,
-            allocate_lane: accounts.replay_lane,
+            control_lane: accounts.replay_lane,
             transfer_record: accounts.transfer_record,
             consumed_message: accounts.consumed_message,
             system_program: accounts.system_program,
@@ -1133,7 +1101,7 @@ impl Fixture {
             remote_config: accounts.remote_config,
             risk_config: accounts.risk_config,
             remote_position: accounts.remote_position,
-            recall_lane: accounts.replay_lane,
+            control_lane: accounts.replay_lane,
             transfer_record: accounts.transfer_record,
             consumed_message: accounts.consumed_message,
             system_program: accounts.system_program,
@@ -1334,17 +1302,16 @@ impl Fixture {
         amount: u64,
         sequence: Option<u64>,
     ) -> u64 {
-        let sequence =
-            sequence.unwrap_or(self.lane(MessageClass::Allocate).highest_consumed_sequence + 1);
+        let sequence = sequence.unwrap_or(self.control_lane().highest_consumed_sequence + 1);
         let bytes = self.allocate_bytes(transfer_id, amount, sequence);
         self.allocate(transfer_id, sequence, bytes)
             .expect("allocation lands");
         sequence
     }
 
-    /// Encodes one Allocate against the current Allocate lane.
+    /// Encodes one Allocate against the shared inbound control lane.
     pub fn allocate_bytes(&self, transfer_id: [u8; 32], amount: u64, sequence: u64) -> Vec<u8> {
-        let lane = self.lane(MessageClass::Allocate);
+        let lane = self.control_lane();
         messages::MessageBuilder::allocate()
             .sequence(sequence)
             .previous_commitment(lane.message_commitment)
@@ -1370,17 +1337,16 @@ impl Fixture {
         amount: u64,
         sequence: Option<u64>,
     ) -> u64 {
-        let sequence =
-            sequence.unwrap_or(self.lane(MessageClass::Recall).highest_consumed_sequence + 1);
+        let sequence = sequence.unwrap_or(self.control_lane().highest_consumed_sequence + 1);
         let bytes = self.recall_bytes(transfer_id, amount, sequence);
         self.recall(transfer_id, sequence, bytes)
             .expect("recall lands");
         sequence
     }
 
-    /// Encodes one Recall against the current Recall lane.
+    /// Encodes one Recall against the shared inbound control lane.
     pub fn recall_bytes(&self, transfer_id: [u8; 32], amount: u64, sequence: u64) -> Vec<u8> {
-        let lane = self.lane(MessageClass::Recall);
+        let lane = self.control_lane();
         messages::MessageBuilder::recall()
             .sequence(sequence)
             .previous_commitment(lane.message_commitment)
@@ -1816,9 +1782,7 @@ pub struct ControlAccounts {
     pub administrator: Pubkey,
     pub remote_config: Pubkey,
     pub risk_config: Pubkey,
-    pub allocate_lane: Pubkey,
-    pub recall_lane: Pubkey,
-    pub config_update_lane: Pubkey,
+    pub control_lane: Pubkey,
     pub system_program: Pubkey,
 }
 
@@ -1828,7 +1792,7 @@ pub struct UpdateAccounts {
     pub transport_verifier: Pubkey,
     pub remote_config: Pubkey,
     pub risk_config: Pubkey,
-    pub config_update_lane: Pubkey,
+    pub control_lane: Pubkey,
     pub consumed_message: Pubkey,
     pub system_program: Pubkey,
 }

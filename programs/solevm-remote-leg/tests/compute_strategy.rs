@@ -17,7 +17,6 @@ use mollusk_svm::program::loader_keys;
 use mollusk_svm::result::ProgramResult;
 use solana_account::Account;
 use solana_signer::Signer;
-use solevm_remote_leg::MessageClass;
 
 const STRATEGY_STATE_LIMIT: u64 = 45_000;
 const RECONCILE_LIMIT: u64 = 15_000;
@@ -190,8 +189,8 @@ fn deploying_to_the_strategy_stays_within_its_compute_limit() {
 fn accepting_a_recall_against_custody_stays_within_its_compute_limit() {
     let mut bench = Bench::deployed();
     bench.fixture.fund_position(ALLOCATE_TRANSFER_ID, AMOUNT);
-    let bytes = bench.fixture.recall_bytes(RECALL_TRANSFER_ID, AMOUNT, 1);
-    let accounts = bench.fixture.recall_accounts(RECALL_TRANSFER_ID, 1);
+    let bytes = bench.fixture.recall_bytes(RECALL_TRANSFER_ID, AMOUNT, 2);
+    let accounts = bench.fixture.recall_accounts(RECALL_TRANSFER_ID, 2);
     let instruction = bench.fixture.recall_instruction(accounts, bytes);
     bench.measure(
         "process_recall from custody",
@@ -206,8 +205,8 @@ fn accepting_a_recall_against_the_strategy_stays_within_its_compute_limit() {
     let mut bench = Bench::deployed();
     bench.fixture.fund_position(ALLOCATE_TRANSFER_ID, AMOUNT);
     bench.fixture.deploy(AMOUNT).expect("deposit lands");
-    let bytes = bench.fixture.recall_bytes(RECALL_TRANSFER_ID, AMOUNT, 1);
-    let accounts = bench.fixture.recall_accounts(RECALL_TRANSFER_ID, 1);
+    let bytes = bench.fixture.recall_bytes(RECALL_TRANSFER_ID, AMOUNT, 2);
+    let accounts = bench.fixture.recall_accounts(RECALL_TRANSFER_ID, 2);
     let instruction = bench.fixture.recall_instruction(accounts, bytes);
     bench.measure(
         "process_recall from strategy",
@@ -317,21 +316,16 @@ fn a_watermark_blocked_by_a_transfer_stays_within_its_compute_limit() {
     let mut bench = Bench::deployed();
     let sequence = bench
         .fixture
-        .accept_allocation_at(ALLOCATE_TRANSFER_ID, AMOUNT, Some(10));
-    bench
-        .fixture
-        .set_lane_highest(MessageClass::Allocate, sequence + 8);
+        .accept_allocation(ALLOCATE_TRANSFER_ID, AMOUNT);
+    bench.fixture.set_lane_highest(sequence + 8);
 
     let administrator = bench.fixture.administrator.pubkey();
-    let lane = bench.fixture.lane_key(MessageClass::Allocate);
+    let lane = bench.fixture.control_lane_key();
     let position = bench.fixture.position_key();
-    let instruction = bench.fixture.watermark_instruction(
-        administrator,
-        lane,
-        Some(position),
-        MessageClass::Allocate,
-        sequence + 1,
-    );
+    let instruction =
+        bench
+            .fixture
+            .watermark_instruction(administrator, lane, Some(position), sequence + 1);
     bench.measure(
         "blocked advance_replay_watermark",
         instruction,

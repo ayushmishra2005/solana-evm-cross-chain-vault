@@ -4,29 +4,32 @@
 
 mod common;
 
-use common::{ALLOCATE_TRANSFER_ID, Fixture, RECALL_TRANSFER_ID, expect_error};
+use anchor_lang::error::ErrorCode;
+use common::{
+    ALLOCATE_TRANSFER_ID, Fixture, Pubkey, RECALL_TRANSFER_ID, expect_anchor_error, expect_error,
+};
 use solana_signer::Signer;
-use solevm_remote_leg::{MessageClass, RemoteLegError};
+use solevm_remote_leg::RemoteLegError;
 
 const AMOUNT: u64 = 100;
-/// Leaves room under the open transfer, so the watermark can move at all.
-const OPEN_SEQUENCE: u64 = 10;
 
-/// Opens an allocation and lifts the lane above it.
+/// Opens an allocation and lifts the shared lane above it.
 ///
 /// Lifting the lane isolates the obligation guard from the bounds and lag
 /// rules, which would otherwise reject first.
 fn open_allocation(fixture: &mut Fixture) -> u64 {
-    let sequence = fixture.accept_allocation_at(ALLOCATE_TRANSFER_ID, AMOUNT, Some(OPEN_SEQUENCE));
-    fixture.set_lane_highest(MessageClass::Allocate, sequence + 8);
+    // Leave the starting watermark at 1 so the open transfer sits above it.
+    fixture.accept_updates(2);
+    let sequence = fixture.accept_allocation(ALLOCATE_TRANSFER_ID, AMOUNT);
+    fixture.set_lane_highest(sequence + 8);
     sequence
 }
 
 /// Opens a recall the same way, funding the position first.
 fn open_recall(fixture: &mut Fixture) -> u64 {
     fixture.fund_position([0x70; 32], AMOUNT);
-    let sequence = fixture.accept_recall_at(RECALL_TRANSFER_ID, AMOUNT, Some(OPEN_SEQUENCE));
-    fixture.set_lane_highest(MessageClass::Recall, sequence + 8);
+    let sequence = fixture.accept_recall(RECALL_TRANSFER_ID, AMOUNT);
+    fixture.set_lane_highest(sequence + 8);
     sequence
 }
 
@@ -36,7 +39,7 @@ fn an_open_transfer_always_sits_at_the_top_of_its_lane() {
     fixture.accept_allocation(ALLOCATE_TRANSFER_ID, AMOUNT);
 
     let position = fixture.position();
-    let lane = fixture.lane(MessageClass::Allocate);
+    let lane = fixture.control_lane();
     assert_eq!(
         position.active_transfer_sequence,
         lane.highest_consumed_sequence
@@ -50,15 +53,10 @@ fn the_watermark_may_not_pass_an_open_allocation() {
 
     let administrator = fixture.administrator.insecure_clone();
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::Allocate, sequence + 1),
+        fixture.advance_watermark(&administrator, sequence + 1),
         RemoteLegError::FinancialObligationBlocksWatermark,
     );
-    assert_eq!(
-        fixture
-            .lane(MessageClass::Allocate)
-            .minimum_acceptable_sequence,
-        1
-    );
+    assert_eq!(fixture.control_lane().minimum_acceptable_sequence, 1);
 }
 
 #[test]
@@ -68,14 +66,9 @@ fn the_watermark_may_reach_an_open_allocation() {
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::Allocate, sequence)
+        .advance_watermark(&administrator, sequence)
         .expect("reaching the open sequence is allowed");
-    assert_eq!(
-        fixture
-            .lane(MessageClass::Allocate)
-            .minimum_acceptable_sequence,
-        sequence
-    );
+    assert_eq!(fixture.control_lane().minimum_acceptable_sequence, sequence);
 }
 
 #[test]
@@ -85,7 +78,7 @@ fn the_watermark_may_not_pass_an_open_recall() {
 
     let administrator = fixture.administrator.insecure_clone();
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::Recall, sequence + 1),
+        fixture.advance_watermark(&administrator, sequence + 1),
         RemoteLegError::FinancialObligationBlocksWatermark,
     );
 }
@@ -97,7 +90,7 @@ fn the_watermark_may_reach_an_open_recall() {
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::Recall, sequence)
+        .advance_watermark(&administrator, sequence)
         .expect("reaching the open sequence is allowed");
 }
 
@@ -108,7 +101,7 @@ fn the_watermark_moves_once_the_allocation_completes() {
 
     let administrator = fixture.administrator.insecure_clone();
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::Allocate, sequence + 1),
+        fixture.advance_watermark(&administrator, sequence + 1),
         RemoteLegError::FinancialObligationBlocksWatermark,
     );
 
@@ -117,7 +110,7 @@ fn the_watermark_moves_once_the_allocation_completes() {
         .attribute(ALLOCATE_TRANSFER_ID)
         .expect("attribution lands");
     fixture
-        .advance_watermark(&administrator, MessageClass::Allocate, sequence + 1)
+        .advance_watermark(&administrator, sequence + 1)
         .expect("a closed cycle no longer blocks");
 }
 
@@ -128,7 +121,7 @@ fn the_watermark_moves_once_the_recall_completes() {
 
     let administrator = fixture.administrator.insecure_clone();
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::Recall, sequence + 1),
+        fixture.advance_watermark(&administrator, sequence + 1),
         RemoteLegError::FinancialObligationBlocksWatermark,
     );
 
@@ -136,73 +129,76 @@ fn the_watermark_moves_once_the_recall_completes() {
         .send_recall(RECALL_TRANSFER_ID, AMOUNT)
         .expect("send lands");
     fixture
-        .advance_watermark(&administrator, MessageClass::Recall, sequence + 1)
+        .advance_watermark(&administrator, sequence + 1)
         .expect("a closed cycle no longer blocks");
 }
 
 #[test]
-fn an_allocation_never_blocks_the_recall_lane() {
+fn an_open_allocation_blocks_the_shared_control_lane() {
     let mut fixture = Fixture::deployed();
     let sequence = open_allocation(&mut fixture);
-    fixture.set_lane_highest(MessageClass::Recall, sequence + 8);
 
     let administrator = fixture.administrator.insecure_clone();
-    fixture
-        .advance_watermark(&administrator, MessageClass::Recall, sequence + 1)
-        .expect("the other lane is free");
+    expect_error(
+        fixture.advance_watermark(&administrator, sequence + 1),
+        RemoteLegError::FinancialObligationBlocksWatermark,
+    );
 }
 
 #[test]
-fn the_config_lane_keeps_its_earlier_behavior() {
+fn the_watermark_may_move_below_an_open_transfer() {
     let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
-    open_allocation(&mut fixture);
+    let sequence = open_allocation(&mut fixture);
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
-        .expect("an open allocation does not touch the config lane");
+        .advance_watermark(&administrator, 2)
+        .expect("a watermark below the open sequence is still allowed");
+    expect_error(
+        fixture.advance_watermark(&administrator, sequence + 1),
+        RemoteLegError::FinancialObligationBlocksWatermark,
+    );
 }
 
 #[test]
-fn an_asset_lane_requires_the_position() {
+fn a_foreign_position_cannot_authorize_a_watermark() {
     let mut fixture = Fixture::deployed();
     let sequence = open_allocation(&mut fixture);
 
     let administrator = fixture.administrator.insecure_clone();
     let instruction = fixture.watermark_instruction(
         administrator.pubkey(),
-        fixture.lane_key(MessageClass::Allocate),
-        None,
-        MessageClass::Allocate,
+        fixture.control_lane_key(),
+        Some(Pubkey::new_unique()),
         sequence,
     );
-    expect_error(
+    expect_anchor_error(
         fixture.send(instruction, &[&administrator]),
-        RemoteLegError::InvalidRemotePosition,
+        ErrorCode::AccountNotInitialized,
     );
 }
 
 #[test]
 fn a_record_left_by_a_finished_transfer_closes_and_stays_unreplayable() {
     let mut fixture = Fixture::deployed();
-    let sequence = fixture.accept_allocation_at(ALLOCATE_TRANSFER_ID, AMOUNT, Some(OPEN_SEQUENCE));
+    let sequence = fixture.accept_allocation(ALLOCATE_TRANSFER_ID, AMOUNT);
     fixture.credit(fixture.custody, AMOUNT);
     fixture
         .attribute(ALLOCATE_TRANSFER_ID)
         .expect("attribution lands");
 
-    fixture.set_lane_highest(MessageClass::Allocate, sequence + 8);
+    fixture.set_lane_highest(sequence + 8);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::Allocate, sequence + 1)
+        .advance_watermark(&administrator, sequence + 1)
         .expect("watermark advances");
 
-    let record = fixture.asset_record_key(MessageClass::Allocate, sequence);
+    let record = fixture.asset_record_key(sequence);
     let outsider = fixture.outsider.insecure_clone();
     let instruction = fixture.close_record_instruction(
         administrator.pubkey(),
-        fixture.lane_key(MessageClass::Allocate),
+        fixture.control_lane_key(),
         record,
     );
     fixture

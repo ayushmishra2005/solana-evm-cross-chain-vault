@@ -81,14 +81,9 @@ pub mod solevm_remote_leg {
 
     pub fn advance_replay_watermark(
         ctx: Context<AdvanceReplayWatermark>,
-        message_class: MessageClass,
         new_minimum_sequence: u64,
     ) -> Result<()> {
-        instructions::watermark::process_advance_replay_watermark(
-            ctx,
-            message_class,
-            new_minimum_sequence,
-        )
+        instructions::watermark::process_advance_replay_watermark(ctx, new_minimum_sequence)
     }
 
     pub fn close_consumed_message(ctx: Context<CloseConsumedMessage>) -> Result<()> {

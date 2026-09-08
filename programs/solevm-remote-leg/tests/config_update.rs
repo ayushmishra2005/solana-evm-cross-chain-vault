@@ -21,7 +21,7 @@ fn accept_first(fixture: &mut Fixture) -> [u8; 32] {
 
 /// Sends the second valid update and returns its message id.
 fn accept_second(fixture: &mut Fixture) -> [u8; 32] {
-    let commitment = fixture.lane(MessageClass::ConfigUpdate).message_commitment;
+    let commitment = fixture.control_lane().message_commitment;
     let (bytes, id) = MessageBuilder::config_update()
         .sequence(2)
         .previous_commitment(commitment)
@@ -52,7 +52,7 @@ fn the_first_config_update_is_applied() {
 
     assert_eq!(fixture.config().config_version, CONFIG_VERSION + 1);
 
-    let lane = fixture.lane(MessageClass::ConfigUpdate);
+    let lane = fixture.control_lane();
     assert_eq!(lane.highest_consumed_sequence, 1);
     assert_eq!(lane.message_commitment, next_commitment([0u8; 32], id));
     assert_eq!(lane.last_accepted_at, START_TIMESTAMP);
@@ -64,7 +64,7 @@ fn a_second_config_update_continues_the_chain() {
     let first = accept_first(&mut fixture);
     let second = accept_second(&mut fixture);
 
-    let lane = fixture.lane(MessageClass::ConfigUpdate);
+    let lane = fixture.control_lane();
     assert_eq!(lane.highest_consumed_sequence, 2);
     assert_eq!(
         lane.message_commitment,
@@ -158,7 +158,7 @@ fn a_previous_config_version_that_does_not_match_is_rejected() {
 fn a_config_version_that_does_not_increase_is_rejected() {
     let mut fixture = Fixture::ready();
     accept_first(&mut fixture);
-    let commitment = fixture.lane(MessageClass::ConfigUpdate).message_commitment;
+    let commitment = fixture.control_lane().message_commitment;
 
     let bytes = MessageBuilder::config_update()
         .sequence(2)
@@ -299,7 +299,7 @@ fn a_risk_version_out_of_step_with_the_configuration_is_rejected() {
 fn a_rejected_update_leaves_every_account_unchanged() {
     let mut fixture = Fixture::ready();
     let risk_before = fixture.raw_data(fixture.risk());
-    let lane_before = fixture.raw_data(fixture.lane_key(MessageClass::ConfigUpdate));
+    let lane_before = fixture.raw_data(fixture.control_lane_key());
     let config_before = fixture.raw_data(fixture.config);
 
     let bytes = MessageBuilder::config_update()
@@ -311,10 +311,7 @@ fn a_rejected_update_leaves_every_account_unchanged() {
     );
 
     assert_eq!(fixture.raw_data(fixture.risk()), risk_before);
-    assert_eq!(
-        fixture.raw_data(fixture.lane_key(MessageClass::ConfigUpdate)),
-        lane_before
-    );
+    assert_eq!(fixture.raw_data(fixture.control_lane_key()), lane_before);
     assert_eq!(fixture.raw_data(fixture.config), config_before);
     assert!(!fixture.record_exists(1));
 }

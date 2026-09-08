@@ -198,12 +198,11 @@ impl Bench {
         )
     }
 
-    fn lane_address(&self, class: MessageClass) -> (Pubkey, u8) {
+    fn lane_address(&self) -> (Pubkey, u8) {
         Pubkey::find_program_address(
             &[
                 REPLAY_LANE_SEED,
                 self.config.as_ref(),
-                &[class.to_u8()],
                 &CONTROL_LANE_ID.to_le_bytes(),
             ],
             &solevm_remote_leg::ID,
@@ -215,7 +214,6 @@ impl Bench {
             &[
                 CONSUMED_MESSAGE_SEED,
                 self.config.as_ref(),
-                &[MessageClass::ConfigUpdate.to_u8()],
                 &CONTROL_LANE_ID.to_le_bytes(),
                 &sequence.to_le_bytes(),
             ],
@@ -225,9 +223,7 @@ impl Bench {
 
     fn control_state(&self) -> (Instruction, Vec<(Pubkey, Account)>) {
         let risk = self.risk_address().0;
-        let allocate = self.lane_address(MessageClass::Allocate).0;
-        let recall = self.lane_address(MessageClass::Recall).0;
-        let config_update = self.lane_address(MessageClass::ConfigUpdate).0;
+        let control_lane = self.lane_address().0;
 
         let instruction = Instruction {
             program_id: solevm_remote_leg::ID,
@@ -235,9 +231,7 @@ impl Bench {
                 administrator: self.administrator,
                 remote_config: self.config,
                 risk_config: risk,
-                allocate_lane: allocate,
-                recall_lane: recall,
-                config_update_lane: config_update,
+                control_lane,
                 system_program: anchor_lang::system_program::ID,
             }
             .to_account_metas(None),
@@ -258,9 +252,7 @@ impl Bench {
             (self.administrator, funded_account()),
             (self.config, self.config_account(CONFIG_VERSION, false)),
             (risk, Account::default()),
-            (allocate, Account::default()),
-            (recall, Account::default()),
-            (config_update, Account::default()),
+            (control_lane, Account::default()),
             keyed_account_for_system_program(),
         ];
         (instruction, accounts)
@@ -269,7 +261,7 @@ impl Bench {
     /// One config update, with the lane already at the given state.
     fn update(&self, state: LaneState) -> (Instruction, Vec<(Pubkey, Account)>) {
         let risk = self.risk_address().0;
-        let lane = self.lane_address(MessageClass::ConfigUpdate).0;
+        let lane = self.lane_address().0;
         let record = self.record_address(state.sequence).0;
 
         let instruction = Instruction {
@@ -278,7 +270,7 @@ impl Bench {
                 transport_verifier: self.verifier,
                 remote_config: self.config,
                 risk_config: risk,
-                config_update_lane: lane,
+                control_lane: lane,
                 consumed_message: record,
                 system_program: anchor_lang::system_program::ID,
             }
@@ -305,7 +297,6 @@ impl Bench {
             (
                 lane,
                 self.lane_account(
-                    MessageClass::ConfigUpdate,
                     state.minimum_sequence,
                     state.highest_sequence,
                     state.commitment,
@@ -318,7 +309,7 @@ impl Bench {
     }
 
     fn watermark(&self, new_minimum: u64) -> (Instruction, Vec<(Pubkey, Account)>) {
-        let lane = self.lane_address(MessageClass::ConfigUpdate).0;
+        let lane = self.lane_address().0;
         let instruction = Instruction {
             program_id: solevm_remote_leg::ID,
             accounts: solevm_remote_leg::accounts::AdvanceReplayWatermark {
@@ -329,7 +320,6 @@ impl Bench {
             }
             .to_account_metas(None),
             data: solevm_remote_leg::instruction::AdvanceReplayWatermark {
-                message_class: MessageClass::ConfigUpdate,
                 new_minimum_sequence: new_minimum,
             }
             .data(),
@@ -338,16 +328,13 @@ impl Bench {
         let accounts = vec![
             (self.administrator, funded_account()),
             (self.config, self.config_account(CONFIG_VERSION, false)),
-            (
-                lane,
-                self.lane_account(MessageClass::ConfigUpdate, 1, 6, [0x31; 32]),
-            ),
+            (lane, self.lane_account(1, 6, [0x31; 32])),
         ];
         (instruction, accounts)
     }
 
     fn close(&self, sequence: u64) -> (Instruction, Vec<(Pubkey, Account)>) {
-        let lane = self.lane_address(MessageClass::ConfigUpdate).0;
+        let lane = self.lane_address().0;
         let (record, bump) = self.record_address(sequence);
 
         let instruction = Instruction {
@@ -365,10 +352,7 @@ impl Bench {
         let accounts = vec![
             (self.config, self.config_account(CONFIG_VERSION, false)),
             (self.administrator, funded_account()),
-            (
-                lane,
-                self.lane_account(MessageClass::ConfigUpdate, 4, 6, [0x31; 32]),
-            ),
+            (lane, self.lane_account(4, 6, [0x31; 32])),
             (record, self.record_account(sequence, bump)),
         ];
         (instruction, accounts)
@@ -391,17 +375,10 @@ impl Bench {
         owned_account(RiskConfig::DISCRIMINATOR, &risk, RiskConfig::LEN)
     }
 
-    fn lane_account(
-        &self,
-        class: MessageClass,
-        minimum: u64,
-        highest: u64,
-        commitment: [u8; 32],
-    ) -> Account {
+    fn lane_account(&self, minimum: u64, highest: u64, commitment: [u8; 32]) -> Account {
         let lane = ReplayLane {
             state_version: STATE_VERSION,
-            bump: self.lane_address(class).1,
-            message_class: class,
+            bump: self.lane_address().1,
             lane_id: CONTROL_LANE_ID,
             minimum_acceptable_sequence: minimum,
             highest_consumed_sequence: highest,

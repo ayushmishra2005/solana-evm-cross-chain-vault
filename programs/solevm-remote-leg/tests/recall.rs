@@ -10,7 +10,7 @@ use common::{
     ALLOCATE_TRANSFER_ID, Fixture, Pubkey, RECALL_TRANSFER_ID, expect_error, expect_rejection,
 };
 use protocol_types::{AssetAmount, ConfigVersion};
-use solevm_remote_leg::{MessageClass, RemoteLegError, TransferKind, TransferStatus};
+use solevm_remote_leg::{RemoteLegError, TransferKind, TransferStatus};
 
 const ALLOCATE_ID: [u8; 32] = ALLOCATE_TRANSFER_ID;
 const ID: [u8; 32] = RECALL_TRANSFER_ID;
@@ -31,7 +31,7 @@ fn fully_deployed() -> Fixture {
 }
 
 fn next_recall(fixture: &Fixture, transfer_id: [u8; 32], amount: u64) -> (u64, Vec<u8>) {
-    let lane = fixture.lane(MessageClass::Recall);
+    let lane = fixture.control_lane();
     let sequence = lane.highest_consumed_sequence + 1;
     let bytes = MessageBuilder::recall()
         .sequence(sequence)
@@ -140,9 +140,9 @@ fn a_second_recall_while_one_is_open_is_rejected() {
 }
 
 #[test]
-fn a_recall_sequence_gap_is_accepted() {
+fn a_recall_sequence_gap_is_rejected() {
     let mut fixture = holding_custody();
-    let lane = fixture.lane(MessageClass::Recall);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::recall()
         .sequence(5)
         .previous_commitment(lane.message_commitment)
@@ -153,11 +153,11 @@ fn a_recall_sequence_gap_is_accepted() {
         })
         .encode();
 
-    fixture.recall(ID, 5, bytes).expect("gap is allowed");
-    assert_eq!(
-        fixture.lane(MessageClass::Recall).highest_consumed_sequence,
-        5
+    expect_error(
+        fixture.recall(ID, 5, bytes),
+        RemoteLegError::InvalidSequence,
     );
+    assert_eq!(fixture.control_lane().highest_consumed_sequence, 1);
 }
 
 #[test]
@@ -177,16 +177,16 @@ fn an_exact_recall_replay_is_rejected() {
 #[test]
 fn a_recall_body_config_version_out_of_step_is_rejected() {
     let mut fixture = holding_custody();
-    let lane = fixture.lane(MessageClass::Recall);
+    let lane = fixture.control_lane();
     let bytes = MessageBuilder::recall()
-        .sequence(1)
+        .sequence(2)
         .previous_commitment(lane.message_commitment)
         .transfer_id(ID)
         .recall_body(|body| body.config_version = ConfigVersion::new(42))
         .encode();
 
     expect_error(
-        fixture.recall(ID, 1, bytes),
+        fixture.recall(ID, 2, bytes),
         RemoteLegError::InvalidConfigVersion,
     );
 }

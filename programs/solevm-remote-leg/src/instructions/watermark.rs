@@ -2,14 +2,13 @@
 
 use anchor_lang::prelude::*;
 
-use crate::control::{MessageClass, REPLAY_LANE_SEED, ReplayLane};
+use crate::control::{REPLAY_LANE_SEED, ReplayLane};
 use crate::errors::RemoteLegError;
 use crate::events::ReplayWatermarkAdvanced;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
-use crate::strategy::{REMOTE_POSITION_SEED, RemotePosition, TransferKind};
+use crate::strategy::{REMOTE_POSITION_SEED, RemotePosition};
 
 #[derive(Accounts)]
-#[instruction(message_class: MessageClass)]
 pub struct AdvanceReplayWatermark<'info> {
     pub administrator: Signer<'info>,
 
@@ -29,14 +28,13 @@ pub struct AdvanceReplayWatermark<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[replay_lane.message_class.to_u8()],
-            &replay_lane.lane_id.to_le_bytes(),
+            &remote_config.control_lane_id.to_le_bytes(),
         ],
         bump = replay_lane.bump,
     )]
     pub replay_lane: Account<'info, ReplayLane>,
 
-    /// Required for the asset lanes, so an open transfer stays protected.
+    /// Required when a transfer is open, so its sequence stays protected.
     #[account(
         seeds = [REMOTE_POSITION_SEED, remote_config.key().as_ref()],
         bump = remote_position.bump,
@@ -46,7 +44,6 @@ pub struct AdvanceReplayWatermark<'info> {
 
 pub fn process_advance_replay_watermark(
     ctx: Context<AdvanceReplayWatermark>,
-    message_class: MessageClass,
     new_minimum_sequence: u64,
 ) -> Result<()> {
     let lane = &mut ctx.accounts.replay_lane;
@@ -55,8 +52,9 @@ pub fn process_advance_replay_watermark(
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
-    require!(
-        lane.message_class == message_class,
+    require_eq!(
+        lane.lane_id,
+        ctx.accounts.remote_config.control_lane_id,
         RemoteLegError::InvalidLane
     );
 
@@ -84,7 +82,6 @@ pub fn process_advance_replay_watermark(
     );
 
     check_obligation(
-        message_class,
         new_minimum_sequence,
         ctx.accounts.remote_position.as_deref(),
     )?;
@@ -95,7 +92,6 @@ pub fn process_advance_replay_watermark(
     emit!(ReplayWatermarkAdvanced {
         remote_config: ctx.accounts.remote_config.key(),
         replay_lane: lane.key(),
-        message_class,
         lane_id: lane.lane_id,
         previous_minimum_sequence,
         new_minimum_sequence,
@@ -109,25 +105,17 @@ pub fn process_advance_replay_watermark(
 /// Keeps the replay record of an unresolved transfer out of reach.
 ///
 /// The watermark may reach the open sequence but never pass it.
-fn check_obligation(
-    message_class: MessageClass,
-    new_minimum_sequence: u64,
-    position: Option<&RemotePosition>,
-) -> Result<()> {
-    let kind = match message_class {
-        MessageClass::ConfigUpdate => return Ok(()),
-        MessageClass::Allocate => TransferKind::Allocate,
-        MessageClass::Recall => TransferKind::Recall,
+fn check_obligation(new_minimum_sequence: u64, position: Option<&RemotePosition>) -> Result<()> {
+    let Some(position) = position else {
+        return Ok(());
     };
-
-    let position = position.ok_or(RemoteLegError::InvalidRemotePosition)?;
     require_eq!(
         position.state_version,
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
 
-    if position.active_transfer_kind == kind {
+    if position.has_active_transfer() {
         require_gte!(
             position.active_transfer_sequence,
             new_minimum_sequence,

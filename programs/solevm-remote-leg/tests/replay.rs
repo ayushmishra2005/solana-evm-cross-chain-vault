@@ -16,16 +16,10 @@ use common::{
 
 /// The record address for a bump below the canonical one.
 fn non_canonical_record(fixture: &Fixture, sequence: u64) -> Pubkey {
-    let (_, canonical) = Fixture::record_address(
-        &fixture.config,
-        MessageClass::ConfigUpdate,
-        CONTROL_LANE_ID,
-        sequence,
-    );
+    let (_, canonical) = Fixture::record_address(&fixture.config, CONTROL_LANE_ID, sequence);
     let seeds = [
         solevm_remote_leg::CONSUMED_MESSAGE_SEED.to_vec(),
         fixture.config.as_ref().to_vec(),
-        vec![MessageClass::ConfigUpdate.to_u8()],
         CONTROL_LANE_ID.to_le_bytes().to_vec(),
         sequence.to_le_bytes().to_vec(),
     ];
@@ -210,10 +204,10 @@ fn the_administrator_advances_the_watermark() {
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
-    let lane = fixture.lane(MessageClass::ConfigUpdate);
+    let lane = fixture.control_lane();
     assert_eq!(lane.minimum_acceptable_sequence, 2);
     assert_eq!(lane.highest_consumed_sequence, 4);
 }
@@ -225,7 +219,7 @@ fn the_guardian_may_not_advance_the_watermark() {
 
     let guardian = fixture.guardian.insecure_clone();
     expect_error(
-        fixture.advance_watermark(&guardian, MessageClass::ConfigUpdate, 2),
+        fixture.advance_watermark(&guardian, 2),
         RemoteLegError::Unauthorized,
     );
 }
@@ -237,7 +231,7 @@ fn the_transport_verifier_may_not_advance_the_watermark() {
 
     let verifier = fixture.verifier_keypair();
     expect_error(
-        fixture.advance_watermark(&verifier, MessageClass::ConfigUpdate, 2),
+        fixture.advance_watermark(&verifier, 2),
         RemoteLegError::Unauthorized,
     );
 }
@@ -248,11 +242,11 @@ fn a_watermark_that_moves_backward_is_rejected() {
     fixture.accept_updates(6);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 3)
+        .advance_watermark(&administrator, 3)
         .expect("watermark advances");
 
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::ConfigUpdate, 2),
+        fixture.advance_watermark(&administrator, 2),
         RemoteLegError::InvalidWatermark,
     );
 }
@@ -264,7 +258,7 @@ fn a_watermark_that_does_not_move_is_rejected() {
     let administrator = fixture.administrator.insecure_clone();
 
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::ConfigUpdate, 1),
+        fixture.advance_watermark(&administrator, 1),
         RemoteLegError::InvalidWatermark,
     );
 }
@@ -276,7 +270,7 @@ fn a_watermark_above_the_highest_consumed_sequence_is_rejected() {
     let administrator = fixture.administrator.insecure_clone();
 
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::ConfigUpdate, 5),
+        fixture.advance_watermark(&administrator, 5),
         RemoteLegError::InvalidWatermark,
     );
 }
@@ -289,7 +283,7 @@ fn a_watermark_that_breaks_the_mandatory_lag_is_rejected() {
 
     // The lag needs the highest sequence to stay two ahead of the minimum.
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::ConfigUpdate, 3),
+        fixture.advance_watermark(&administrator, 3),
         RemoteLegError::WatermarkLagViolation,
     );
     assert_eq!(WATERMARK_LAG, 2);
@@ -299,16 +293,16 @@ fn a_watermark_that_breaks_the_mandatory_lag_is_rejected() {
 fn advancing_the_watermark_leaves_the_chain_state_alone() {
     let mut fixture = Fixture::ready();
     fixture.accept_updates(4);
-    let before = fixture.lane(MessageClass::ConfigUpdate);
+    let before = fixture.control_lane();
     let risk_before = fixture.raw_data(fixture.risk());
     let config_before = fixture.raw_data(fixture.config);
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
-    let after = fixture.lane(MessageClass::ConfigUpdate);
+    let after = fixture.control_lane();
     assert_eq!(after.message_commitment, before.message_commitment);
     assert_eq!(
         after.highest_consumed_sequence,
@@ -323,21 +317,20 @@ fn advancing_the_watermark_leaves_the_chain_state_alone() {
 }
 
 #[test]
-fn a_lane_of_another_class_is_rejected() {
+fn a_lane_for_another_protocol_lane_id_is_rejected() {
     let mut fixture = Fixture::ready();
     fixture.accept_updates(4);
 
     let administrator = fixture.administrator.insecure_clone();
     let instruction = fixture.watermark_instruction(
         administrator.pubkey(),
-        fixture.lane_key(MessageClass::ConfigUpdate),
+        Fixture::lane_address(&fixture.config, CONTROL_LANE_ID + 1),
         None,
-        MessageClass::Allocate,
         2,
     );
-    expect_error(
+    expect_anchor_error(
         fixture.send(instruction, &[&administrator]),
-        RemoteLegError::InvalidLane,
+        ErrorCode::AccountNotInitialized,
     );
 }
 
@@ -347,7 +340,7 @@ fn an_untouched_lane_cannot_advance() {
     let administrator = fixture.administrator.insecure_clone();
 
     expect_error(
-        fixture.advance_watermark(&administrator, MessageClass::Allocate, 2),
+        fixture.advance_watermark(&administrator, 2),
         RemoteLegError::InvalidWatermark,
     );
 }
@@ -360,7 +353,7 @@ fn a_record_below_the_watermark_closes_and_pays_the_administrator() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     let rent = fixture.lamports(fixture.record_key(1));
@@ -379,7 +372,7 @@ fn a_record_at_the_watermark_cannot_close() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     expect_error(fixture.close_record(2), RemoteLegError::RecordNotClosable);
@@ -391,7 +384,7 @@ fn a_record_above_the_watermark_cannot_close() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     expect_error(fixture.close_record(3), RemoteLegError::RecordNotClosable);
@@ -416,7 +409,7 @@ fn a_caller_chosen_rent_destination_is_rejected() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     let thief = fixture.outsider.pubkey();
@@ -433,19 +426,16 @@ fn closing_a_record_leaves_the_lane_untouched() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
-    let before = fixture.raw_data(fixture.lane_key(MessageClass::ConfigUpdate));
+    let before = fixture.raw_data(fixture.control_lane_key());
     let risk_before = fixture.raw_data(fixture.risk());
     let config_before = fixture.raw_data(fixture.config);
 
     fixture.close_record(1).expect("record closes");
 
-    assert_eq!(
-        fixture.raw_data(fixture.lane_key(MessageClass::ConfigUpdate)),
-        before
-    );
+    assert_eq!(fixture.raw_data(fixture.control_lane_key()), before);
     assert_eq!(fixture.raw_data(fixture.risk()), risk_before);
     assert_eq!(fixture.raw_data(fixture.config), config_before);
 }
@@ -461,7 +451,7 @@ fn a_closed_record_cannot_be_replayed() {
 
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
     fixture.close_record(1).expect("record closes");
     assert!(!fixture.record_exists(1));
@@ -474,23 +464,23 @@ fn a_closed_record_cannot_be_replayed() {
 }
 
 #[test]
-fn a_lane_from_another_class_cannot_close_a_record() {
+fn a_lane_for_another_protocol_lane_id_cannot_close_a_record() {
     let mut fixture = Fixture::ready();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     let instruction = fixture.close_record_instruction(
         administrator.pubkey(),
-        fixture.lane_key(MessageClass::Allocate),
+        Fixture::lane_address(&fixture.config, CONTROL_LANE_ID + 1),
         fixture.record_key(1),
     );
     let payer = fixture.outsider.insecure_clone();
-    expect_error(
+    expect_anchor_error(
         fixture.send_as(instruction, &payer, &[&payer]),
-        RemoteLegError::InvalidConsumedMessage,
+        ErrorCode::AccountNotInitialized,
     );
 }
 
@@ -507,7 +497,7 @@ fn closing_twice_is_rejected() {
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
-        .advance_watermark(&administrator, MessageClass::ConfigUpdate, 2)
+        .advance_watermark(&administrator, 2)
         .expect("watermark advances");
 
     fixture.close_record(1).expect("record closes");

@@ -19,9 +19,9 @@ pub const MAX_BASIS_POINTS: u16 = 10_000;
 /// Bytes held back for later fields of the same layout version.
 pub const RISK_CONFIG_RESERVED: usize = 32;
 
-/// Inbound message classes that keep separate replay state.
+/// Inbound control message classes that share one protocol lane.
 ///
-/// The discriminant is the seed byte, so it must never be reordered.
+/// The discriminant is stored on consumed records, so it must never be reordered.
 #[derive(AnchorSerialize, AnchorDeserialize, InitSpace, Clone, Copy, Debug, PartialEq, Eq)]
 #[borsh(use_discriminant = true)]
 #[repr(u8)]
@@ -49,22 +49,13 @@ impl MessageClass {
             Self::ConfigUpdate => protocol_types::MessageType::ConfigUpdate,
         }
     }
-
-    /// How strictly this class orders its sequence numbers.
-    #[must_use]
-    pub const fn sequence_rule(self) -> SequenceRule {
-        match self {
-            Self::ConfigUpdate => SequenceRule::StrictNext,
-            Self::Allocate | Self::Recall => SequenceRule::StrictlyIncreasing,
-        }
-    }
 }
 
 /// How a lane decides whether an arriving sequence is acceptable.
 ///
-/// Config messages must apply in an unbroken run. Asset messages may skip a
-/// number, because a message the transport never delivered must not stall the
-/// lane. The commitment chain still keeps the accepted run in order.
+/// The inbound control lane follows the canonical EVM outbound chain, so it
+/// accepts only the next sequence. A gap cannot carry a matching previous
+/// commitment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SequenceRule {
     StrictNext,
@@ -144,13 +135,12 @@ impl RiskConfig {
     }
 }
 
-/// Replay state of one inbound message class.
+/// Replay state of one inbound protocol lane.
 #[account]
 #[derive(InitSpace, Debug)]
 pub struct ReplayLane {
     pub state_version: u8,
     pub bump: u8,
-    pub message_class: MessageClass,
     pub lane_id: u32,
     pub minimum_acceptable_sequence: u64,
     pub highest_consumed_sequence: u64,
@@ -166,19 +156,16 @@ impl ReplayLane {
     /// Sequence every lane starts accepting from.
     pub const FIRST_SEQUENCE: u64 = 1;
 
-    /// Seeds of one lane, given the class byte and lane id bytes.
+    /// The inbound control lane accepts only the next sequence.
+    pub const SEQUENCE_RULE: SequenceRule = SequenceRule::StrictNext;
+
+    /// Offset of `highest_consumed_sequence` after the account discriminator.
+    pub const HIGHEST_CONSUMED_OFFSET: usize = 14;
+
+    /// Seeds of one lane, given the protocol lane id bytes.
     #[must_use]
-    pub fn seeds<'a>(
-        remote_config: &'a Pubkey,
-        message_class: &'a [u8; 1],
-        lane_id: &'a [u8; 4],
-    ) -> [&'a [u8]; 4] {
-        [
-            REPLAY_LANE_SEED,
-            remote_config.as_ref(),
-            message_class,
-            lane_id,
-        ]
+    pub fn seeds<'a>(remote_config: &'a Pubkey, lane_id: &'a [u8; 4]) -> [&'a [u8]; 3] {
+        [REPLAY_LANE_SEED, remote_config.as_ref(), lane_id]
     }
 }
 
@@ -198,18 +185,16 @@ impl ConsumedMessage {
     /// Bytes the account occupies, including the account discriminator.
     pub const LEN: usize = 8 + Self::INIT_SPACE;
 
-    /// Seeds of one record, given the class, lane and sequence bytes.
+    /// Seeds of one record, given the protocol lane and sequence bytes.
     #[must_use]
     pub fn seeds<'a>(
         remote_config: &'a Pubkey,
-        message_class: &'a [u8; 1],
         lane_id: &'a [u8; 4],
         sequence: &'a [u8; 8],
-    ) -> [&'a [u8]; 5] {
+    ) -> [&'a [u8]; 4] {
         [
             CONSUMED_MESSAGE_SEED,
             remote_config.as_ref(),
-            message_class,
             lane_id,
             sequence,
         ]
@@ -224,10 +209,11 @@ mod tests {
     fn every_control_account_has_a_fixed_documented_size() {
         assert_eq!(RiskConfig::INIT_SPACE, 104);
         assert_eq!(RiskConfig::LEN, 112);
-        assert_eq!(ReplayLane::INIT_SPACE, 71);
-        assert_eq!(ReplayLane::LEN, 79);
+        assert_eq!(ReplayLane::INIT_SPACE, 70);
+        assert_eq!(ReplayLane::LEN, 78);
         assert_eq!(ConsumedMessage::INIT_SPACE, 47);
         assert_eq!(ConsumedMessage::LEN, 55);
+        assert_eq!(ReplayLane::HIGHEST_CONSUMED_OFFSET, 14);
     }
 
     #[test]
@@ -272,76 +258,55 @@ mod tests {
     #[test]
     fn the_lane_seeds_keep_their_documented_order() {
         let config = Pubkey::new_unique();
-        let class = [MessageClass::Recall.to_u8()];
         let lane = 7u32.to_le_bytes();
-        let seeds = ReplayLane::seeds(&config, &class, &lane);
+        let seeds = ReplayLane::seeds(&config, &lane);
         assert_eq!(seeds[0], REPLAY_LANE_SEED);
         assert_eq!(seeds[1], config.as_ref());
-        assert_eq!(seeds[2], &class[..]);
-        assert_eq!(seeds[3], &lane[..]);
+        assert_eq!(seeds[2], &lane[..]);
     }
 
     #[test]
     fn the_consumed_record_seeds_keep_their_documented_order() {
         let config = Pubkey::new_unique();
-        let class = [MessageClass::ConfigUpdate.to_u8()];
         let lane = 7u32.to_le_bytes();
         let sequence = 42u64.to_le_bytes();
-        let seeds = ConsumedMessage::seeds(&config, &class, &lane, &sequence);
+        let seeds = ConsumedMessage::seeds(&config, &lane, &sequence);
         assert_eq!(seeds[0], CONSUMED_MESSAGE_SEED);
         assert_eq!(seeds[1], config.as_ref());
-        assert_eq!(seeds[2], &class[..]);
-        assert_eq!(seeds[3], &lane[..]);
-        assert_eq!(seeds[4], &sequence[..]);
+        assert_eq!(seeds[2], &lane[..]);
+        assert_eq!(seeds[3], &sequence[..]);
     }
 
     #[test]
-    fn the_same_sequence_in_two_classes_gives_two_addresses() {
+    fn one_sequence_on_a_lane_has_one_consumed_address() {
         let config = Pubkey::new_unique();
         let lane = 1u32.to_le_bytes();
         let sequence = 5u64.to_le_bytes();
-        let allocate = [MessageClass::Allocate.to_u8()];
-        let recall = [MessageClass::Recall.to_u8()];
         let first = Pubkey::find_program_address(
-            &ConsumedMessage::seeds(&config, &allocate, &lane, &sequence),
+            &ConsumedMessage::seeds(&config, &lane, &sequence),
             &crate::ID,
         );
         let second = Pubkey::find_program_address(
-            &ConsumedMessage::seeds(&config, &recall, &lane, &sequence),
+            &ConsumedMessage::seeds(&config, &lane, &sequence),
             &crate::ID,
         );
-        assert_ne!(first.0, second.0);
+        assert_eq!(first.0, second.0);
     }
 
     #[test]
-    fn the_same_lane_in_two_classes_gives_two_addresses() {
+    fn a_different_lane_id_gives_a_different_replay_address() {
         let config = Pubkey::new_unique();
-        let lane = 1u32.to_le_bytes();
-        let allocate = [MessageClass::Allocate.to_u8()];
-        let config_update = [MessageClass::ConfigUpdate.to_u8()];
-        let first =
-            Pubkey::find_program_address(&ReplayLane::seeds(&config, &allocate, &lane), &crate::ID);
-        let second = Pubkey::find_program_address(
-            &ReplayLane::seeds(&config, &config_update, &lane),
-            &crate::ID,
-        );
+        let control = 1u32.to_le_bytes();
+        let reports = 2u32.to_le_bytes();
+        let first = Pubkey::find_program_address(&ReplayLane::seeds(&config, &control), &crate::ID);
+        let second =
+            Pubkey::find_program_address(&ReplayLane::seeds(&config, &reports), &crate::ID);
         assert_ne!(first.0, second.0);
     }
 
     #[test]
-    fn only_the_config_lane_demands_an_unbroken_run() {
-        assert_eq!(
-            MessageClass::ConfigUpdate.sequence_rule(),
-            SequenceRule::StrictNext
-        );
-        assert_eq!(
-            MessageClass::Allocate.sequence_rule(),
-            SequenceRule::StrictlyIncreasing
-        );
-        assert_eq!(
-            MessageClass::Recall.sequence_rule(),
-            SequenceRule::StrictlyIncreasing
-        );
+    fn the_control_lane_demands_an_unbroken_run() {
+        assert_eq!(ReplayLane::SEQUENCE_RULE, SequenceRule::StrictNext);
     }
 
     #[test]

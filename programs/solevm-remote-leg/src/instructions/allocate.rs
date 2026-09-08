@@ -61,12 +61,11 @@ pub struct ProcessAllocate<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[CLASS.to_u8()],
-            &allocate_lane.lane_id.to_le_bytes(),
+            &remote_config.control_lane_id.to_le_bytes(),
         ],
-        bump = allocate_lane.bump,
+        bump = control_lane.bump,
     )]
-    pub allocate_lane: Account<'info, ReplayLane>,
+    pub control_lane: Account<'info, ReplayLane>,
 
     /// CHECK: created by hand once the transfer id has been validated.
     #[account(mut)]
@@ -92,7 +91,7 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
         &message_bytes,
         CLASS,
         &ctx.accounts.remote_config,
-        &ctx.accounts.allocate_lane,
+        &ctx.accounts.control_lane,
         now,
     )?;
 
@@ -141,7 +140,7 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
     check_allocation_limit(&ctx, authorized_amount)?;
 
     let sequence = message.header.sequence.get();
-    let lane_id = ctx.accounts.allocate_lane.lane_id;
+    let lane_id = ctx.accounts.remote_config.control_lane_id;
     let consumed = ConsumedAddress::derive(&config_key, lane_id, sequence);
     require_keys_eq!(
         ctx.accounts.consumed_message.key(),
@@ -184,7 +183,6 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
         &[
             CONSUMED_MESSAGE_SEED,
             config_key.as_ref(),
-            &consumed.class,
             &consumed.lane,
             &consumed.sequence,
             &[consumed.bump],
@@ -200,7 +198,7 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
         },
     )?;
 
-    let lane = &mut ctx.accounts.allocate_lane;
+    let lane = &mut ctx.accounts.control_lane;
     lane.highest_consumed_sequence = sequence;
     lane.message_commitment = message::next_commitment(&lane.message_commitment, &message_id);
     lane.last_accepted_at = accepted_at;
@@ -231,12 +229,13 @@ fn check_versions(ctx: &Context<ProcessAllocate>) -> Result<()> {
         ctx.accounts.risk_config.state_version,
         ctx.accounts.strategy_config.state_version,
         ctx.accounts.remote_position.state_version,
-        ctx.accounts.allocate_lane.state_version,
+        ctx.accounts.control_lane.state_version,
     ] {
         require_eq!(version, STATE_VERSION, RemoteLegError::InvalidStateVersion);
     }
-    require!(
-        ctx.accounts.allocate_lane.message_class == CLASS,
+    require_eq!(
+        ctx.accounts.control_lane.lane_id,
+        ctx.accounts.remote_config.control_lane_id,
         RemoteLegError::InvalidLane
     );
     Ok(())
@@ -272,39 +271,27 @@ impl TransferAddress {
     }
 }
 
-/// The canonical consumed record address for one sequence of this class.
+/// The canonical consumed record address for one sequence of the control lane.
 pub struct ConsumedAddress {
     pub address: Pubkey,
     pub bump: u8,
-    pub class: [u8; 1],
     pub lane: [u8; 4],
     pub sequence: [u8; 8],
 }
 
 impl ConsumedAddress {
-    pub fn derive_for(
-        class: MessageClass,
-        config_key: &Pubkey,
-        lane_id: u32,
-        sequence: u64,
-    ) -> Self {
-        let class = [class.to_u8()];
+    pub fn derive(config_key: &Pubkey, lane_id: u32, sequence: u64) -> Self {
         let lane = lane_id.to_le_bytes();
         let sequence = sequence.to_le_bytes();
         let (address, bump) = Pubkey::find_program_address(
-            &ConsumedMessage::seeds(config_key, &class, &lane, &sequence),
+            &ConsumedMessage::seeds(config_key, &lane, &sequence),
             &crate::ID,
         );
         Self {
             address,
             bump,
-            class,
             lane,
             sequence,
         }
-    }
-
-    fn derive(config_key: &Pubkey, lane_id: u32, sequence: u64) -> Self {
-        Self::derive_for(CLASS, config_key, lane_id, sequence)
     }
 }

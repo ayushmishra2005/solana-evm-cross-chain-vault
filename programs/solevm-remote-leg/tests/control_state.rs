@@ -1,4 +1,4 @@
-//! Setup of the risk configuration and the three replay lanes.
+//! Setup of the risk configuration and the single inbound control lane.
 
 #![allow(clippy::unwrap_used, clippy::panic, clippy::arithmetic_side_effects)]
 
@@ -6,7 +6,7 @@ mod common;
 
 use anchor_lang::error::ErrorCode;
 use solana_signer::Signer;
-use solevm_remote_leg::{MessageClass, RemoteLegError, STATE_VERSION};
+use solevm_remote_leg::{RemoteLegError, STATE_VERSION};
 
 use common::{
     CONFIG_VERSION, CONTROL_LANE_ID, Fixture, INITIAL_CONFIG_COMMITMENT,
@@ -30,17 +30,14 @@ fn control_state_initialization_writes_every_account() {
     assert_eq!(risk.last_update_at, START_TIMESTAMP);
     assert_eq!(risk.reserved, [0u8; 32]);
 
-    for class in MessageClass::ALL {
-        let lane = fixture.lane(class);
-        assert_eq!(lane.state_version, STATE_VERSION);
-        assert_eq!(lane.message_class, class);
-        assert_eq!(lane.lane_id, CONTROL_LANE_ID);
-        assert_eq!(lane.minimum_acceptable_sequence, 1);
-        assert_eq!(lane.highest_consumed_sequence, 0);
-        assert_eq!(lane.message_commitment, [0u8; 32]);
-        assert_eq!(lane.mandatory_watermark_lag, WATERMARK_LAG);
-        assert_eq!(lane.last_accepted_at, 0);
-    }
+    let lane = fixture.control_lane();
+    assert_eq!(lane.state_version, STATE_VERSION);
+    assert_eq!(lane.lane_id, CONTROL_LANE_ID);
+    assert_eq!(lane.minimum_acceptable_sequence, 1);
+    assert_eq!(lane.highest_consumed_sequence, 0);
+    assert_eq!(lane.message_commitment, [0u8; 32]);
+    assert_eq!(lane.mandatory_watermark_lag, WATERMARK_LAG);
+    assert_eq!(lane.last_accepted_at, 0);
 }
 
 #[test]
@@ -51,15 +48,17 @@ fn the_risk_version_follows_the_configured_version() {
 }
 
 #[test]
-fn the_three_lanes_live_at_three_addresses() {
+fn the_control_lane_address_is_keyed_by_lane_id_not_message_class() {
     let fixture = Fixture::ready();
-    let allocate = fixture.lane_key(MessageClass::Allocate);
-    let recall = fixture.lane_key(MessageClass::Recall);
-    let config_update = fixture.lane_key(MessageClass::ConfigUpdate);
-
-    assert_ne!(allocate, recall);
-    assert_ne!(recall, config_update);
-    assert_ne!(allocate, config_update);
+    let control = fixture.control_lane_key();
+    assert_eq!(
+        control,
+        Fixture::lane_address(&fixture.config, CONTROL_LANE_ID)
+    );
+    assert_ne!(
+        control,
+        Fixture::lane_address(&fixture.config, CONTROL_LANE_ID + 1)
+    );
 }
 
 #[test]
@@ -130,7 +129,7 @@ fn a_lane_account_at_the_wrong_address_is_rejected() {
     fixture.initialize().expect("leg initializes");
 
     let mut accounts = fixture.control_accounts();
-    accounts.allocate_lane = Fixture::lane_address(&fixture.config, MessageClass::Allocate, 77);
+    accounts.control_lane = Fixture::lane_address(&fixture.config, 77);
     expect_anchor_error(
         fixture.initialize_control_state_with(accounts, Fixture::control_params()),
         ErrorCode::ConstraintSeeds,
@@ -138,12 +137,12 @@ fn a_lane_account_at_the_wrong_address_is_rejected() {
 }
 
 #[test]
-fn repeating_one_class_for_two_lanes_is_rejected() {
+fn a_lane_for_another_protocol_lane_id_is_rejected() {
     let mut fixture = Fixture::new();
     fixture.initialize().expect("leg initializes");
 
     let mut accounts = fixture.control_accounts();
-    accounts.recall_lane = accounts.allocate_lane;
+    accounts.control_lane = Fixture::lane_address(&fixture.config, CONTROL_LANE_ID + 1);
     expect_anchor_error(
         fixture.initialize_control_state_with(accounts, Fixture::control_params()),
         ErrorCode::ConstraintSeeds,
@@ -222,9 +221,12 @@ fn a_rejected_initialization_leaves_no_account_behind() {
     );
 
     assert!(fixture.svm.get_account(&fixture.risk()).is_none());
-    for class in MessageClass::ALL {
-        assert!(fixture.svm.get_account(&fixture.lane_key(class)).is_none());
-    }
+    assert!(
+        fixture
+            .svm
+            .get_account(&fixture.control_lane_key())
+            .is_none()
+    );
 
     fixture
         .initialize_control_state()

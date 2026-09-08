@@ -44,12 +44,11 @@ pub struct ProcessConfigUpdate<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[CLASS.to_u8()],
-            &config_update_lane.lane_id.to_le_bytes(),
+            &remote_config.control_lane_id.to_le_bytes(),
         ],
-        bump = config_update_lane.bump,
+        bump = control_lane.bump,
     )]
-    pub config_update_lane: Account<'info, ReplayLane>,
+    pub control_lane: Account<'info, ReplayLane>,
 
     /// Created by hand after replay validation, so the watermark is checked
     /// before any account lookup can reject the message.
@@ -76,12 +75,13 @@ pub fn handle_config_update(
         RemoteLegError::InvalidStateVersion
     );
     require_eq!(
-        ctx.accounts.config_update_lane.state_version,
+        ctx.accounts.control_lane.state_version,
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
-    require!(
-        ctx.accounts.config_update_lane.message_class == CLASS,
+    require_eq!(
+        ctx.accounts.control_lane.lane_id,
+        ctx.accounts.remote_config.control_lane_id,
         RemoteLegError::InvalidLane
     );
     require_eq!(
@@ -99,7 +99,7 @@ pub fn handle_config_update(
         &message_bytes,
         CLASS,
         &ctx.accounts.remote_config,
-        &ctx.accounts.config_update_lane,
+        &ctx.accounts.control_lane,
         now,
     )?;
 
@@ -107,9 +107,8 @@ pub fn handle_config_update(
         return Err(RemoteLegError::UnsupportedMessageType.into());
     };
     let sequence = message.header.sequence.get();
-    let lane_id = ctx.accounts.config_update_lane.lane_id;
-
-    let record = ConsumedAddress::derive_for(CLASS, &config_key, lane_id, sequence);
+    let lane_id = ctx.accounts.remote_config.control_lane_id;
+    let record = ConsumedAddress::derive(&config_key, lane_id, sequence);
     require_keys_eq!(
         ctx.accounts.consumed_message.key(),
         record.address,
@@ -170,7 +169,6 @@ pub fn handle_config_update(
         &[
             CONSUMED_MESSAGE_SEED,
             config_key.as_ref(),
-            &record.class,
             &record.lane,
             &record.sequence,
             &[record.bump],
@@ -186,7 +184,7 @@ pub fn handle_config_update(
         },
     )?;
 
-    let lane = &mut ctx.accounts.config_update_lane;
+    let lane = &mut ctx.accounts.control_lane;
     lane.highest_consumed_sequence = sequence;
     lane.message_commitment = message::next_commitment(&lane.message_commitment, &message_id);
     lane.last_accepted_at = updated_at;

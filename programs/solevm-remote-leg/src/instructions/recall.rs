@@ -55,12 +55,11 @@ pub struct ProcessRecall<'info> {
         seeds = [
             REPLAY_LANE_SEED,
             remote_config.key().as_ref(),
-            &[CLASS.to_u8()],
-            &recall_lane.lane_id.to_le_bytes(),
+            &remote_config.control_lane_id.to_le_bytes(),
         ],
-        bump = recall_lane.bump,
+        bump = control_lane.bump,
     )]
-    pub recall_lane: Account<'info, ReplayLane>,
+    pub control_lane: Account<'info, ReplayLane>,
 
     /// CHECK: created by hand once the transfer id has been validated.
     #[account(mut)]
@@ -86,7 +85,7 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
         &message_bytes,
         CLASS,
         &ctx.accounts.remote_config,
-        &ctx.accounts.recall_lane,
+        &ctx.accounts.control_lane,
         now,
     )?;
 
@@ -135,8 +134,8 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
     );
 
     let sequence = message.header.sequence.get();
-    let lane_id = ctx.accounts.recall_lane.lane_id;
-    let consumed = ConsumedAddress::derive_for(CLASS, &config_key, lane_id, sequence);
+    let lane_id = ctx.accounts.remote_config.control_lane_id;
+    let consumed = ConsumedAddress::derive(&config_key, lane_id, sequence);
     require_keys_eq!(
         ctx.accounts.consumed_message.key(),
         consumed.address,
@@ -180,7 +179,6 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
         &[
             CONSUMED_MESSAGE_SEED,
             config_key.as_ref(),
-            &consumed.class,
             &consumed.lane,
             &consumed.sequence,
             &[consumed.bump],
@@ -196,7 +194,7 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
         },
     )?;
 
-    let lane = &mut ctx.accounts.recall_lane;
+    let lane = &mut ctx.accounts.control_lane;
     lane.highest_consumed_sequence = sequence;
     lane.message_commitment = message::next_commitment(&lane.message_commitment, &message_id);
     lane.last_accepted_at = accepted_at;
@@ -245,12 +243,13 @@ fn check_versions(ctx: &Context<ProcessRecall>) -> Result<()> {
         ctx.accounts.remote_config.state_version,
         ctx.accounts.risk_config.state_version,
         ctx.accounts.remote_position.state_version,
-        ctx.accounts.recall_lane.state_version,
+        ctx.accounts.control_lane.state_version,
     ] {
         require_eq!(version, STATE_VERSION, RemoteLegError::InvalidStateVersion);
     }
-    require!(
-        ctx.accounts.recall_lane.message_class == CLASS,
+    require_eq!(
+        ctx.accounts.control_lane.lane_id,
+        ctx.accounts.remote_config.control_lane_id,
         RemoteLegError::InvalidLane
     );
     Ok(())

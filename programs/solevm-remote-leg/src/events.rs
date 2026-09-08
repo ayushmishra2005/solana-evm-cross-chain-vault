@@ -69,7 +69,6 @@ pub struct ConfigUpdated {
 pub struct ReplayWatermarkAdvanced {
     pub remote_config: Pubkey,
     pub replay_lane: Pubkey,
-    pub message_class: MessageClass,
     pub lane_id: u32,
     pub previous_minimum_sequence: u64,
     pub new_minimum_sequence: u64,
