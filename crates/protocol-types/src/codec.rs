@@ -282,7 +282,9 @@ impl Message {
 pub fn encode_into(message: &Message, out: &mut [u8]) -> Result<usize, EncodeError> {
     validation::validate_supported_versions_for_encode(&message.header)?;
     validation::validate_header(&message.header)?;
-    message.body.validate(envelope_times(&message.header))?;
+    message
+        .body
+        .validate(envelope_times(&message.header), message.header.sequence)?;
 
     let width = message.encoded_len();
     let available = saturating_u32(out.len());
@@ -320,7 +322,7 @@ pub fn decode_message(bytes: &[u8]) -> Result<Message, DecodeError> {
     let body = Body::decode(frame.message_type, body_bytes)?;
 
     validation::validate_header(&header)?;
-    body.validate(envelope_times(&header))?;
+    body.validate(envelope_times(&header), header.sequence)?;
     Ok(Message { header, body })
 }
 

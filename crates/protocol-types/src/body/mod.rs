@@ -5,15 +5,17 @@ mod config_update;
 mod recall;
 mod recall_sent;
 mod remote_report;
+mod resolve;
 
 pub use allocate::AllocateBody;
 pub use config_update::ConfigUpdateBody;
 pub use recall::RecallBody;
 pub use recall_sent::RecallSentBody;
 pub use remote_report::{ProbeStatus, RemoteReportBody};
+pub use resolve::{ResolveAction, ResolveBody};
 
 use crate::error::{DecodeError, EncodeError, ValidationError};
-use crate::identifier::Timestamp;
+use crate::identifier::{Sequence, Timestamp};
 use crate::message::MessageType;
 
 /// Envelope times a body is checked against.
@@ -33,6 +35,7 @@ pub enum Body {
     RemoteReport(RemoteReportBody),
     RecallSent(RecallSentBody),
     ConfigUpdate(ConfigUpdateBody),
+    Resolve(ResolveBody),
 }
 
 impl Body {
@@ -44,6 +47,7 @@ impl Body {
             Self::RemoteReport(_) => MessageType::RemoteReport,
             Self::RecallSent(_) => MessageType::RecallSent,
             Self::ConfigUpdate(_) => MessageType::ConfigUpdate,
+            Self::Resolve(_) => MessageType::Resolve,
         }
     }
 
@@ -60,6 +64,7 @@ impl Body {
             Self::RemoteReport(body) => body.encode_into(out),
             Self::RecallSent(body) => body.encode_into(out),
             Self::ConfigUpdate(body) => body.encode_into(out),
+            Self::Resolve(body) => body.encode_into(out),
         }
     }
 
@@ -70,16 +75,23 @@ impl Body {
             MessageType::RemoteReport => RemoteReportBody::decode(bytes).map(Self::RemoteReport),
             MessageType::RecallSent => RecallSentBody::decode(bytes).map(Self::RecallSent),
             MessageType::ConfigUpdate => ConfigUpdateBody::decode(bytes).map(Self::ConfigUpdate),
+            MessageType::Resolve => ResolveBody::decode(bytes).map(Self::Resolve),
         }
     }
 
-    pub(crate) fn validate(&self, times: EnvelopeTimes) -> Result<(), ValidationError> {
+    /// The sequence is the one in the header, so a body can name earlier messages.
+    pub(crate) fn validate(
+        &self,
+        times: EnvelopeTimes,
+        sequence: Sequence,
+    ) -> Result<(), ValidationError> {
         match self {
             Self::Allocate(body) => body.validate(times.published_at),
             Self::Recall(body) => body.validate(times.published_at),
             Self::RemoteReport(body) => body.validate(times),
             Self::RecallSent(body) => body.validate(times),
             Self::ConfigUpdate(body) => body.validate(times.published_at),
+            Self::Resolve(body) => body.validate(sequence),
         }
     }
 }
@@ -108,6 +120,10 @@ mod tests {
             (
                 Body::ConfigUpdate(ConfigUpdateBody::sample()),
                 layout::CONFIG_UPDATE_BODY_LEN,
+            ),
+            (
+                Body::Resolve(ResolveBody::sample()),
+                layout::RESOLVE_BODY_LEN,
             ),
         ];
         for (body, expected) in cases {

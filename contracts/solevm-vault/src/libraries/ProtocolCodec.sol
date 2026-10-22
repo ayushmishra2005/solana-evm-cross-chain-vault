@@ -14,17 +14,23 @@ library ProtocolCodec {
     uint8 internal constant TYPE_RECALL = 2;
     uint8 internal constant TYPE_REMOTE_REPORT = 3;
     uint8 internal constant TYPE_RECALL_SENT = 4;
+    uint8 internal constant TYPE_RESOLVE = 6;
 
     uint256 internal constant HEADER_LEN = 247;
     uint256 internal constant ALLOCATE_BODY_LEN = 96;
     uint256 internal constant RECALL_BODY_LEN = 80;
     uint256 internal constant REMOTE_REPORT_BODY_LEN = 153;
     uint256 internal constant RECALL_SENT_BODY_LEN = 128;
+    uint256 internal constant RESOLVE_BODY_LEN = 49;
 
     uint256 internal constant ALLOCATE_MESSAGE_LEN = 343;
     uint256 internal constant RECALL_MESSAGE_LEN = 327;
     uint256 internal constant REMOTE_REPORT_MESSAGE_LEN = 400;
     uint256 internal constant RECALL_SENT_MESSAGE_LEN = 375;
+    uint256 internal constant RESOLVE_MESSAGE_LEN = 296;
+
+    /// Runs a quarantined transfer on its original terms.
+    uint8 internal constant RESOLVE_ADMIT = 1;
 
     bytes internal constant MESSAGE_ID_DOMAIN = "SOLEVM_MESSAGE_ID_V1";
     bytes internal constant COMMITMENT_DOMAIN = "SOLEVM_COMMITMENT_V1";
@@ -79,6 +85,13 @@ library ProtocolCodec {
         bytes32 remoteStateCommitment;
     }
 
+    struct ResolveBody {
+        bytes32 transferId;
+        uint64 targetSequence;
+        uint8 action;
+        uint64 configVersion;
+    }
+
     struct RecallSentBody {
         bytes32 transferId;
         uint128 principalSent;
@@ -110,6 +123,8 @@ library ProtocolCodec {
     error MissingProbeTimestamp();
     error SentTimestampAfterObservation();
     error RealizedLossAbovePrincipal();
+    error UnknownResolveAction(uint8 action);
+    error TargetNotBeforeResolution();
 
     function encodeAllocate(Header memory header, AllocateBody memory body)
         internal
@@ -133,6 +148,18 @@ library ProtocolCodec {
         encoded = new bytes(RECALL_MESSAGE_LEN);
         _writeRecallBody(encoded, HEADER_LEN, body);
         _seal(encoded, header, TYPE_RECALL, RECALL_BODY_LEN);
+    }
+
+    function encodeResolve(Header memory header, ResolveBody memory body)
+        internal
+        pure
+        returns (bytes memory encoded)
+    {
+        _validateHeader(header);
+        _validateResolve(body, header.sequence);
+        encoded = new bytes(RESOLVE_MESSAGE_LEN);
+        _writeResolveBody(encoded, HEADER_LEN, body);
+        _seal(encoded, header, TYPE_RESOLVE, RESOLVE_BODY_LEN);
     }
 
     function encodeRemoteReport(Header memory header, RemoteReportBody memory body)
@@ -256,6 +283,13 @@ library ProtocolCodec {
         if (body.deadline < publishedAt) revert DeadlineBeforePublication();
     }
 
+    function _validateResolve(ResolveBody memory body, uint64 sequence) private pure {
+        if (body.transferId == bytes32(0) || body.configVersion == 0) revert ZeroIdentifier();
+        if (body.targetSequence == 0) revert ZeroIdentifier();
+        if (body.targetSequence >= sequence) revert TargetNotBeforeResolution();
+        if (body.action != RESOLVE_ADMIT) revert UnknownResolveAction(body.action);
+    }
+
     function _validateRemoteReport(RemoteReportBody memory body, uint64 observedAt) private pure {
         if (body.epochId == 0 || body.configVersion == 0) revert ZeroIdentifier();
         if (body.remoteStateCommitment == bytes32(0)) revert ZeroIdentifier();
@@ -338,6 +372,16 @@ library ProtocolCodec {
         _writeU128(encoded, off + 48, body.minimumReturnAmount);
         _writeU64(encoded, off + 64, body.deadline);
         _writeU64(encoded, off + 72, body.configVersion);
+    }
+
+    function _writeResolveBody(bytes memory encoded, uint256 off, ResolveBody memory body)
+        private
+        pure
+    {
+        _writeBytes32(encoded, off, body.transferId);
+        _writeU64(encoded, off + 32, body.targetSequence);
+        encoded[off + 40] = bytes1(body.action);
+        _writeU64(encoded, off + 41, body.configVersion);
     }
 
     function _writeRemoteReportBody(bytes memory encoded, uint256 off, RemoteReportBody memory body)

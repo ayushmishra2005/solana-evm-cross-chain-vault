@@ -12,8 +12,8 @@ use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
     ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
     LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
-    RemoteReportBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId, decode_message,
-    encode_into, encode_message, next_commitment,
+    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId,
+    VaultId, decode_message, encode_into, encode_message, next_commitment,
 };
 
 /// Keeps sampled timestamps far from the integer limit.
@@ -260,6 +260,26 @@ fn config_update_strategy(published: u64) -> impl Strategy<Value = Body> {
         )
 }
 
+/// Targets always precede the resolution, so the header needs room below it.
+fn resolve_strategy(sequence: u64) -> impl Strategy<Value = Body> {
+    (non_zero_wide(), 1..sequence, 1u64..=u64::MAX).prop_map(|(transfer, target, version)| {
+        Body::Resolve(ResolveBody {
+            transfer_id: TransferId::new(transfer),
+            target_sequence: Sequence::new(target),
+            action: ResolveAction::Admit,
+            config_version: ConfigVersion::new(version),
+        })
+    })
+}
+
+/// A resolution needs a sequence with at least one earlier message.
+fn fitted(kind: MessageType, mut header: Header) -> Header {
+    if kind == MessageType::Resolve && header.sequence.get() < 2 {
+        header.sequence = Sequence::new(2);
+    }
+    header
+}
+
 fn body_strategy(kind: MessageType, header: &Header) -> BoxedStrategy<Body> {
     let observed = header.observed_at.get();
     let published = header.published_at.get();
@@ -269,6 +289,7 @@ fn body_strategy(kind: MessageType, header: &Header) -> BoxedStrategy<Body> {
         MessageType::RemoteReport => remote_report_strategy(observed).boxed(),
         MessageType::RecallSent => recall_sent_strategy(observed).boxed(),
         MessageType::ConfigUpdate => config_update_strategy(published).boxed(),
+        MessageType::Resolve => resolve_strategy(header.sequence.get()).boxed(),
     }
 }
 
@@ -279,17 +300,20 @@ fn kind_strategy() -> impl Strategy<Value = MessageType> {
         Just(MessageType::RemoteReport),
         Just(MessageType::RecallSent),
         Just(MessageType::ConfigUpdate),
+        Just(MessageType::Resolve),
     ]
 }
 
 fn message_strategy() -> impl Strategy<Value = Message> {
     (header_strategy(), kind_strategy()).prop_flat_map(|(header, kind)| {
+        let header = fitted(kind, header);
         body_strategy(kind, &header).prop_map(move |body| Message { header, body })
     })
 }
 
 fn message_of(kind: MessageType) -> impl Strategy<Value = Message> {
     header_strategy().prop_flat_map(move |header| {
+        let header = fitted(kind, header);
         body_strategy(kind, &header).prop_map(move |body| Message { header, body })
     })
 }
@@ -512,6 +536,13 @@ proptest! {
     fn every_config_update_message_round_trips(subject in message_of(MessageType::ConfigUpdate)) {
         let bytes = encode_message(&subject).unwrap();
         prop_assert_eq!(bytes.len(), 317);
+        prop_assert_eq!(decode_message(&bytes), Ok(subject));
+    }
+
+    #[test]
+    fn every_resolve_message_round_trips(subject in message_of(MessageType::Resolve)) {
+        let bytes = encode_message(&subject).unwrap();
+        prop_assert_eq!(bytes.len(), 296);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 

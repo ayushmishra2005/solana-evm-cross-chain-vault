@@ -6,7 +6,8 @@
 use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
     ConfigUpdateBody, ConfigVersion, DeploymentId, Flags, Header, LaneId, Message,
-    PROTOCOL_VERSION, RecallBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
+    PROTOCOL_VERSION, RecallBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp,
+    TransferId, VaultId,
 };
 
 use super::{
@@ -57,6 +58,19 @@ impl MessageBuilder {
                 requested_amount: AssetAmount::new(2_000_000),
                 minimum_return_amount: AssetAmount::new(1_900_000),
                 deadline: Timestamp::new(EXPIRES_AT),
+                config_version: ConfigVersion::new(CONFIG_VERSION),
+            }),
+        }
+    }
+
+    /// Admits the default allocation, carried by the first lane message.
+    pub fn resolve() -> Self {
+        Self {
+            header: default_header(),
+            body: Body::Resolve(ResolveBody {
+                transfer_id: TransferId::new([0x77; 32]),
+                target_sequence: Sequence::new(1),
+                action: ResolveAction::Admit,
                 config_version: ConfigVersion::new(CONFIG_VERSION),
             }),
         }
@@ -152,6 +166,16 @@ impl MessageBuilder {
         self
     }
 
+    /// Edits the resolve body in place, for tests that bend one field.
+    pub fn resolve_body(mut self, edit: impl FnOnce(&mut ResolveBody)) -> Self {
+        let Body::Resolve(mut body) = self.body else {
+            panic!("builder does not hold a resolve body");
+        };
+        edit(&mut body);
+        self.body = Body::Resolve(body);
+        self
+    }
+
     pub fn transfer_id(self, transfer_id: [u8; 32]) -> Self {
         match self.body {
             Body::Allocate(_) => {
@@ -159,6 +183,9 @@ impl MessageBuilder {
             }
             Body::Recall(_) => {
                 self.recall_body(|body| body.transfer_id = TransferId::new(transfer_id))
+            }
+            Body::Resolve(_) => {
+                self.resolve_body(|body| body.transfer_id = TransferId::new(transfer_id))
             }
             _ => panic!("builder does not hold a transfer body"),
         }

@@ -96,6 +96,14 @@ pub const CONFIG_EFFECTIVE_TIMESTAMP_OFFSET: usize = CONFIG_MAX_REPORT_AGE_OFFSE
 pub const CONFIG_COMMITMENT_OFFSET: usize = CONFIG_EFFECTIVE_TIMESTAMP_OFFSET + 8;
 pub const CONFIG_UPDATE_BODY_LEN: usize = CONFIG_COMMITMENT_OFFSET + WIDE;
 
+// Resolve body
+
+pub const RESOLVE_TRANSFER_ID_OFFSET: usize = 0;
+pub const RESOLVE_TARGET_SEQUENCE_OFFSET: usize = RESOLVE_TRANSFER_ID_OFFSET + WIDE;
+pub const RESOLVE_ACTION_OFFSET: usize = RESOLVE_TARGET_SEQUENCE_OFFSET + 8;
+pub const RESOLVE_CONFIG_VERSION_OFFSET: usize = RESOLVE_ACTION_OFFSET + 1;
+pub const RESOLVE_BODY_LEN: usize = RESOLVE_CONFIG_VERSION_OFFSET + 8;
+
 // Whole message lengths
 
 pub const ALLOCATE_MESSAGE_LEN: usize = HEADER_LEN + ALLOCATE_BODY_LEN;
@@ -103,6 +111,7 @@ pub const RECALL_MESSAGE_LEN: usize = HEADER_LEN + RECALL_BODY_LEN;
 pub const REMOTE_REPORT_MESSAGE_LEN: usize = HEADER_LEN + REMOTE_REPORT_BODY_LEN;
 pub const RECALL_SENT_MESSAGE_LEN: usize = HEADER_LEN + RECALL_SENT_BODY_LEN;
 pub const CONFIG_UPDATE_MESSAGE_LEN: usize = HEADER_LEN + CONFIG_UPDATE_BODY_LEN;
+pub const RESOLVE_MESSAGE_LEN: usize = HEADER_LEN + RESOLVE_BODY_LEN;
 
 /// Largest body across every message type.
 pub const MAX_BODY_LEN: usize = REMOTE_REPORT_BODY_LEN;
@@ -121,12 +130,14 @@ const _: () = assert!(RECALL_BODY_LEN == 80);
 const _: () = assert!(REMOTE_REPORT_BODY_LEN == 153);
 const _: () = assert!(RECALL_SENT_BODY_LEN == 128);
 const _: () = assert!(CONFIG_UPDATE_BODY_LEN == 70);
+const _: () = assert!(RESOLVE_BODY_LEN == 49);
 
 const _: () = assert!(ALLOCATE_MESSAGE_LEN == 343);
 const _: () = assert!(RECALL_MESSAGE_LEN == 327);
 const _: () = assert!(REMOTE_REPORT_MESSAGE_LEN == 400);
 const _: () = assert!(RECALL_SENT_MESSAGE_LEN == 375);
 const _: () = assert!(CONFIG_UPDATE_MESSAGE_LEN == 317);
+const _: () = assert!(RESOLVE_MESSAGE_LEN == 296);
 
 // Every message fits the transport budget.
 
@@ -140,6 +151,7 @@ const _: () = assert!(RECALL_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(REMOTE_REPORT_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(RECALL_SENT_BODY_LEN <= MAX_BODY_LEN);
 const _: () = assert!(CONFIG_UPDATE_BODY_LEN <= MAX_BODY_LEN);
+const _: () = assert!(RESOLVE_BODY_LEN <= MAX_BODY_LEN);
 
 /// Every field of one region, as a start offset and a width.
 type Field = (usize, usize);
@@ -234,12 +246,20 @@ const CONFIG_UPDATE_FIELDS: &[Field] = &[
     (CONFIG_COMMITMENT_OFFSET, WIDE),
 ];
 
+const RESOLVE_FIELDS: &[Field] = &[
+    (RESOLVE_TRANSFER_ID_OFFSET, WIDE),
+    (RESOLVE_TARGET_SEQUENCE_OFFSET, 8),
+    (RESOLVE_ACTION_OFFSET, 1),
+    (RESOLVE_CONFIG_VERSION_OFFSET, 8),
+];
+
 const _: () = assert!(is_contiguous(HEADER_FIELDS, HEADER_LEN));
 const _: () = assert!(is_contiguous(ALLOCATE_FIELDS, ALLOCATE_BODY_LEN));
 const _: () = assert!(is_contiguous(RECALL_FIELDS, RECALL_BODY_LEN));
 const _: () = assert!(is_contiguous(REMOTE_REPORT_FIELDS, REMOTE_REPORT_BODY_LEN));
 const _: () = assert!(is_contiguous(RECALL_SENT_FIELDS, RECALL_SENT_BODY_LEN));
 const _: () = assert!(is_contiguous(CONFIG_UPDATE_FIELDS, CONFIG_UPDATE_BODY_LEN));
+const _: () = assert!(is_contiguous(RESOLVE_FIELDS, RESOLVE_BODY_LEN));
 
 /// True when no two body widths are equal.
 ///
@@ -267,6 +287,7 @@ const BODY_WIDTHS: &[usize] = &[
     REMOTE_REPORT_BODY_LEN,
     RECALL_SENT_BODY_LEN,
     CONFIG_UPDATE_BODY_LEN,
+    RESOLVE_BODY_LEN,
 ];
 
 const _: () = assert!(all_distinct(BODY_WIDTHS));
@@ -296,6 +317,7 @@ mod tests {
             is_contiguous(CONFIG_UPDATE_FIELDS, CONFIG_UPDATE_BODY_LEN),
             "config update"
         );
+        assert!(is_contiguous(RESOLVE_FIELDS, RESOLVE_BODY_LEN), "resolve");
     }
 
     #[test]
@@ -307,6 +329,7 @@ mod tests {
             REMOTE_REPORT_FIELDS,
             RECALL_SENT_FIELDS,
             CONFIG_UPDATE_FIELDS,
+            RESOLVE_FIELDS,
         ] {
             for pair in region.windows(2) {
                 let (start, width) = pair.first().copied().unwrap_or((0, 0));
@@ -355,6 +378,7 @@ mod tests {
             (REMOTE_REPORT_MESSAGE_LEN, REMOTE_REPORT_BODY_LEN),
             (RECALL_SENT_MESSAGE_LEN, RECALL_SENT_BODY_LEN),
             (CONFIG_UPDATE_MESSAGE_LEN, CONFIG_UPDATE_BODY_LEN),
+            (RESOLVE_MESSAGE_LEN, RESOLVE_BODY_LEN),
         ] {
             assert_eq!(message_len, HEADER_LEN + body_len);
             assert!(message_len <= MAX_MESSAGE_LEN);

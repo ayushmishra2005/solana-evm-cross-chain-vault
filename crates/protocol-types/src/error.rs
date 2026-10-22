@@ -18,6 +18,7 @@ pub enum IdentifierField {
     RemoteStateCommitment,
     ConfigCommitment,
     DestinationReference,
+    TargetSequence,
 }
 
 impl IdentifierField {
@@ -38,6 +39,7 @@ impl IdentifierField {
             Self::RemoteStateCommitment => "remote state commitment",
             Self::ConfigCommitment => "config commitment",
             Self::DestinationReference => "destination reference",
+            Self::TargetSequence => "target sequence",
         }
     }
 }
@@ -90,6 +92,7 @@ pub enum ValidationError {
     RealizedLossAbovePrincipal,
     BasisPointsOutOfRange,
     ConfigVersionNotIncreasing,
+    TargetNotBeforeResolution,
 }
 
 impl fmt::Display for ValidationError {
@@ -140,6 +143,9 @@ impl fmt::Display for ValidationError {
             Self::BasisPointsOutOfRange => formatter.write_str("basis points exceed ten thousand"),
             Self::ConfigVersionNotIncreasing => {
                 formatter.write_str("config version does not increase")
+            }
+            Self::TargetNotBeforeResolution => {
+                formatter.write_str("the resolved message does not precede the resolution")
             }
         }
     }
@@ -196,6 +202,7 @@ pub enum DecodeError {
     UnsupportedSchemaVersion(u16),
     UnknownMessageType(u8),
     InvalidProbeStatus(u8),
+    UnknownResolveAction(u8),
     BodyHashMismatch,
     LengthOverflow,
     Invalid(ValidationError),
@@ -235,6 +242,9 @@ impl fmt::Display for DecodeError {
             Self::InvalidProbeStatus(found) => {
                 write!(formatter, "probe status {found} is not known")
             }
+            Self::UnknownResolveAction(found) => {
+                write!(formatter, "resolve action {found} is not known")
+            }
             Self::BodyHashMismatch => formatter.write_str("body hash does not match the body"),
             Self::LengthOverflow => formatter.write_str("declared length does not fit in memory"),
             Self::Invalid(reason) => reason.fmt(formatter),
@@ -250,7 +260,7 @@ mod tests {
     extern crate alloc;
     use alloc::string::ToString;
 
-    const IDENTIFIERS: [IdentifierField; 14] = [
+    const IDENTIFIERS: [IdentifierField; 15] = [
         IdentifierField::SourceChain,
         IdentifierField::DestinationChain,
         IdentifierField::SourceApplication,
@@ -265,6 +275,7 @@ mod tests {
         IdentifierField::RemoteStateCommitment,
         IdentifierField::ConfigCommitment,
         IdentifierField::DestinationReference,
+        IdentifierField::TargetSequence,
     ];
 
     const AMOUNTS: [AmountField; 7] = [
@@ -277,7 +288,7 @@ mod tests {
         AmountField::MaxReportAge,
     ];
 
-    const VALIDATIONS: [ValidationError; 16] = [
+    const VALIDATIONS: [ValidationError; 17] = [
         ValidationError::ZeroIdentifier(IdentifierField::Vault),
         ValidationError::ZeroAmount(AmountField::Amount),
         ValidationError::ReservedFlagsSet,
@@ -294,9 +305,10 @@ mod tests {
         ValidationError::RealizedLossAbovePrincipal,
         ValidationError::BasisPointsOutOfRange,
         ValidationError::ConfigVersionNotIncreasing,
+        ValidationError::TargetNotBeforeResolution,
     ];
 
-    const DECODES: [DecodeError; 10] = [
+    const DECODES: [DecodeError; 11] = [
         DecodeError::Truncated {
             needed: 247,
             found: 8,
@@ -310,6 +322,7 @@ mod tests {
         DecodeError::UnsupportedSchemaVersion(3),
         DecodeError::UnknownMessageType(9),
         DecodeError::InvalidProbeStatus(7),
+        DecodeError::UnknownResolveAction(2),
         DecodeError::BodyHashMismatch,
         DecodeError::LengthOverflow,
         DecodeError::Invalid(ValidationError::ReservedFlagsSet),

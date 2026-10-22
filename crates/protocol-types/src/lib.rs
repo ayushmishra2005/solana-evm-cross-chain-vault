@@ -32,7 +32,8 @@ mod message;
 mod validation;
 
 pub use body::{
-    AllocateBody, Body, ConfigUpdateBody, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody,
+    AllocateBody, Body, ConfigUpdateBody, ProbeStatus, RecallBody, RecallSentBody,
+    RemoteReportBody, ResolveAction, ResolveBody,
 };
 pub use codec::{EncodedMessage, decode_message, encode_into};
 pub use commitment::{COMMITMENT_DOMAIN, MESSAGE_ID_DOMAIN, next_commitment};

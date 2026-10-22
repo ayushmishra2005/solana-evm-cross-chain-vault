@@ -54,6 +54,9 @@ pub enum TransferStatus {
     None = 0,
     Pending = 1,
     Complete = 2,
+    /// Consumed in order but not allowed to run. Only an admitting resolution
+    /// can move it on, and nothing financial happens until then.
+    Quarantined = 3,
 }
 
 impl TransferStatus {
@@ -61,6 +64,33 @@ impl TransferStatus {
     pub const fn to_u8(self) -> u8 {
         self as u8
     }
+}
+
+/// Why an authentic, in order message was consumed without effect.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum QuarantineReason {
+    Expired = 1,
+    Frozen = 2,
+    AllocationLimit = 3,
+}
+
+/// What one resolution did to the transfer it names.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum ResolveOutcome {
+    /// The quarantined transfer now runs on its original terms.
+    Admitted = 1,
+    /// The resolution itself expired, so the transfer stays quarantined.
+    Expired = 2,
+    /// The named transfer is not the quarantined open cycle.
+    NotQuarantined = 3,
+    /// The allocation still does not fit under the principal ceiling.
+    AllocationLimit = 4,
+    /// The recall still asks for more principal than the leg accepted.
+    InsufficientPrincipal = 5,
 }
 
 /// Adapter identity fixed once, so no caller may redirect assets.
@@ -152,6 +182,31 @@ impl RemotePosition {
         self.active_transfer_id = transfer_id;
         self.active_transfer_sequence = sequence;
         self.active_transfer_status = TransferStatus::Pending;
+    }
+
+    /// Opens one cycle that holds its place without being allowed to run.
+    pub fn quarantine_transfer(
+        &mut self,
+        kind: TransferKind,
+        transfer_id: [u8; 32],
+        sequence: u64,
+    ) {
+        self.open_transfer(kind, transfer_id, sequence);
+        self.active_transfer_status = TransferStatus::Quarantined;
+    }
+
+    /// Lets the quarantined open cycle run on its original terms.
+    pub fn admit_transfer(&mut self) {
+        self.active_transfer_status = TransferStatus::Pending;
+    }
+
+    /// True when the open cycle is the quarantined transfer with this identity.
+    #[must_use]
+    pub fn holds_quarantined(&self, transfer_id: &[u8; 32], sequence: u64) -> bool {
+        self.has_active_transfer()
+            && self.active_transfer_status == TransferStatus::Quarantined
+            && self.active_transfer_id == *transfer_id
+            && self.active_transfer_sequence == sequence
     }
 
     /// Closes the open cycle and remembers which transfer finished.
@@ -271,6 +326,36 @@ impl TransferRecord {
         }
     }
 
+    /// The same record, held back until a resolution admits it.
+    #[must_use]
+    pub fn quarantined(mut self) -> Self {
+        self.status = TransferStatus::Quarantined;
+        self
+    }
+
+    /// Rejects a record that is not the quarantined open cycle.
+    pub fn check_quarantined(&self, position: &RemotePosition) -> Result<()> {
+        require_eq!(
+            self.state_version,
+            crate::state::STATE_VERSION,
+            RemoteLegError::InvalidStateVersion
+        );
+        require!(
+            self.status == TransferStatus::Quarantined,
+            RemoteLegError::InvalidTransferStatus
+        );
+        require!(
+            self.transfer_kind == position.active_transfer_kind,
+            RemoteLegError::InvalidTransferKind
+        );
+        require!(
+            self.transfer_id == position.active_transfer_id
+                && self.message_sequence == position.active_transfer_sequence,
+            RemoteLegError::InvalidTransferRecord
+        );
+        Ok(())
+    }
+
     /// Rejects a record that is not the open transfer of the wanted kind.
     pub fn check_active(&self, kind: TransferKind, position: &RemotePosition) -> Result<()> {
         require_eq!(
@@ -344,6 +429,28 @@ impl TransferRecord {
     }
 }
 
+/// Reserves the attributed custody a recall can already cover.
+///
+/// Returns the reserved amount. Reserving only reclassifies a bucket.
+pub fn reserve_recall_custody(
+    record: &mut TransferRecord,
+    position: &mut RemotePosition,
+) -> Result<u64> {
+    let reserved = record
+        .requested_recall_amount
+        .min(position.attributed_principal);
+    position.attributed_principal = position
+        .attributed_principal
+        .checked_sub(reserved)
+        .ok_or(RemoteLegError::InsufficientAttributedCustody)?;
+    position.recalled_custody = position
+        .recalled_custody
+        .checked_add(reserved)
+        .ok_or(RemoteLegError::ArithmeticOverflow)?;
+    record.custody_principal_reserved = reserved;
+    Ok(reserved)
+}
+
 /// Closes a recall once sent assets plus realized loss match the request.
 ///
 /// A total loss settles the request without a send, so both the withdrawal and
@@ -398,6 +505,89 @@ mod tests {
         assert_eq!(TransferStatus::None.to_u8(), 0);
         assert_eq!(TransferStatus::Pending.to_u8(), 1);
         assert_eq!(TransferStatus::Complete.to_u8(), 2);
+        assert_eq!(TransferStatus::Quarantined.to_u8(), 3);
+    }
+
+    #[test]
+    fn a_quarantined_cycle_blocks_new_cycles_and_every_step_that_moves_assets() {
+        let mut position = empty_position();
+        position.quarantine_transfer(TransferKind::Allocate, [9u8; 32], 4);
+        assert!(position.has_active_transfer());
+        assert_eq!(
+            position
+                .check_no_active_transfer()
+                .expect_err("cycle is open"),
+            Error::from(RemoteLegError::UnresolvedCycle)
+        );
+        let record = TransferRecord::new_allocation(1, [9u8; 32], 4, 100, 90, 0, 0).quarantined();
+        assert_eq!(
+            record
+                .check_active(TransferKind::Allocate, &position)
+                .expect_err("a quarantined transfer may not run"),
+            Error::from(RemoteLegError::InvalidTransferStatus)
+        );
+        assert!(record.check_quarantined(&position).is_ok());
+    }
+
+    #[test]
+    fn only_the_exact_quarantined_identity_is_held() {
+        let mut position = empty_position();
+        assert!(!position.holds_quarantined(&[0u8; 32], 0));
+        position.open_transfer(TransferKind::Allocate, [9u8; 32], 4);
+        assert!(!position.holds_quarantined(&[9u8; 32], 4));
+        position.quarantine_transfer(TransferKind::Allocate, [9u8; 32], 4);
+        assert!(position.holds_quarantined(&[9u8; 32], 4));
+        assert!(!position.holds_quarantined(&[8u8; 32], 4));
+        assert!(!position.holds_quarantined(&[9u8; 32], 5));
+    }
+
+    #[test]
+    fn a_record_that_is_not_the_quarantined_cycle_is_refused() {
+        let mut position = empty_position();
+        position.quarantine_transfer(TransferKind::Allocate, [9u8; 32], 4);
+        let pending = TransferRecord::new_allocation(1, [9u8; 32], 4, 100, 90, 0, 0);
+        assert_eq!(
+            pending.check_quarantined(&position).expect_err("not held"),
+            Error::from(RemoteLegError::InvalidTransferStatus)
+        );
+        let recall = TransferRecord::new_recall(1, [9u8; 32], 4, 100, 90, 0, 0).quarantined();
+        assert_eq!(
+            recall.check_quarantined(&position).expect_err("wrong kind"),
+            Error::from(RemoteLegError::InvalidTransferKind)
+        );
+        let moved = TransferRecord::new_allocation(1, [9u8; 32], 5, 100, 90, 0, 0).quarantined();
+        assert_eq!(
+            moved
+                .check_quarantined(&position)
+                .expect_err("wrong sequence"),
+            Error::from(RemoteLegError::InvalidTransferRecord)
+        );
+    }
+
+    #[test]
+    fn reserving_moves_only_attributed_custody_into_the_recall_bucket() {
+        let mut position = empty_position();
+        position.attributed_principal = 60;
+        position.deployed_principal = 40;
+        let mut record = TransferRecord::new_recall(1, [9u8; 32], 4, 100, 90, 0, 0);
+        assert_eq!(reserve_recall_custody(&mut record, &mut position), Ok(60));
+        assert_eq!(position.attributed_principal, 0);
+        assert_eq!(position.recalled_custody, 60);
+        assert_eq!(position.deployed_principal, 40);
+        assert_eq!(record.custody_principal_reserved, 60);
+        assert_eq!(record.unresolved_recall_principal(), Ok(40));
+    }
+
+    #[test]
+    fn the_reason_and_outcome_bytes_never_change() {
+        assert_eq!(QuarantineReason::Expired as u8, 1);
+        assert_eq!(QuarantineReason::Frozen as u8, 2);
+        assert_eq!(QuarantineReason::AllocationLimit as u8, 3);
+        assert_eq!(ResolveOutcome::Admitted as u8, 1);
+        assert_eq!(ResolveOutcome::Expired as u8, 2);
+        assert_eq!(ResolveOutcome::NotQuarantined as u8, 3);
+        assert_eq!(ResolveOutcome::AllocationLimit as u8, 4);
+        assert_eq!(ResolveOutcome::InsufficientPrincipal as u8, 5);
     }
 
     #[test]
@@ -543,6 +733,16 @@ mod tests {
             latest_completed_transfer_id: [0u8; 32],
             latest_completion_at: 0,
             initialized_at: 0,
+        }
+    }
+
+    fn empty_position() -> RemotePosition {
+        RemotePosition {
+            attributed_principal: 0,
+            deployed_principal: 0,
+            recalled_custody: 0,
+            unattributed_custody: 0,
+            ..sample_position()
         }
     }
 

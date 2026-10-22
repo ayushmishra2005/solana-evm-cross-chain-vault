@@ -3,6 +3,7 @@
 use anchor_lang::prelude::*;
 
 use crate::control::MessageClass;
+use crate::strategy::{QuarantineReason, ResolveOutcome, TransferKind};
 
 /// Emitted once, when the configuration account is created.
 #[event]
@@ -115,6 +116,40 @@ pub struct AllocateAccepted {
     pub minimum_amount: u64,
     pub lane_commitment: [u8; 32],
     pub accepted_at: i64,
+}
+
+/// Emitted when an authentic, in order message is consumed without effect.
+///
+/// A transfer message leaves its record quarantined. A config message has no
+/// record, so its transfer id is zero.
+#[event]
+#[derive(Debug)]
+pub struct MessageQuarantined {
+    pub remote_config: Pubkey,
+    pub message_class: MessageClass,
+    pub reason: QuarantineReason,
+    pub transfer_id: [u8; 32],
+    pub message_id: [u8; 32],
+    pub sequence: u64,
+    pub lane_commitment: [u8; 32],
+    pub quarantined_at: i64,
+}
+
+/// Emitted for every consumed resolution, whatever it changed.
+#[event]
+#[derive(Debug)]
+pub struct ResolveProcessed {
+    pub remote_config: Pubkey,
+    pub transfer_record: Pubkey,
+    pub transfer_id: [u8; 32],
+    pub target_sequence: u64,
+    pub transfer_kind: TransferKind,
+    pub outcome: ResolveOutcome,
+    pub guardian_cosigned: bool,
+    pub message_id: [u8; 32],
+    pub sequence: u64,
+    pub lane_commitment: [u8; 32],
+    pub processed_at: i64,
 }
 
 /// Emitted whenever observed custody becomes accepted principal.

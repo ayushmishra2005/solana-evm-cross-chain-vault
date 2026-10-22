@@ -15,10 +15,14 @@ use crate::state::RemoteConfig;
 pub const MAX_MESSAGE_LEN: usize = layout::MAX_MESSAGE_LEN;
 
 /// A message that passed every rule, with the id of its exact bytes.
+///
+/// An expired message is still authentic and next in line. The caller must
+/// consume it without carrying out its financial intent.
 #[derive(Clone, Copy, Debug)]
 pub struct ValidatedMessage {
     pub message: Message,
     pub message_id: [u8; 32],
+    pub fresh: bool,
 }
 
 /// Domain tagged id of the exact bytes that arrived.
@@ -102,9 +106,8 @@ fn check_domains(header: &Header, config: &RemoteConfig, lane: &ReplayLane) -> R
     Ok(())
 }
 
-/// Compares the envelope times with the chain clock.
-fn check_times(header: &Header, now: u64) -> Result<()> {
-    require_gte!(header.expires_at.get(), now, RemoteLegError::MessageExpired);
+/// Rejects a message published after the chain clock.
+fn check_published(header: &Header, now: u64) -> Result<()> {
     require_gte!(
         now,
         header.published_at.get(),
@@ -113,9 +116,16 @@ fn check_times(header: &Header, now: u64) -> Result<()> {
     Ok(())
 }
 
+/// True while the chain clock has not passed the expiry.
+#[must_use]
+pub fn is_fresh(header: &Header, now: u64) -> bool {
+    header.expires_at.get() >= now
+}
+
 /// Applies every rule that does not depend on the message body.
 ///
-/// The order follows the documented validation order for inbound messages.
+/// Expiry is judged last, so only an authentic message that is next on the
+/// lane can ever be reported as stale.
 pub fn validate_inbound(
     bytes: &[u8],
     class: MessageClass,
@@ -131,7 +141,7 @@ pub fn validate_inbound(
     );
 
     check_domains(&message.header, config, lane)?;
-    check_times(&message.header, now)?;
+    check_published(&message.header, now)?;
 
     let sequence = message.header.sequence.get();
     require_gte!(
@@ -150,6 +160,7 @@ pub fn validate_inbound(
     Ok(ValidatedMessage {
         message,
         message_id: message_id(bytes)?,
+        fresh: is_fresh(&message.header, now),
     })
 }
 
@@ -278,6 +289,15 @@ mod tests {
         ] {
             assert_maps_to(error, RemoteLegError::InvalidMessage);
         }
+    }
+
+    #[test]
+    fn a_message_is_fresh_up_to_and_including_its_expiry() {
+        let header = sample_header();
+        assert!(is_fresh(&header, 1_100));
+        assert!(is_fresh(&header, 9_000));
+        assert!(!is_fresh(&header, 9_001));
+        assert!(!is_fresh(&header, u64::MAX));
     }
 
     fn sample_header() -> Header {

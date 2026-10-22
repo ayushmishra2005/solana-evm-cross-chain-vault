@@ -85,3 +85,24 @@ where
     value.try_serialize(&mut slot)?;
     Ok(())
 }
+
+/// Reads a record this program owns, at an address the caller already bound.
+pub fn load<T>(info: &AccountInfo, invalid: RemoteLegError) -> Result<T>
+where
+    T: AccountDeserialize,
+{
+    require_keys_eq!(*info.owner, crate::ID, invalid);
+    let data = info.try_borrow_data()?;
+    let mut slice: &[u8] = &data;
+    T::try_deserialize(&mut slice)
+}
+
+/// Writes a loaded record back over its own fixed size account.
+pub fn store<T>(info: &AccountInfo, value: &T) -> Result<()>
+where
+    T: AccountSerialize,
+{
+    let mut data = info.try_borrow_mut_data()?;
+    let mut slot: &mut [u8] = &mut data;
+    value.try_serialize(&mut slot)
+}

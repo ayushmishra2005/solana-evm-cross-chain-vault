@@ -29,11 +29,17 @@ pub enum MessageClass {
     Allocate = 0,
     Recall = 1,
     ConfigUpdate = 2,
+    Resolve = 3,
 }
 
 impl MessageClass {
     /// Every class, in discriminant order.
-    pub const ALL: [Self; 3] = [Self::Allocate, Self::Recall, Self::ConfigUpdate];
+    pub const ALL: [Self; 4] = [
+        Self::Allocate,
+        Self::Recall,
+        Self::ConfigUpdate,
+        Self::Resolve,
+    ];
 
     #[must_use]
     pub const fn to_u8(self) -> u8 {
@@ -47,6 +53,7 @@ impl MessageClass {
             Self::Allocate => protocol_types::MessageType::Allocate,
             Self::Recall => protocol_types::MessageType::Recall,
             Self::ConfigUpdate => protocol_types::MessageType::ConfigUpdate,
+            Self::Resolve => protocol_types::MessageType::Resolve,
         }
     }
 }
@@ -221,6 +228,7 @@ mod tests {
         assert_eq!(MessageClass::Allocate.to_u8(), 0);
         assert_eq!(MessageClass::Recall.to_u8(), 1);
         assert_eq!(MessageClass::ConfigUpdate.to_u8(), 2);
+        assert_eq!(MessageClass::Resolve.to_u8(), 3);
     }
 
     #[test]
@@ -237,6 +245,10 @@ mod tests {
             MessageClass::ConfigUpdate.message_type(),
             protocol_types::MessageType::ConfigUpdate
         );
+        assert_eq!(
+            MessageClass::Resolve.message_type(),
+            protocol_types::MessageType::Resolve
+        );
     }
 
     #[test]
@@ -249,10 +261,10 @@ mod tests {
     }
 
     #[test]
-    fn the_three_message_classes_are_distinct() {
+    fn the_four_message_classes_are_distinct() {
         let mut seen = MessageClass::ALL.map(MessageClass::to_u8);
         seen.sort_unstable();
-        assert_eq!(seen, [0, 1, 2]);
+        assert_eq!(seen, [0, 1, 2, 3]);
     }
 
     #[test]

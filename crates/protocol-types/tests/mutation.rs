@@ -182,6 +182,13 @@ const CONFIG_UPDATE_REGIONS: &[Region] = &[
     region("config commitment", layout::CONFIG_COMMITMENT_OFFSET, 32),
 ];
 
+const RESOLVE_REGIONS: &[Region] = &[
+    region("transfer id", layout::RESOLVE_TRANSFER_ID_OFFSET, 32),
+    region("target sequence", layout::RESOLVE_TARGET_SEQUENCE_OFFSET, 8),
+    region("action", layout::RESOLVE_ACTION_OFFSET, 1),
+    region("config version", layout::RESOLVE_CONFIG_VERSION_OFFSET, 8),
+];
+
 fn body_regions(kind: MessageType) -> &'static [Region] {
     match kind {
         MessageType::Allocate => ALLOCATE_REGIONS,
@@ -189,6 +196,7 @@ fn body_regions(kind: MessageType) -> &'static [Region] {
         MessageType::RemoteReport => REMOTE_REPORT_REGIONS,
         MessageType::RecallSent => RECALL_SENT_REGIONS,
         MessageType::ConfigUpdate => CONFIG_UPDATE_REGIONS,
+        MessageType::Resolve => RESOLVE_REGIONS,
     }
 }
 
@@ -372,7 +380,7 @@ fn swapping_the_message_type_to_every_other_type_rejects_on_total_length() {
 fn every_unknown_message_type_byte_rejects() {
     let bytes = common::encoded(MessageType::Allocate);
     for value in 0..=u8::MAX {
-        if (1..=5).contains(&value) {
+        if (1..=6).contains(&value) {
             continue;
         }
         let mut edited = bytes.clone();

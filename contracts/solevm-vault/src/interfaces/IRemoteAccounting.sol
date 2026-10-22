@@ -36,6 +36,7 @@ interface IRemoteAccounting {
     event AllocationInitiated(bytes32 indexed transferId, uint256 amount, bytes message);
     event AllocationCompleted(bytes32 indexed transferId, uint256 amount, uint256 acceptedValue);
     event RecallInitiated(bytes32 indexed transferId, uint256 amount, bytes message);
+    event AdmissionRequested(bytes32 indexed transferId, uint64 targetSequence, bytes message);
     event RecallSentAccepted(
         bytes32 indexed transferId,
         uint256 principalSent,

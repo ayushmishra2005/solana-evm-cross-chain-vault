@@ -10,7 +10,7 @@ use common::{
     ALLOCATE_TRANSFER_ID, Fixture, Pubkey, RECALL_TRANSFER_ID, expect_error, expect_rejection,
 };
 use protocol_types::{AssetAmount, ConfigVersion};
-use solevm_remote_leg::{RemoteLegError, TransferKind, TransferStatus};
+use solevm_remote_leg::{QuarantineReason, RemoteLegError, TransferKind, TransferStatus};
 
 const ALLOCATE_ID: [u8; 32] = ALLOCATE_TRANSFER_ID;
 const ID: [u8; 32] = RECALL_TRANSFER_ID;
@@ -192,14 +192,33 @@ fn a_recall_body_config_version_out_of_step_is_rejected() {
 }
 
 #[test]
-fn an_expired_recall_is_not_accepted() {
+fn an_expired_recall_is_quarantined_and_reserves_nothing() {
     let mut fixture = holding_custody();
+    let before = fixture.position();
     let (sequence, bytes) = next_recall(&fixture, ID, AMOUNT);
     fixture.set_time(common::messages::EXPIRES_AT as i64 + 1);
 
+    fixture
+        .recall(ID, sequence, bytes.clone())
+        .expect("an authentic expired recall is consumed");
+    fixture.expect_quarantined(
+        ID,
+        sequence,
+        TransferKind::Recall,
+        QuarantineReason::Expired,
+    );
+
+    let position = fixture.position();
+    assert_eq!(position.attributed_principal, before.attributed_principal);
+    assert_eq!(position.recalled_custody, before.recalled_custody);
+    assert_eq!(position.deployed_principal, before.deployed_principal);
+    expect_error(
+        fixture.send_recall(ID, AMOUNT),
+        RemoteLegError::InvalidTransferStatus,
+    );
     expect_error(
         fixture.recall(ID, sequence, bytes),
-        RemoteLegError::MessageExpired,
+        RemoteLegError::InvalidSequence,
     );
 }
 

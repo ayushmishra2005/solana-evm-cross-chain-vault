@@ -5,11 +5,14 @@
 mod common;
 
 use solana_signer::Signer;
-use solevm_remote_leg::{MessageClass, RemoteLegError, STATE_VERSION};
+use solevm_remote_leg::{
+    MessageClass, MessageQuarantined, QuarantineReason, RemoteLegError, STATE_VERSION,
+};
 
 use common::messages::{EFFECTIVE_AT, MessageBuilder, PUBLISHED_AT, next_commitment};
 use common::{
     CONFIG_VERSION, CONTROL_LANE_ID, Fixture, START_TIMESTAMP, expect_error, expect_rejection,
+    last_event,
 };
 
 /// Sends the first valid update and returns its message id.
@@ -199,14 +202,29 @@ fn an_effective_timestamp_that_has_just_arrived_is_accepted() {
 }
 
 #[test]
-fn an_expired_message_is_rejected() {
+fn an_expired_message_is_consumed_without_changing_any_limit() {
     let mut fixture = Fixture::ready();
+    let risk_before = fixture.raw_data(fixture.risk());
     let bytes = MessageBuilder::config_update()
         .expires_at(START_TIMESTAMP as u64 - 1)
         .encode();
+    fixture
+        .config_update(1, bytes.clone())
+        .expect("an authentic expired update is consumed");
+
+    let event: MessageQuarantined = last_event(&fixture.last_logs());
+    assert_eq!(event.reason, QuarantineReason::Expired);
+    assert_eq!(event.message_class, MessageClass::ConfigUpdate);
+    assert_eq!(event.transfer_id, [0u8; 32]);
+    assert_eq!(event.sequence, 1);
+
+    assert_eq!(fixture.raw_data(fixture.risk()), risk_before);
+    assert_eq!(fixture.config().config_version, CONFIG_VERSION);
+    assert_eq!(fixture.control_lane().highest_consumed_sequence, 1);
+    assert_eq!(fixture.record(1).message_class, MessageClass::ConfigUpdate);
     expect_error(
         fixture.config_update(1, bytes),
-        RemoteLegError::MessageExpired,
+        RemoteLegError::InvalidSequence,
     );
 }
 

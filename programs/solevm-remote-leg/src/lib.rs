@@ -27,10 +27,11 @@ pub use control::{
 pub use errors::RemoteLegError;
 pub use events::{
     AllocateAccepted, AllocationAttributed, AllocationCompleted, AssetsDeployed, ConfigUpdated,
-    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, OutboundStateInitialized,
-    RecallAccepted, RecallAssetsSent, RecallCompleted, RecallCustodyReserved, RecallSentPublished,
-    RemoteLegFrozen, RemoteLegInitialized, RemoteReportPublished, ReplayWatermarkAdvanced,
-    StrategyStateInitialized, StrategyWithdrawalCompleted,
+    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, MessageQuarantined,
+    OutboundStateInitialized, RecallAccepted, RecallAssetsSent, RecallCompleted,
+    RecallCustodyReserved, RecallSentPublished, RemoteLegFrozen, RemoteLegInitialized,
+    RemoteReportPublished, ReplayWatermarkAdvanced, ResolveProcessed, StrategyStateInitialized,
+    StrategyWithdrawalCompleted,
 };
 pub use instructions::*;
 pub use outbound::{
@@ -44,8 +45,9 @@ pub use state::{
     REMOTE_CONFIG_SEED, REQUIRED_MINT_DECIMALS, RemoteConfig, STATE_VERSION,
 };
 pub use strategy::{
-    REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_RESERVED, STRATEGY_CONFIG_SEED,
-    StrategyConfig, TRANSFER_RECORD_SEED, TransferKind, TransferRecord, TransferStatus,
+    QuarantineReason, REMOTE_POSITION_SEED, RemotePosition, ResolveOutcome,
+    STRATEGY_CONFIG_RESERVED, STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED,
+    TransferKind, TransferRecord, TransferStatus,
 };
 
 declare_id!("4sLaaRdiY74cvqVCXLjW2wPncy2ArQkTRauNTdphKByo");
@@ -115,6 +117,10 @@ pub mod solevm_remote_leg {
 
     pub fn process_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Result<()> {
         instructions::recall::handle_recall(ctx, message_bytes)
+    }
+
+    pub fn process_resolve(ctx: Context<ProcessResolve>, message_bytes: Vec<u8>) -> Result<()> {
+        instructions::resolve::handle_resolve(ctx, message_bytes)
     }
 
     pub fn withdraw_for_recall(

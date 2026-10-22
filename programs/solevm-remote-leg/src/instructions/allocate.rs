@@ -1,6 +1,7 @@
 //! Accepts one canonical allocation and opens its transfer cycle.
 //!
-//! Accepting the message only authorises assets. It never counts them.
+//! Accepting the message only authorises assets. It never counts them. An
+//! allocation that may not run is consumed and held as quarantined instead.
 
 use anchor_lang::prelude::*;
 
@@ -10,12 +11,12 @@ use crate::control::{
 };
 use crate::custody::narrow_amount;
 use crate::errors::RemoteLegError;
-use crate::events::AllocateAccepted;
+use crate::events::{AllocateAccepted, MessageQuarantined};
 use crate::message::{self, ValidatedMessage};
 use crate::records;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
 use crate::strategy::{
-    REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig,
+    QuarantineReason, REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig,
     TRANSFER_RECORD_SEED, TransferKind, TransferRecord,
 };
 
@@ -81,12 +82,12 @@ pub struct ProcessAllocate<'info> {
 pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) -> Result<()> {
     let config_key = ctx.accounts.remote_config.key();
     check_versions(&ctx)?;
-    require!(!ctx.accounts.remote_config.frozen, RemoteLegError::Frozen);
 
     let now = message::current_time()?;
     let ValidatedMessage {
         message,
         message_id,
+        fresh,
     } = message::validate_inbound(
         &message_bytes,
         CLASS,
@@ -137,7 +138,19 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
         minimum_amount,
         RemoteLegError::InvalidMinimumDestinationAmount
     );
-    check_allocation_limit(&ctx, authorized_amount)?;
+    let quarantine = if !fresh {
+        Some(QuarantineReason::Expired)
+    } else if ctx.accounts.remote_config.frozen {
+        Some(QuarantineReason::Frozen)
+    } else if !allocation_fits(
+        &ctx.accounts.remote_position,
+        &ctx.accounts.strategy_config,
+        authorized_amount,
+    )? {
+        Some(QuarantineReason::AllocationLimit)
+    } else {
+        None
+    };
 
     let sequence = message.header.sequence.get();
     let lane_id = ctx.accounts.remote_config.control_lane_id;
@@ -154,6 +167,15 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
     )?;
 
     let accepted_at = Clock::get()?.unix_timestamp;
+    let transfer = TransferRecord::new_allocation(
+        record.bump,
+        transfer_id,
+        sequence,
+        authorized_amount,
+        minimum_amount,
+        body.expected_source_balance.get(),
+        accepted_at,
+    );
     records::create_and_write(
         &ctx.accounts.transfer_record.to_account_info(),
         &ctx.accounts.transport_verifier.to_account_info(),
@@ -165,15 +187,11 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
             &[record.bump],
         ],
         TransferRecord::LEN,
-        &TransferRecord::new_allocation(
-            record.bump,
-            transfer_id,
-            sequence,
-            authorized_amount,
-            minimum_amount,
-            body.expected_source_balance.get(),
-            accepted_at,
-        ),
+        &if quarantine.is_some() {
+            transfer.quarantined()
+        } else {
+            transfer
+        },
     )?;
 
     records::create_and_write(
@@ -203,6 +221,25 @@ pub fn handle_allocate(ctx: Context<ProcessAllocate>, message_bytes: Vec<u8>) ->
     lane.message_commitment = message::next_commitment(&lane.message_commitment, &message_id);
     lane.last_accepted_at = accepted_at;
     let lane_commitment = lane.message_commitment;
+
+    if let Some(reason) = quarantine {
+        ctx.accounts.remote_position.quarantine_transfer(
+            TransferKind::Allocate,
+            transfer_id,
+            sequence,
+        );
+        emit!(MessageQuarantined {
+            remote_config: config_key,
+            message_class: CLASS,
+            reason,
+            transfer_id,
+            message_id,
+            sequence,
+            lane_commitment,
+            quarantined_at: accepted_at,
+        });
+        return Ok(());
+    }
 
     ctx.accounts
         .remote_position
@@ -242,27 +279,26 @@ fn check_versions(ctx: &Context<ProcessAllocate>) -> Result<()> {
 }
 
 /// The basis points carry no vault total, so the ceiling is an absolute one.
-fn check_allocation_limit(ctx: &Context<ProcessAllocate>, authorized_amount: u64) -> Result<()> {
-    let accepted = ctx.accounts.remote_position.accepted_principal()?;
-    let projected = accepted
+pub fn allocation_fits(
+    position: &RemotePosition,
+    strategy_config: &StrategyConfig,
+    authorized_amount: u64,
+) -> Result<bool> {
+    let projected = position
+        .accepted_principal()?
         .checked_add(authorized_amount)
         .ok_or(RemoteLegError::ArithmeticOverflow)?;
-    require_gte!(
-        ctx.accounts.strategy_config.max_remote_principal,
-        projected,
-        RemoteLegError::RemoteAllocationLimitExceeded
-    );
-    Ok(())
+    Ok(projected <= strategy_config.max_remote_principal)
 }
 
 /// The canonical transfer record address, with its bump.
-struct TransferAddress {
-    address: Pubkey,
-    bump: u8,
+pub struct TransferAddress {
+    pub address: Pubkey,
+    pub bump: u8,
 }
 
 impl TransferAddress {
-    fn derive(config_key: &Pubkey, transfer_id: &[u8; 32]) -> Self {
+    pub fn derive(config_key: &Pubkey, transfer_id: &[u8; 32]) -> Self {
         let (address, bump) = Pubkey::find_program_address(
             &TransferRecord::seeds(config_key, transfer_id),
             &crate::ID,

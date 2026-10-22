@@ -9,7 +9,9 @@ use common::{
     ALLOCATE_TRANSFER_ID, Fixture, MAX_REMOTE_PRINCIPAL, Pubkey, RECALL_TRANSFER_ID, expect_error,
 };
 use protocol_types::{AssetAmount, ConfigVersion};
-use solevm_remote_leg::{MessageClass, RemoteLegError, TransferKind, TransferStatus};
+use solevm_remote_leg::{
+    MessageClass, QuarantineReason, RemoteLegError, TransferKind, TransferStatus,
+};
 
 const ID: [u8; 32] = ALLOCATE_TRANSFER_ID;
 const AMOUNT: u64 = 1_000_000;
@@ -319,13 +321,22 @@ fn an_allocation_during_an_open_recall_is_rejected() {
 // Amount rules
 
 #[test]
-fn an_allocation_above_the_permitted_principal_is_rejected() {
+fn an_allocation_above_the_permitted_principal_is_quarantined() {
     let mut fixture = Fixture::deployed();
     let (sequence, bytes) = next_allocate(&fixture, ID, MAX_REMOTE_PRINCIPAL + 1);
-    expect_error(
-        fixture.allocate(ID, sequence, bytes),
-        RemoteLegError::RemoteAllocationLimitExceeded,
+    fixture
+        .allocate(ID, sequence, bytes)
+        .expect("an authentic allocation over the ceiling is consumed");
+    fixture.expect_quarantined(
+        ID,
+        sequence,
+        TransferKind::Allocate,
+        QuarantineReason::AllocationLimit,
     );
+
+    fixture.credit(fixture.custody, MAX_REMOTE_PRINCIPAL + 1);
+    expect_error(fixture.attribute(ID), RemoteLegError::InvalidTransferStatus);
+    assert_eq!(fixture.position().attributed_principal, 0);
 }
 
 #[test]
@@ -335,9 +346,24 @@ fn the_ceiling_counts_principal_the_leg_already_holds() {
 
     let second = [0x79; 32];
     let (sequence, bytes) = next_allocate(&fixture, second, 1);
+    fixture
+        .allocate(second, sequence, bytes)
+        .expect("an authentic allocation over the ceiling is consumed");
+    fixture.expect_quarantined(
+        second,
+        sequence,
+        TransferKind::Allocate,
+        QuarantineReason::AllocationLimit,
+    );
+
+    fixture.credit(fixture.custody, 1);
     expect_error(
-        fixture.allocate(second, sequence, bytes),
-        RemoteLegError::RemoteAllocationLimitExceeded,
+        fixture.attribute(second),
+        RemoteLegError::InvalidTransferStatus,
+    );
+    assert_eq!(
+        fixture.position().attributed_principal,
+        MAX_REMOTE_PRINCIPAL
     );
 }
 
@@ -434,8 +460,14 @@ fn a_rejected_allocation_leaves_every_account_unchanged() {
     let lane_before = fixture.raw_data(fixture.control_lane_key());
     let position_before = fixture.raw_data(fixture.position_key());
 
-    let (sequence, bytes) = next_allocate(&fixture, ID, MAX_REMOTE_PRINCIPAL + 1);
-    assert!(fixture.allocate(ID, sequence, bytes).is_err());
+    // The consumed record is the last account checked before anything is written.
+    let (sequence, bytes) = next_allocate(&fixture, ID, AMOUNT);
+    let mut accounts = fixture.allocate_accounts(ID, sequence);
+    accounts.consumed_message = Pubkey::new_unique();
+    expect_error(
+        fixture.allocate_with(accounts, bytes),
+        RemoteLegError::InvalidConsumedMessage,
+    );
 
     assert_eq!(fixture.raw_data(fixture.control_lane_key()), lane_before);
     assert_eq!(fixture.raw_data(fixture.position_key()), position_before);
@@ -443,16 +475,28 @@ fn a_rejected_allocation_leaves_every_account_unchanged() {
 }
 
 #[test]
-fn a_frozen_leg_rejects_a_new_allocation() {
+fn a_frozen_leg_quarantines_a_new_allocation() {
     let mut fixture = Fixture::deployed();
     let guardian = fixture.guardian.insecure_clone();
     fixture.freeze(&guardian).expect("leg freezes");
 
     let (sequence, bytes) = next_allocate(&fixture, ID, AMOUNT);
-    expect_error(
-        fixture.allocate(ID, sequence, bytes),
-        RemoteLegError::Frozen,
+    fixture
+        .allocate(ID, sequence, bytes)
+        .expect("an authentic allocation to a frozen leg is consumed");
+    fixture.expect_quarantined(
+        ID,
+        sequence,
+        TransferKind::Allocate,
+        QuarantineReason::Frozen,
     );
+
+    fixture.credit(fixture.custody, AMOUNT);
+    expect_error(
+        fixture.attribute_cosigned(ID, &guardian),
+        RemoteLegError::InvalidTransferStatus,
+    );
+    assert_eq!(fixture.position().attributed_principal, 0);
 }
 
 // Independent asset arrival

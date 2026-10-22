@@ -1,6 +1,7 @@
 //! Accepts one canonical recall and reserves the custody it can already cover.
 //!
-//! Reserving only reclassifies a bucket. No token moves here.
+//! Reserving only reclassifies a bucket. No token moves here. An expired
+//! recall is consumed and held as quarantined, with nothing reserved.
 
 use anchor_lang::prelude::*;
 
@@ -10,13 +11,14 @@ use crate::control::{
 };
 use crate::custody::narrow_amount;
 use crate::errors::RemoteLegError;
-use crate::events::{RecallAccepted, RecallCustodyReserved};
+use crate::events::{MessageQuarantined, RecallAccepted, RecallCustodyReserved};
 use crate::instructions::allocate::ConsumedAddress;
 use crate::message::{self, ValidatedMessage};
 use crate::records;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
 use crate::strategy::{
-    REMOTE_POSITION_SEED, RemotePosition, TRANSFER_RECORD_SEED, TransferKind, TransferRecord,
+    QuarantineReason, REMOTE_POSITION_SEED, RemotePosition, TRANSFER_RECORD_SEED, TransferKind,
+    TransferRecord, reserve_recall_custody,
 };
 
 const CLASS: MessageClass = MessageClass::Recall;
@@ -89,6 +91,7 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
     let ValidatedMessage {
         message,
         message_id,
+        fresh,
     } = message::validate_inbound(
         &message_bytes,
         CLASS,
@@ -135,11 +138,13 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
         minimum_amount,
         RemoteLegError::InvalidMinimumReturn
     );
-    require_gte!(
-        ctx.accounts.remote_position.accepted_principal()?,
-        requested_amount,
-        RemoteLegError::InsufficientRemotePrincipal
-    );
+    if fresh {
+        require_gte!(
+            ctx.accounts.remote_position.accepted_principal()?,
+            requested_amount,
+            RemoteLegError::InsufficientRemotePrincipal
+        );
+    }
 
     let sequence = message.header.sequence.get();
     let lane_id = ctx.accounts.remote_config.control_lane_id;
@@ -155,8 +160,22 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
         RemoteLegError::InvalidConsumedMessage,
     )?;
 
-    let reserved = requested_amount.min(ctx.accounts.remote_position.attributed_principal);
     let accepted_at = Clock::get()?.unix_timestamp;
+    let mut transfer = TransferRecord::new_recall(
+        record.bump,
+        transfer_id,
+        sequence,
+        requested_amount,
+        minimum_amount,
+        0,
+        accepted_at,
+    );
+    let reserved = if fresh {
+        reserve_recall_custody(&mut transfer, &mut ctx.accounts.remote_position)?
+    } else {
+        transfer = transfer.quarantined();
+        0
+    };
 
     records::create_and_write(
         &ctx.accounts.transfer_record.to_account_info(),
@@ -169,15 +188,7 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
             &[record.bump],
         ],
         TransferRecord::LEN,
-        &TransferRecord::new_recall(
-            record.bump,
-            transfer_id,
-            sequence,
-            requested_amount,
-            minimum_amount,
-            reserved,
-            accepted_at,
-        ),
+        &transfer,
     )?;
 
     records::create_and_write(
@@ -208,16 +219,28 @@ pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Res
     lane.last_accepted_at = accepted_at;
     let lane_commitment = lane.message_commitment;
 
-    let position = &mut ctx.accounts.remote_position;
-    position.attributed_principal = position
-        .attributed_principal
-        .checked_sub(reserved)
-        .ok_or(RemoteLegError::InsufficientAttributedCustody)?;
-    position.recalled_custody = position
-        .recalled_custody
-        .checked_add(reserved)
-        .ok_or(RemoteLegError::ArithmeticOverflow)?;
-    position.open_transfer(TransferKind::Recall, transfer_id, sequence);
+    if !fresh {
+        ctx.accounts.remote_position.quarantine_transfer(
+            TransferKind::Recall,
+            transfer_id,
+            sequence,
+        );
+        emit!(MessageQuarantined {
+            remote_config: config_key,
+            message_class: CLASS,
+            reason: QuarantineReason::Expired,
+            transfer_id,
+            message_id,
+            sequence,
+            lane_commitment,
+            quarantined_at: accepted_at,
+        });
+        return Ok(());
+    }
+
+    ctx.accounts
+        .remote_position
+        .open_transfer(TransferKind::Recall, transfer_id, sequence);
 
     let remaining_principal = requested_amount
         .checked_sub(reserved)

@@ -124,6 +124,51 @@ contract ProtocolCodecTest is Test {
         assertEq(ProtocolCodec.nextCommitment(_header().previousCommitment, solId), rustNext);
     }
 
+    function test_resolve_bytes_match_rust() public {
+        bytes memory rust = _ffi("encode-resolve");
+        bytes memory sol = ProtocolCodec.encodeResolve(_header(), _resolveBody());
+        assertEq(keccak256(sol), keccak256(rust));
+        assertEq(sol.length, 296);
+        assertEq(uint8(sol[TYPE_OFF]), ProtocolCodec.TYPE_RESOLVE);
+    }
+
+    function test_resolve_id_and_commitment_match_rust() public {
+        bytes memory ids = _ffi("ids-resolve");
+        assertEq(ids.length, 64);
+        bytes32 rustId;
+        bytes32 rustNext;
+        assembly {
+            rustId := mload(add(ids, 32))
+            rustNext := mload(add(ids, 64))
+        }
+        bytes32 solId =
+            ProtocolCodec.messageId(ProtocolCodec.encodeResolve(_header(), _resolveBody()));
+        assertEq(solId, rustId);
+        assertEq(ProtocolCodec.nextCommitment(_header().previousCommitment, solId), rustNext);
+    }
+
+    function test_resolve_target_must_precede_the_resolution() public {
+        ProtocolCodec.ResolveBody memory body = _resolveBody();
+        body.targetSequence = _header().sequence;
+        vm.expectRevert(ProtocolCodec.TargetNotBeforeResolution.selector);
+        this.encodeResolve(_header(), body);
+
+        body.targetSequence = 0;
+        vm.expectRevert(ProtocolCodec.ZeroIdentifier.selector);
+        this.encodeResolve(_header(), body);
+    }
+
+    function test_resolve_accepts_only_admit() public {
+        ProtocolCodec.ResolveBody memory body = _resolveBody();
+        body.action = 2;
+        vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownResolveAction.selector, 2));
+        this.encodeResolve(_header(), body);
+
+        body.action = 0;
+        vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownResolveAction.selector, 0));
+        this.encodeResolve(_header(), body);
+    }
+
     function test_wrong_type_is_rejected() public {
         bytes memory encoded = _validReport();
         encoded[TYPE_OFF] = 0x01;
@@ -190,6 +235,13 @@ contract ProtocolCodecTest is Test {
         return ProtocolCodec.encodeAllocate(header, body);
     }
 
+    function encodeResolve(
+        ProtocolCodec.Header memory header,
+        ProtocolCodec.ResolveBody memory body
+    ) external pure returns (bytes memory) {
+        return ProtocolCodec.encodeResolve(header, body);
+    }
+
     function decodeReport(bytes memory encoded) external pure {
         ProtocolCodec.decodeRemoteReport(encoded);
     }
@@ -207,6 +259,17 @@ contract ProtocolCodecTest is Test {
             expectedSourceBalance: 5_000_000,
             minimumDestinationAmount: 999_000,
             deadline: 1_700_000_960,
+            configVersion: 4
+        });
+    }
+
+    function _resolveBody() internal pure returns (ProtocolCodec.ResolveBody memory) {
+        return ProtocolCodec.ResolveBody({
+            transferId: bytes32(
+                hex"5555555555555555555555555555555555555555555555555555555555555555"
+            ),
+            targetSequence: 41,
+            action: ProtocolCodec.RESOLVE_ADMIT,
             configVersion: 4
         });
     }

@@ -9,7 +9,8 @@ use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
     ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
     LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
-    RemoteReportBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
+    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId,
+    VaultId,
 };
 
 pub const OBSERVED_AT: u64 = 1_700_000_000;
@@ -109,6 +110,17 @@ pub fn config_update_body() -> ConfigUpdateBody {
     }
 }
 
+/// Names the message just before the fixture header, as the lane requires.
+#[must_use]
+pub fn resolve_body() -> ResolveBody {
+    ResolveBody {
+        transfer_id: TransferId::new([0x55; 32]),
+        target_sequence: Sequence::new(41),
+        action: ResolveAction::Admit,
+        config_version: ConfigVersion::new(4),
+    }
+}
+
 #[must_use]
 pub fn body_of(kind: MessageType) -> Body {
     match kind {
@@ -117,6 +129,7 @@ pub fn body_of(kind: MessageType) -> Body {
         MessageType::RemoteReport => Body::RemoteReport(remote_report_body()),
         MessageType::RecallSent => Body::RecallSent(recall_sent_body()),
         MessageType::ConfigUpdate => Body::ConfigUpdate(config_update_body()),
+        MessageType::Resolve => Body::Resolve(resolve_body()),
     }
 }
 

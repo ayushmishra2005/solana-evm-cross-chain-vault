@@ -9,8 +9,9 @@ use std::process::ExitCode;
 use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, ConfigVersion,
     DeploymentId, DestinationReference, EpochId, Flags, Header, LaneId, Message, MessageType,
-    PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody, SCHEMA_VERSION,
-    Sequence, Timestamp, TransferId, VaultId, decode_message, encode_message, next_commitment,
+    PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody, ResolveAction,
+    ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId, decode_message,
+    encode_message, next_commitment,
 };
 
 const OBSERVED_AT: u64 = 1_700_000_000;
@@ -32,10 +33,12 @@ fn main() -> ExitCode {
         "encode-recall" => write_hex(&encode_kind(MessageType::Recall)),
         "encode-remote-report" => write_hex(&encode_kind(MessageType::RemoteReport)),
         "encode-recall-sent" => write_hex(&encode_kind(MessageType::RecallSent)),
+        "encode-resolve" => write_hex(&encode_kind(MessageType::Resolve)),
         "ids-allocate" => write_ids(MessageType::Allocate),
         "ids-recall" => write_ids(MessageType::Recall),
         "ids-remote-report" => write_ids(MessageType::RemoteReport),
         "ids-recall-sent" => write_ids(MessageType::RecallSent),
+        "ids-resolve" => write_ids(MessageType::Resolve),
         "decode-remote-report" => decode_kind(MessageType::RemoteReport),
         "decode-recall-sent" => decode_kind(MessageType::RecallSent),
         other => fail(&format!("unknown command {other}")),
@@ -98,6 +101,12 @@ fn body_of(kind: MessageType) -> Body {
             realized_loss: AssetAmount::new(2_000),
             destination_reference: DestinationReference::new([0xBB; 32]),
             sent_timestamp: Timestamp::new(OBSERVED_AT - 30),
+            config_version: ConfigVersion::new(4),
+        }),
+        MessageType::Resolve => Body::Resolve(ResolveBody {
+            transfer_id: TransferId::new([0x55; 32]),
+            target_sequence: Sequence::new(41),
+            action: ResolveAction::Admit,
             config_version: ConfigVersion::new(4),
         }),
         MessageType::ConfigUpdate => {

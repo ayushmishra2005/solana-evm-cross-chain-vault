@@ -60,6 +60,27 @@ contract ControlLaneInteropTest is RemoteTestBase {
         assertEq(recall, vm.parseBytes(vm.readFile(string.concat(root, "evm-recall.hex"))));
     }
 
+    function test_evm_admit_follows_its_allocation_on_the_same_commitment_chain() public {
+        _bootstrap(alice, 10e6);
+        vm.warp(1_700_000_000);
+
+        bytes memory allocate = _allocate(ALLOCATE_TID, 1e6);
+        (uint64 observedAt, uint64 publishedAt, uint64 expiresAt,) = _times();
+        vm.prank(admin);
+        bytes memory admit = coordinator.admit(ALLOCATE_TID, observedAt, publishedAt, expiresAt);
+
+        assertEq(admit.length, 296);
+        assertEq(_word64(admit, SEQUENCE_OFF), 2);
+        assertEq(
+            _word32(admit, PREV_COMMIT_OFF),
+            ProtocolCodec.nextCommitment(bytes32(0), ProtocolCodec.messageId(allocate))
+        );
+
+        string memory root = string.concat(vm.projectRoot(), "/testdata/control-lane/");
+        assertEq(allocate, vm.parseBytes(vm.readFile(string.concat(root, "evm-allocate.hex"))));
+        assertEq(admit, vm.parseBytes(vm.readFile(string.concat(root, "evm-admit.hex"))));
+    }
+
     function _word64(bytes memory encoded, uint256 offset) internal pure returns (uint64 value) {
         value = uint64(bytes8(_word32(encoded, offset)));
     }

@@ -9,7 +9,8 @@ use protocol_types::layout::{
     ALLOCATE_MESSAGE_LEN, BODY_HASH_OFFSET, CONFIG_UPDATE_MESSAGE_LEN, DEPLOYMENT_ID_OFFSET,
     DESTINATION_APPLICATION_OFFSET, FLAGS_OFFSET, HEADER_LEN, MAGIC_OFFSET, MAX_MESSAGE_LEN,
     MESSAGE_TYPE_OFFSET, PROTOCOL_VERSION_OFFSET, RECALL_MESSAGE_LEN, RECALL_SENT_MESSAGE_LEN,
-    REMOTE_REPORT_MESSAGE_LEN, SCHEMA_VERSION_OFFSET, SOURCE_APPLICATION_OFFSET,
+    REMOTE_REPORT_MESSAGE_LEN, RESOLVE_ACTION_OFFSET, RESOLVE_MESSAGE_LEN,
+    RESOLVE_TARGET_SEQUENCE_OFFSET, SCHEMA_VERSION_OFFSET, SOURCE_APPLICATION_OFFSET,
 };
 use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, DecodeError, DeploymentId,
@@ -46,6 +47,7 @@ fn every_message_type_has_its_declared_encoded_length() {
         (MessageType::RemoteReport, REMOTE_REPORT_MESSAGE_LEN, 400),
         (MessageType::RecallSent, RECALL_SENT_MESSAGE_LEN, 375),
         (MessageType::ConfigUpdate, CONFIG_UPDATE_MESSAGE_LEN, 317),
+        (MessageType::Resolve, RESOLVE_MESSAGE_LEN, 296),
     ];
     for (kind, declared, literal) in expected {
         assert_eq!(declared, literal, "{kind:?}");
@@ -302,13 +304,73 @@ fn an_unsupported_schema_version_rejects() {
 
 #[test]
 fn an_unknown_message_type_rejects() {
-    for kind in [0u8, 6, u8::MAX] {
+    for kind in [0u8, 7, u8::MAX] {
         let bytes = patch(MessageType::Allocate, MESSAGE_TYPE_OFFSET, &[kind]);
         assert_eq!(
             decode_message(&bytes),
             Err(DecodeError::UnknownMessageType(kind))
         );
     }
+}
+
+#[test]
+fn every_resolve_action_byte_except_admit_rejects() {
+    let position = HEADER_LEN + RESOLVE_ACTION_OFFSET;
+    for action in (0..=u8::MAX).filter(|action| *action != 1) {
+        let bytes = resealed(&patch(MessageType::Resolve, position, &[action]));
+        assert_eq!(
+            decode_message(&bytes),
+            Err(DecodeError::UnknownResolveAction(action))
+        );
+    }
+}
+
+#[test]
+fn a_resolution_that_does_not_name_an_earlier_message_will_not_encode() {
+    for target in [42u64, 43, u64::MAX] {
+        let mut subject = message(MessageType::Resolve);
+        if let Body::Resolve(body) = &mut subject.body {
+            body.target_sequence = Sequence::new(target);
+        }
+        assert_eq!(
+            encode_message(&subject),
+            Err(EncodeError::Invalid(
+                ValidationError::TargetNotBeforeResolution
+            )),
+            "target {target}"
+        );
+    }
+}
+
+#[test]
+fn a_resolution_that_does_not_name_an_earlier_message_will_not_decode() {
+    let position = HEADER_LEN + RESOLVE_TARGET_SEQUENCE_OFFSET;
+    for target in [42u64, 43, u64::MAX] {
+        let bytes = resealed(&patch(
+            MessageType::Resolve,
+            position,
+            &target.to_be_bytes(),
+        ));
+        assert_eq!(
+            decode_message(&bytes),
+            Err(DecodeError::Invalid(
+                ValidationError::TargetNotBeforeResolution
+            )),
+            "target {target}"
+        );
+    }
+}
+
+#[test]
+fn a_resolution_with_a_zero_target_will_not_decode() {
+    let position = HEADER_LEN + RESOLVE_TARGET_SEQUENCE_OFFSET;
+    let bytes = resealed(&patch(MessageType::Resolve, position, &[0u8; 8]));
+    assert_eq!(
+        decode_message(&bytes),
+        Err(DecodeError::Invalid(ValidationError::ZeroIdentifier(
+            IdentifierField::TargetSequence
+        )))
+    );
 }
 
 #[test]

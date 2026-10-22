@@ -34,6 +34,8 @@ contract RemoteAccounting is IRemoteAccounting {
     CycleKind public override activeCycleKind;
     bytes32 public override activeTransferId;
     uint128 public activeAmount;
+    /// Outbound sequence of the message that opened the active cycle.
+    uint64 public activeSequence;
 
     /// Accepted remote value and acknowledged cumulative loss when the active
     /// recall began.
@@ -193,6 +195,34 @@ contract RemoteAccounting is IRemoteAccounting {
         emit RecallInitiated(transferId, requestedAmount, message);
     }
 
+    /// @notice Asks the remote leg to run the active transfer on its original
+    /// terms after the leg held it back. Vault accounting does not change: the
+    /// transfer stays in flight here until the leg reports it.
+    function admit(bytes32 transferId, uint64 observedAt, uint64 publishedAt, uint64 expiresAt)
+        external
+        returns (bytes memory message)
+    {
+        _requireAdmin();
+        if (activeCycleKind == CycleKind.None) revert NoActiveTransfer();
+        if (transferId != activeTransferId) revert WrongTransferId(activeTransferId, transferId);
+        if (activeCycleKind == CycleKind.Allocate && _vault.vaultStatus() != VaultStatus.Active) {
+            revert AllocateNotAllowed();
+        }
+
+        ProtocolCodec.Header memory header = _outboundHeader(observedAt, publishedAt, expiresAt);
+        message = ProtocolCodec.encodeResolve(
+            header,
+            ProtocolCodec.ResolveBody({
+                transferId: transferId,
+                targetSequence: activeSequence,
+                action: ProtocolCodec.RESOLVE_ADMIT,
+                configVersion: _configVersion()
+            })
+        );
+        _publishOutbound(ProtocolCodec.TYPE_RESOLVE, message);
+        emit AdmissionRequested(transferId, activeSequence, message);
+    }
+
     function processRemoteReport(bytes calldata encoded) external {
         if (!authenticator.authenticate(encoded)) revert UnauthenticatedMessage();
         (ProtocolCodec.Header memory header, ProtocolCodec.RemoteReportBody memory body) =
@@ -293,16 +323,21 @@ contract RemoteAccounting is IRemoteAccounting {
         activeCycleKind = kind;
         activeTransferId = transferId;
         activeAmount = amount;
+        activeSequence = _publishOutbound(
+            kind == CycleKind.Allocate ? ProtocolCodec.TYPE_ALLOCATE : ProtocolCodec.TYPE_RECALL,
+            message
+        );
+    }
 
-        uint64 sequence = outboundNextSequence;
+    function _publishOutbound(uint8 messageType, bytes memory message)
+        private
+        returns (uint64 sequence)
+    {
+        sequence = outboundNextSequence;
         bytes32 id = ProtocolCodec.messageId(message);
         outboundLatestCommitment = ProtocolCodec.nextCommitment(outboundLatestCommitment, id);
         outboundNextSequence = sequence + 1;
-        emit CanonicalMessagePublished(
-            kind == CycleKind.Allocate ? ProtocolCodec.TYPE_ALLOCATE : ProtocolCodec.TYPE_RECALL,
-            sequence,
-            message
-        );
+        emit CanonicalMessagePublished(messageType, sequence, message);
     }
 
     /// Prices the report, or names why it cannot price anything. A report that
@@ -376,6 +411,7 @@ contract RemoteAccounting is IRemoteAccounting {
         activeCycleKind = CycleKind.None;
         activeTransferId = bytes32(0);
         activeAmount = 0;
+        activeSequence = 0;
     }
 
     function _outboundHeader(uint64 observedAt, uint64 publishedAt, uint64 expiresAt)

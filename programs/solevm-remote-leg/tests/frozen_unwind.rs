@@ -9,7 +9,7 @@ use common::{
     ALLOCATE_TRANSFER_ID, Fixture, MAX_REMOTE_PRINCIPAL, RECALL_TRANSFER_ID, expect_error,
 };
 use solana_signer::Signer;
-use solevm_remote_leg::{RemoteLegError, TransferStatus};
+use solevm_remote_leg::{QuarantineReason, RemoteLegError, TransferKind, TransferStatus};
 
 const AMOUNT: u64 = 1_000_000;
 
@@ -47,10 +47,29 @@ fn a_frozen_leg_takes_no_new_allocation() {
     fixture.freeze(&administrator).expect("freeze lands");
 
     let bytes = fixture.allocate_bytes(ALLOCATE_TRANSFER_ID, AMOUNT, 1);
+    fixture
+        .allocate(ALLOCATE_TRANSFER_ID, 1, bytes)
+        .expect("the lane moves past the allocation");
+    fixture.expect_quarantined(
+        ALLOCATE_TRANSFER_ID,
+        1,
+        TransferKind::Allocate,
+        QuarantineReason::Frozen,
+    );
+
+    fixture.credit(fixture.custody, AMOUNT);
     expect_error(
-        fixture.allocate(ALLOCATE_TRANSFER_ID, 1, bytes),
+        fixture.attribute(ALLOCATE_TRANSFER_ID),
         RemoteLegError::Frozen,
     );
+    let guardian = fixture.guardian.insecure_clone();
+    expect_error(
+        fixture.attribute_cosigned(ALLOCATE_TRANSFER_ID, &guardian),
+        RemoteLegError::InvalidTransferStatus,
+    );
+    let position = fixture.position();
+    assert_eq!(position.attributed_principal, 0);
+    assert_eq!(position.accepted_principal().unwrap(), 0);
 }
 
 #[test]

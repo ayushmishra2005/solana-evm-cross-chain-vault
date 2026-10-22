@@ -22,10 +22,11 @@ use solana_transaction_error::TransactionError;
 
 use solevm_remote_leg::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED};
 use solevm_remote_leg::{
-    CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, OutboundLane,
-    REMOTE_POSITION_SEED, REPLAY_LANE_SEED, RISK_CONFIG_SEED, RecallSentMarker, RemoteConfig,
-    RemoteLegError, RemotePosition, ReplayLane, ReportRecord, RiskConfig, STRATEGY_CONFIG_SEED,
-    StrategyConfig, TRANSFER_RECORD_SEED, TransferRecord,
+    CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams,
+    MessageQuarantined, OutboundLane, QuarantineReason, REMOTE_POSITION_SEED, REPLAY_LANE_SEED,
+    RISK_CONFIG_SEED, RecallSentMarker, RemoteConfig, RemoteLegError, RemotePosition, ReplayLane,
+    ReportRecord, RiskConfig, STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED,
+    TransferKind, TransferRecord, TransferStatus,
 };
 use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
@@ -1544,6 +1545,136 @@ impl Fixture {
                     protocol_types::ConfigVersion::new(self.config().config_version);
             })
             .encode()
+    }
+
+    /// Asserts the last transfer message was consumed in order and held back.
+    ///
+    /// The lane moved on, the record keeps the original terms and the
+    /// position holds it as the open cycle, without any financial effect.
+    pub fn expect_quarantined(
+        &self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        kind: TransferKind,
+        reason: QuarantineReason,
+    ) {
+        let event: MessageQuarantined = last_event(&self.last_logs());
+        assert_eq!(event.reason, reason);
+        assert_eq!(event.transfer_id, transfer_id);
+        assert_eq!(event.sequence, sequence);
+        assert_eq!(Some(event.message_class), kind.message_class());
+
+        let lane = self.control_lane();
+        assert_eq!(lane.highest_consumed_sequence, sequence);
+        assert_eq!(event.lane_commitment, lane.message_commitment);
+        let consumed = self.record(sequence);
+        assert_eq!(Some(consumed.message_class), kind.message_class());
+        assert_eq!(consumed.sequence, sequence);
+
+        let record = self.transfer(&transfer_id);
+        assert_eq!(record.status, TransferStatus::Quarantined);
+        assert_eq!(record.transfer_kind, kind);
+        assert_eq!(record.message_sequence, sequence);
+        assert_eq!(record.attributed_amount, 0);
+        assert_eq!(record.custody_principal_reserved, 0);
+
+        let position = self.position();
+        assert_eq!(position.active_transfer_status, TransferStatus::Quarantined);
+        assert_eq!(position.active_transfer_kind, kind);
+        assert_eq!(position.active_transfer_id, transfer_id);
+        assert_eq!(position.active_transfer_sequence, sequence);
+    }
+
+    // Resolution
+
+    /// Encodes one Admit for the transfer carried at `target_sequence`.
+    pub fn resolve_bytes(
+        &self,
+        transfer_id: [u8; 32],
+        target_sequence: u64,
+        sequence: u64,
+    ) -> Vec<u8> {
+        let lane = self.control_lane();
+        messages::MessageBuilder::resolve()
+            .sequence(sequence)
+            .previous_commitment(lane.message_commitment)
+            .resolve_body(|body| {
+                body.transfer_id = protocol_types::TransferId::new(transfer_id);
+                body.target_sequence = protocol_types::Sequence::new(target_sequence);
+                body.config_version =
+                    protocol_types::ConfigVersion::new(self.config().config_version);
+            })
+            .encode()
+    }
+
+    pub fn resolve_instruction(
+        &self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        bytes: Vec<u8>,
+        emergency_guardian: Option<Pubkey>,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::ProcessResolve {
+            transport_verifier: self.verifier.pubkey(),
+            remote_config: self.config,
+            strategy_config: self.strategy(),
+            remote_position: self.position_key(),
+            control_lane: self.control_lane_key(),
+            transfer_record: self.transfer_key(&transfer_id),
+            consumed_message: self.asset_record_key(sequence),
+            system_program: anchor_lang::system_program::ID,
+            emergency_guardian,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::ProcessResolve {
+                message_bytes: bytes,
+            }
+            .data(),
+        }
+    }
+
+    /// Delivers one resolution signed by the transport verifier alone.
+    pub fn resolve(&mut self, transfer_id: [u8; 32], sequence: u64, bytes: Vec<u8>) -> TxResult {
+        let instruction = self.resolve_instruction(transfer_id, sequence, bytes, None);
+        self.send_signed_by_verifier(instruction, self.verifier.pubkey())
+    }
+
+    /// Delivers one resolution that `cosigner` co-signs in the guardian's place.
+    pub fn resolve_cosigned(
+        &mut self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        bytes: Vec<u8>,
+        cosigner: &Keypair,
+    ) -> TxResult {
+        let instruction =
+            self.resolve_instruction(transfer_id, sequence, bytes, Some(cosigner.pubkey()));
+        let payer = self.administrator.insecure_clone();
+        let verifier = self.verifier.insecure_clone();
+        self.send_cosigned(instruction, &payer, &[&verifier, cosigner])
+    }
+
+    /// Admits the transfer carried at `target_sequence` with the next sequence.
+    pub fn admit(&mut self, transfer_id: [u8; 32], target_sequence: u64) -> TxResult {
+        let sequence = self.control_lane().highest_consumed_sequence + 1;
+        let bytes = self.resolve_bytes(transfer_id, target_sequence, sequence);
+        self.resolve(transfer_id, sequence, bytes)
+    }
+
+    /// Admits with the guardian co-signing, as a frozen leg requires.
+    pub fn admit_cosigned(
+        &mut self,
+        transfer_id: [u8; 32],
+        target_sequence: u64,
+        cosigner: &Keypair,
+    ) -> TxResult {
+        let sequence = self.control_lane().highest_consumed_sequence + 1;
+        let bytes = self.resolve_bytes(transfer_id, target_sequence, sequence);
+        self.resolve_cosigned(transfer_id, sequence, bytes, cosigner)
     }
 
     /// Brings one full allocation all the way into attributed principal.

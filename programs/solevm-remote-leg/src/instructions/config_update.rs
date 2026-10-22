@@ -7,11 +7,12 @@ use crate::control::{
     ReplayLane, RiskConfig,
 };
 use crate::errors::RemoteLegError;
-use crate::events::ConfigUpdated;
+use crate::events::{ConfigUpdated, MessageQuarantined};
 use crate::instructions::allocate::ConsumedAddress;
 use crate::message::{self, ValidatedMessage};
 use crate::records;
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
+use crate::strategy::QuarantineReason;
 
 const CLASS: MessageClass = MessageClass::ConfigUpdate;
 
@@ -95,6 +96,7 @@ pub fn handle_config_update(
     let ValidatedMessage {
         message,
         message_id,
+        fresh,
     } = message::validate_inbound(
         &message_bytes,
         CLASS,
@@ -119,6 +121,10 @@ pub fn handle_config_update(
         RemoteLegError::ReplayDetected,
         RemoteLegError::InvalidConsumedMessage,
     )?;
+
+    if !fresh {
+        return consume_expired(ctx, record, sequence, message_id);
+    }
 
     let previous_config_version = ctx.accounts.remote_config.config_version;
     let new_config_version = body.config_version.get();
@@ -201,5 +207,55 @@ pub fn handle_config_update(
         updated_at,
     });
 
+    Ok(())
+}
+
+/// Consumes an expired update in order and leaves every risk limit unchanged.
+fn consume_expired(
+    ctx: Context<ProcessConfigUpdate>,
+    record: ConsumedAddress,
+    sequence: u64,
+    message_id: [u8; 32],
+) -> Result<()> {
+    let config_key = ctx.accounts.remote_config.key();
+    let lane_id = ctx.accounts.remote_config.control_lane_id;
+    records::create_and_write(
+        &ctx.accounts.consumed_message.to_account_info(),
+        &ctx.accounts.transport_verifier.to_account_info(),
+        &ctx.accounts.system_program.to_account_info(),
+        &[
+            CONSUMED_MESSAGE_SEED,
+            config_key.as_ref(),
+            &record.lane,
+            &record.sequence,
+            &[record.bump],
+        ],
+        ConsumedMessage::LEN,
+        &ConsumedMessage {
+            state_version: STATE_VERSION,
+            bump: record.bump,
+            message_class: CLASS,
+            lane_id,
+            sequence,
+            message_id,
+        },
+    )?;
+
+    let quarantined_at = Clock::get()?.unix_timestamp;
+    let lane = &mut ctx.accounts.control_lane;
+    lane.highest_consumed_sequence = sequence;
+    lane.message_commitment = message::next_commitment(&lane.message_commitment, &message_id);
+    lane.last_accepted_at = quarantined_at;
+
+    emit!(MessageQuarantined {
+        remote_config: config_key,
+        message_class: CLASS,
+        reason: QuarantineReason::Expired,
+        transfer_id: [0u8; 32],
+        message_id,
+        sequence,
+        lane_commitment: lane.message_commitment,
+        quarantined_at,
+    });
     Ok(())
 }
