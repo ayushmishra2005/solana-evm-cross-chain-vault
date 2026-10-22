@@ -4,6 +4,7 @@
 //! before the message that authorises them. It may never hold less.
 
 use anchor_lang::prelude::*;
+use anchor_spl::token::spl_token::state::Account as TokenState;
 
 use crate::errors::RemoteLegError;
 use crate::strategy::RemotePosition;
@@ -43,6 +44,24 @@ pub fn check_deployed(position: &RemotePosition, adapter_principal: u64) -> Resu
         adapter_principal,
         position.deployed_principal,
         RemoteLegError::InvalidPrincipalDelta
+    );
+    Ok(())
+}
+
+/// Requires custody to answer to the custody authority alone.
+///
+/// A new owner, delegate or close authority left behind by an external call
+/// would let custody be drained later, outside any call whose balances the leg
+/// checks.
+pub fn check_control(custody: &TokenState, custody_authority: &Pubkey) -> Result<()> {
+    require_keys_eq!(
+        custody.owner,
+        *custody_authority,
+        RemoteLegError::CustodyControlChanged
+    );
+    require!(
+        custody.delegate.is_none() && custody.close_authority.is_none(),
+        RemoteLegError::CustodyControlChanged
     );
     Ok(())
 }
@@ -146,6 +165,38 @@ mod tests {
             check_deployed(&state, 499).expect_err("the call fails"),
             Error::from(RemoteLegError::InvalidPrincipalDelta)
         );
+    }
+
+    fn custody(authority: Pubkey) -> TokenState {
+        TokenState {
+            owner: authority,
+            ..TokenState::default()
+        }
+    }
+
+    #[test]
+    fn custody_held_by_its_authority_alone_passes() {
+        let authority = Pubkey::new_unique();
+        assert!(check_control(&custody(authority), &authority).is_ok());
+    }
+
+    #[test]
+    fn a_new_owner_delegate_or_close_authority_is_rejected() {
+        let authority = Pubkey::new_unique();
+        let adapter = Pubkey::new_unique();
+        let mut moved = custody(authority);
+        moved.owner = adapter;
+        let mut delegated = custody(authority);
+        delegated.delegate = Some(adapter).into();
+        delegated.delegated_amount = 1;
+        let mut closable = custody(authority);
+        closable.close_authority = Some(adapter).into();
+        for state in [moved, delegated, closable] {
+            assert_eq!(
+                check_control(&state, &authority).expect_err("the call fails"),
+                Error::from(RemoteLegError::CustodyControlChanged)
+            );
+        }
     }
 
     #[test]

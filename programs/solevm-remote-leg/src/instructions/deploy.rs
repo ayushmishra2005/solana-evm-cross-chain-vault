@@ -1,15 +1,18 @@
 //! Sends attributed custody to the one configured strategy adapter.
 //!
 //! Every result is read back from the accounts. The adapter reports nothing.
+//! The leg moves the assets itself, so the adapter never signs for custody.
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 use crate::adapter::{self, AdapterCall};
 use crate::custody;
 use crate::errors::RemoteLegError;
 use crate::events::AssetsDeployed;
-use crate::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
+use crate::state::{
+    ADAPTER_CALLER_SEED, CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION,
+};
 use crate::strategy::{REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig};
 
 #[derive(Accounts)]
@@ -52,6 +55,10 @@ pub struct DeployToStrategy<'info> {
 
     #[account(mut)]
     pub custody_token_account: Box<Account<'info, TokenAccount>>,
+
+    /// CHECK: it signs the adapter call, and its seeds prove the derivation.
+    #[account(seeds = [ADAPTER_CALLER_SEED, remote_config.key().as_ref()], bump)]
+    pub adapter_caller: UncheckedAccount<'info>,
 
     /// CHECK: the strategy configuration fixes this address.
     pub adapter_program: UncheckedAccount<'info>,
@@ -110,12 +117,30 @@ pub fn process_deploy_to_strategy(
     let vault_before = ctx.accounts.adapter_token_vault.amount;
 
     let config_key = ctx.accounts.remote_config.key();
+    let custody_seeds: &[&[u8]] = &[
+        CUSTODY_AUTHORITY_SEED,
+        config_key.as_ref(),
+        &[ctx.accounts.remote_config.custody_authority_bump],
+    ];
+    token::transfer(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.key(),
+            Transfer {
+                from: ctx.accounts.custody_token_account.to_account_info(),
+                to: ctx.accounts.adapter_token_vault.to_account_info(),
+                authority: ctx.accounts.custody_authority.to_account_info(),
+            },
+            &[custody_seeds],
+        ),
+        amount,
+    )?;
+
     let call = AdapterCall {
         adapter_program: ctx.accounts.adapter_program.to_account_info(),
         adapter_state: adapter_state_info.clone(),
         adapter_authority: ctx.accounts.adapter_authority.to_account_info(),
         adapter_token_vault: ctx.accounts.adapter_token_vault.to_account_info(),
-        custody_authority: ctx.accounts.custody_authority.to_account_info(),
+        caller: ctx.accounts.adapter_caller.to_account_info(),
         custody_token_account: ctx.accounts.custody_token_account.to_account_info(),
         asset_mint: ctx.accounts.asset_mint.to_account_info(),
         token_program: ctx.accounts.token_program.to_account_info(),
@@ -123,13 +148,17 @@ pub fn process_deploy_to_strategy(
     call.deposit_exact(
         amount,
         &[
-            CUSTODY_AUTHORITY_SEED,
+            ADAPTER_CALLER_SEED,
             config_key.as_ref(),
-            &[ctx.accounts.remote_config.custody_authority_bump],
+            &[ctx.bumps.adapter_caller],
         ],
     )?;
 
     ctx.accounts.custody_token_account.reload()?;
+    custody::check_control(
+        &ctx.accounts.custody_token_account,
+        ctx.accounts.custody_authority.key,
+    )?;
     ctx.accounts.adapter_token_vault.reload()?;
     let custody_after = ctx.accounts.custody_token_account.amount;
     let vault_after = ctx.accounts.adapter_token_vault.amount;

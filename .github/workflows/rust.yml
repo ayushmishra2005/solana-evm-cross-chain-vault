@@ -8,6 +8,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_SBF_VERSION: 4.4.0
+  PLATFORM_TOOLS_VERSION: v1.58
 
 jobs:
   build:
@@ -16,7 +18,96 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
+    - name: Format
+      run: cargo fmt --all --check
+    - name: Lint
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Run tests
-      run: cargo test --workspace --all-features
+      run: cargo test --locked --workspace --all-features
+
+  solana:
+
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: programs/solevm-remote-leg
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install cargo-build-sbf
+      run: cargo install cargo-build-sbf --version "$CARGO_BUILD_SBF_VERSION" --locked
+    - name: Build SBPFv0 programs
+      run: |
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
+          --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
+          --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile
+    - name: Format
+      run: cargo fmt --all --check
+    - name: Lint
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    - name: Run tests
+      run: cargo test --locked --workspace --all-features
+    - uses: actions/upload-artifact@v4
+      with:
+        name: sbf-v0
+        path: programs/solevm-remote-leg/target/deploy/*.so
+        if-no-files-found: error
+
+  solana-sbpf-v3:
+
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: programs/solevm-remote-leg
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install cargo-build-sbf
+      run: cargo install cargo-build-sbf --version "$CARGO_BUILD_SBF_VERSION" --locked
+    - name: Build SBPFv3 programs
+      run: |
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 --sbf-out-dir target/deploy-v3
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
+          --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy-v3
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
+          --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile-v3
+    - name: Run tests against SBPFv3
+      env:
+        SBF_OUT_DIR: ${{ github.workspace }}/programs/solevm-remote-leg/target/deploy-v3
+        HOSTILE_SBF_OUT_DIR: ${{ github.workspace }}/programs/solevm-remote-leg/target/deploy-hostile-v3
+      run: cargo test --locked --workspace --all-features
+
+  foundry:
+
+    needs: solana
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/solevm-vault
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
+      with:
+        name: sbf-v0
+        path: programs/solevm-remote-leg/target/deploy
+    - uses: foundry-rs/foundry-toolchain@v1
+      with:
+        version: v1.8.6
+    - name: Install Solidity dependencies
+      run: |
+        forge install foundry-rs/forge-std@v1.16.2 --no-git --shallow
+        forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 --no-git --shallow
+    - name: Format
+      run: forge fmt --check
+    - name: Build
+      run: forge build
+    - name: Unit, fuzz, invariant and cross-chain E2E tests
+      run: forge test
+    - name: Rust model differential tests
+      env:
+        RUN_DIFFERENTIAL: 1
+        FOUNDRY_PROFILE: differential
+      run: forge test --match-contract RustModelDifferentialTest -vv

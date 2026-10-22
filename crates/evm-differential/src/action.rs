@@ -217,6 +217,7 @@ impl Action {
             },
             ActionKind::ApplyRemoteValuation => Operation::ApplyRemoteValuation {
                 reported_value: AssetAmount::new(self.amount),
+                newly_realized_loss: AssetAmount::new(self.aux1),
             },
             ActionKind::LockRemoteValuation => Operation::LockRemoteValuation,
         }

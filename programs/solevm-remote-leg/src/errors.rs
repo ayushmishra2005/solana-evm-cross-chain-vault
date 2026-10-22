@@ -198,4 +198,6 @@ pub enum RemoteLegError {
     AdapterStateMismatch,
     #[msg("canonical message could not be built")]
     InvalidOutboundMessage,
+    #[msg("custody control changed during an adapter call")]
+    CustodyControlChanged,
 }

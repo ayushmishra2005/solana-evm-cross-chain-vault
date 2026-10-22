@@ -163,6 +163,13 @@ abstract contract RemoteTestBase is VaultTestBase {
         coordinator.processRecallSent(encoded);
     }
 
+    /// Expects the next report to advance the lane without pricing anything.
+    function _expectSkipped(uint64 epochId, IRemoteAccounting.ReportSkipReason reason) internal {
+        uint64 sequence = coordinator.inboundExpectedSequence();
+        vm.expectEmit(address(coordinator));
+        emit IRemoteAccounting.RemoteReportSkipped(sequence, epochId, reason);
+    }
+
     function _observe(uint256 amount) internal {
         token.mint(address(vault), amount);
         vault.observeInbound();

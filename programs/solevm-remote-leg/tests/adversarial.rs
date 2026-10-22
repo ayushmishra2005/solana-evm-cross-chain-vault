@@ -7,6 +7,7 @@ mod common;
 use anchor_lang::error::ErrorCode;
 use anchor_spl::token::spl_token;
 use common::{DEPLOYMENT_ID, Fixture, Pubkey, VAULT_ID, expect_anchor_error, expect_error};
+use solana_signer::Signer;
 use solevm_remote_leg::RemoteLegError;
 
 /// Token-2022 is out of scope for this milestone.
@@ -88,12 +89,14 @@ fn freezing_a_configuration_with_a_foreign_discriminator_is_rejected() {
 #[test]
 fn setting_up_without_the_administrator_signature_is_rejected() {
     let mut fixture = Fixture::new();
-    let accounts = fixture.default_accounts();
+    let outsider = fixture.outsider.insecure_clone();
+    fixture.write_program_data(Some(outsider.pubkey()));
+    let mut accounts = fixture.default_accounts();
+    accounts.upgrade_authority = outsider.pubkey();
     let params = fixture.params.clone();
     let mut instruction = fixture.initialize_instruction(accounts, params);
     instruction.accounts[0].is_signer = false;
 
-    let outsider = fixture.outsider.insecure_clone();
     let result = fixture.send_as(instruction, &outsider, &[&outsider]);
     expect_anchor_error(result, ErrorCode::AccountNotSigner);
 }

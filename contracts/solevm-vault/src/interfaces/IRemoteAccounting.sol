@@ -9,6 +9,15 @@ interface IRemoteAccounting {
         Recall
     }
 
+    /// Why an authentic, in-order report advanced the lane without pricing.
+    enum ReportSkipReason {
+        None,
+        Expired,
+        WrongEpoch,
+        StaleObservation,
+        ValuationFixed
+    }
+
     struct Identities {
         uint32 evmChainId;
         uint32 solanaChainId;
@@ -38,6 +47,9 @@ interface IRemoteAccounting {
         uint64 indexed epochId,
         uint256 acceptedValue,
         bytes32 latestCompletedTransferId
+    );
+    event RemoteReportSkipped(
+        uint64 indexed sequence, uint64 indexed epochId, ReportSkipReason reason
     );
     event EpochRemoteValuationLocked(uint64 indexed epochId, uint256 acceptedValue);
 

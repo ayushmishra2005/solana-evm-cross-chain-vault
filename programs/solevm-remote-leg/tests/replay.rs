@@ -199,7 +199,7 @@ fn the_record_of_another_sequence_is_rejected() {
 
 #[test]
 fn the_administrator_advances_the_watermark() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
 
     let administrator = fixture.administrator.insecure_clone();
@@ -214,7 +214,7 @@ fn the_administrator_advances_the_watermark() {
 
 #[test]
 fn the_guardian_may_not_advance_the_watermark() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
 
     let guardian = fixture.guardian.insecure_clone();
@@ -226,7 +226,7 @@ fn the_guardian_may_not_advance_the_watermark() {
 
 #[test]
 fn the_transport_verifier_may_not_advance_the_watermark() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
 
     let verifier = fixture.verifier_keypair();
@@ -238,7 +238,7 @@ fn the_transport_verifier_may_not_advance_the_watermark() {
 
 #[test]
 fn a_watermark_that_moves_backward_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(6);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -253,7 +253,7 @@ fn a_watermark_that_moves_backward_is_rejected() {
 
 #[test]
 fn a_watermark_that_does_not_move_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
 
@@ -265,7 +265,7 @@ fn a_watermark_that_does_not_move_is_rejected() {
 
 #[test]
 fn a_watermark_above_the_highest_consumed_sequence_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
 
@@ -277,7 +277,7 @@ fn a_watermark_above_the_highest_consumed_sequence_is_rejected() {
 
 #[test]
 fn a_watermark_that_breaks_the_mandatory_lag_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
 
@@ -291,7 +291,7 @@ fn a_watermark_that_breaks_the_mandatory_lag_is_rejected() {
 
 #[test]
 fn advancing_the_watermark_leaves_the_chain_state_alone() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let before = fixture.control_lane();
     let risk_before = fixture.raw_data(fixture.risk());
@@ -318,14 +318,14 @@ fn advancing_the_watermark_leaves_the_chain_state_alone() {
 
 #[test]
 fn a_lane_for_another_protocol_lane_id_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
 
     let administrator = fixture.administrator.insecure_clone();
     let instruction = fixture.watermark_instruction(
         administrator.pubkey(),
         Fixture::lane_address(&fixture.config, CONTROL_LANE_ID + 1),
-        None,
+        fixture.position_key(),
         2,
     );
     expect_anchor_error(
@@ -336,7 +336,7 @@ fn a_lane_for_another_protocol_lane_id_is_rejected() {
 
 #[test]
 fn an_untouched_lane_cannot_advance() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     let administrator = fixture.administrator.insecure_clone();
 
     expect_error(
@@ -349,7 +349,7 @@ fn an_untouched_lane_cannot_advance() {
 
 #[test]
 fn a_record_below_the_watermark_closes_and_pays_the_administrator() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -368,7 +368,7 @@ fn a_record_below_the_watermark_closes_and_pays_the_administrator() {
 
 #[test]
 fn a_record_at_the_watermark_cannot_close() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -380,7 +380,7 @@ fn a_record_at_the_watermark_cannot_close() {
 
 #[test]
 fn a_record_above_the_watermark_cannot_close() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -405,7 +405,7 @@ fn no_record_can_close_before_the_watermark_moves() {
 
 #[test]
 fn a_caller_chosen_rent_destination_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -422,7 +422,7 @@ fn a_caller_chosen_rent_destination_is_rejected() {
 
 #[test]
 fn closing_a_record_leaves_the_lane_untouched() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -442,7 +442,7 @@ fn closing_a_record_leaves_the_lane_untouched() {
 
 #[test]
 fn a_closed_record_cannot_be_replayed() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     let (first_bytes, _) = MessageBuilder::config_update().encode_with_id();
     fixture
         .config_update(1, first_bytes.clone())
@@ -465,7 +465,7 @@ fn a_closed_record_cannot_be_replayed() {
 
 #[test]
 fn a_lane_for_another_protocol_lane_id_cannot_close_a_record() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture
@@ -493,7 +493,7 @@ fn a_record_that_does_not_exist_cannot_close() {
 
 #[test]
 fn closing_twice_is_rejected() {
-    let mut fixture = Fixture::ready();
+    let mut fixture = Fixture::deployed();
     fixture.accept_updates(4);
     let administrator = fixture.administrator.insecure_clone();
     fixture

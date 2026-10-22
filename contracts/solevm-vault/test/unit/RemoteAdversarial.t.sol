@@ -2,6 +2,7 @@
 pragma solidity 0.8.30;
 
 import {RemoteAccounting} from "../../src/RemoteAccounting.sol";
+import {IRemoteAccounting} from "../../src/interfaces/IRemoteAccounting.sol";
 import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {RemoteTestBase} from "../RemoteTestBase.sol";
 
@@ -97,8 +98,10 @@ contract RemoteAdversarialTest is RemoteTestBase {
         assertEq(vault.remotePrincipalCap(), 40e6);
     }
 
-    function test_expired_message_is_rejected() public {
+    function test_expired_report_is_consumed_without_effect() public {
         _bootstrap(alice, 100e6);
+        _allocate(TID_A, 40e6);
+        _report(1, 40e6, 40e6, 0, TID_A);
         ProtocolCodec.Header memory header = _inboundHeader();
         header.expiresAt = uint64(block.timestamp) + 1;
         bytes memory encoded = ProtocolCodec.encodeRemoteReport(
@@ -117,11 +120,10 @@ contract RemoteAdversarialTest is RemoteTestBase {
             })
         );
         vm.warp(uint256(header.expiresAt) + 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                RemoteAccounting.MessageExpired.selector, uint64(block.timestamp), header.expiresAt
-            )
-        );
+        _expectSkipped(1, IRemoteAccounting.ReportSkipReason.Expired);
         coordinator.processRemoteReport(encoded);
+        assertEq(coordinator.inboundExpectedSequence(), header.sequence + 1);
+        assertEq(vault.acceptedRemoteValue(), 40e6);
+        assertEq(_managed(), 100e6);
     }
 }

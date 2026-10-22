@@ -70,12 +70,20 @@ pub struct ProcessRecall<'info> {
     pub consumed_message: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
+
+    /// Co-signs while the leg is frozen, so principal leaves only with the
+    /// guardian's consent.
+    #[account(address = remote_config.emergency_guardian @ RemoteLegError::Unauthorized)]
+    pub emergency_guardian: Option<Signer<'info>>,
 }
 
 pub fn handle_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Result<()> {
     let config_key = ctx.accounts.remote_config.key();
     check_versions(&ctx)?;
-    require!(!ctx.accounts.remote_config.frozen, RemoteLegError::Frozen);
+    require!(
+        !ctx.accounts.remote_config.frozen || ctx.accounts.emergency_guardian.is_some(),
+        RemoteLegError::Frozen
+    );
 
     let now = message::current_time()?;
     let ValidatedMessage {

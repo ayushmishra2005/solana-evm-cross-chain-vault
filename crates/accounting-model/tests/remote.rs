@@ -244,3 +244,128 @@ fn a_reused_transfer_id_is_rejected() {
     let err = apply(&state, allocate(1, 10_000_000)).expect_err("reuse");
     assert_eq!(err, Rejection::TransferIdReused);
 }
+
+/// A Solana report: the leg's principal and the loss realized since the last
+/// loss the vault acknowledged.
+fn report(value: u128, newly_realized_loss: u128) -> Operation {
+    Operation::ApplyRemoteValuation {
+        reported_value: AssetAmount::new(value),
+        newly_realized_loss: AssetAmount::new(newly_realized_loss),
+    }
+}
+
+/// 80 of 100 deployed; the expected NAV is always 100 less realized loss.
+fn deployed() -> accounting_model::State {
+    run(
+        &funded(),
+        &[allocate(1, 80_000_000), complete(1, 80_000_000)],
+    )
+}
+
+fn assert_nav(state: &accounting_model::State, loss: u128, step: &str) {
+    assert_eq!(
+        state.managed_nav(),
+        AssetAmount::new(100_000_000 - loss),
+        "{step}"
+    );
+}
+
+#[test]
+fn a_report_after_the_send_keeps_nav_until_the_notice() {
+    let state = run(&deployed(), &[recall(2, 40_000_000), report(40_000_000, 0)]);
+    assert_nav(&state, 0, "report before notice");
+    let state = run(&state, &[observe(40_000_000)]);
+    assert_nav(&state, 0, "assets before notice");
+    let state = run(&state, &[recall_sent(2, 40_000_000, 40_000_000, 0)]);
+    assert_nav(&state, 0, "notice");
+    assert_eq!(
+        state.buckets.accepted_remote_value,
+        AssetAmount::new(40_000_000)
+    );
+    let state = run(&state, &[report(40_000_000, 0)]);
+    assert_nav(&state, 0, "next report");
+}
+
+#[test]
+fn a_partial_send_report_keeps_nav() {
+    let state = run(&deployed(), &[recall(2, 40_000_000), report(55_000_000, 0)]);
+    assert_nav(&state, 0, "partial send");
+    let state = run(&state, &[recall_sent(2, 40_000_000, 40_000_000, 0)]);
+    assert_nav(&state, 0, "notice");
+}
+
+#[test]
+fn a_lossy_withdrawal_is_counted_once() {
+    let state = run(
+        &deployed(),
+        &[recall(2, 40_000_000), report(70_000_000, 10_000_000)],
+    );
+    assert_nav(&state, 10_000_000, "loss before send");
+    let state = run(&state, &[report(40_000_000, 0)]);
+    assert_nav(&state, 10_000_000, "loss after send");
+    let state = run(
+        &state,
+        &[recall_sent(2, 40_000_000, 30_000_000, 10_000_000)],
+    );
+    assert_nav(&state, 10_000_000, "notice");
+    assert_eq!(state.recognized_loss, AssetAmount::new(10_000_000));
+    let state = run(&state, &[observe(30_000_000), report(40_000_000, 0)]);
+    assert_nav(&state, 10_000_000, "settled");
+}
+
+#[test]
+fn a_total_loss_during_a_recall_is_counted_once() {
+    let state = run(
+        &deployed(),
+        &[recall(2, 40_000_000), report(40_000_000, 40_000_000)],
+    );
+    assert_nav(&state, 40_000_000, "report");
+    let state = run(&state, &[recall_sent(2, 40_000_000, 0, 40_000_000)]);
+    assert_nav(&state, 40_000_000, "notice");
+}
+
+#[test]
+fn a_settled_loss_is_not_deducted_again_by_the_next_recall() {
+    let state = run(
+        &deployed(),
+        &[
+            recall(2, 40_000_000),
+            recall_sent(2, 40_000_000, 30_000_000, 10_000_000),
+            recall(3, 20_000_000),
+            report(20_000_000, 0),
+        ],
+    );
+    assert_nav(&state, 10_000_000, "report in second recall");
+    let state = run(&state, &[recall_sent(3, 20_000_000, 20_000_000, 0)]);
+    assert_nav(&state, 10_000_000, "second notice");
+}
+
+#[test]
+fn a_lock_during_a_recall_prices_the_epoch_net_of_loss() {
+    let state = run(
+        &deployed(),
+        &[recall(2, 40_000_000), report(40_000_000, 10_000_000)],
+    );
+    let epoch = state.epoch.expect("open epoch");
+    let state = run(
+        &state,
+        &[
+            Operation::CutoffEpoch {
+                now: epoch.cutoff_at,
+            },
+            Operation::LockRemoteValuation,
+            Operation::FinalizeEpoch,
+        ],
+    );
+    match state.epochs.get(&epoch.id) {
+        Some(accounting_model::EpochOutcome::Finalized(terms)) => {
+            assert_eq!(terms.total_assets, AssetAmount::new(90_000_000));
+        }
+        other => panic!("epoch not finalized: {other:?}"),
+    }
+    let state = run(
+        &state,
+        &[recall_sent(2, 40_000_000, 30_000_000, 10_000_000)],
+    );
+    assert_nav(&state, 10_000_000, "notice after finalize");
+}

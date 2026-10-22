@@ -216,9 +216,8 @@ fn the_adapter_refuses_a_caller_that_is_not_the_remote_leg() {
     let outsider = fixture.outsider.insecure_clone();
 
     let metas = solevm_test_strategy::accounts::DepositExact {
-        remote_custody_authority: outsider.pubkey(),
+        remote_caller: outsider.pubkey(),
         adapter_state: fixture.adapter_state,
-        remote_custody: fixture.custody,
         adapter_token_vault: fixture.adapter_vault,
         mint: fixture.mint,
         token_program: spl_token::ID,
@@ -233,6 +232,7 @@ fn the_adapter_refuses_a_caller_that_is_not_the_remote_leg() {
 
     expect_rejection(fixture.send_as(instruction, &outsider, &[&outsider]));
     assert_eq!(fixture.token_amount(fixture.custody), AMOUNT);
+    assert_eq!(fixture.adapter_principal(), 0);
 }
 
 #[test]

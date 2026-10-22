@@ -3,6 +3,7 @@
 #![allow(dead_code, unreachable_pub)]
 #![allow(clippy::unwrap_used, clippy::panic, clippy::arithmetic_side_effects)]
 
+use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_lang::solana_program::instruction::Instruction;
 use anchor_lang::solana_program::program_pack::Pack;
 use anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas};
@@ -72,6 +73,8 @@ pub struct InitAccounts {
     pub outbound_escrow: Pubkey,
     pub token_program: Pubkey,
     pub system_program: Pubkey,
+    pub upgrade_authority: Pubkey,
+    pub program_data: Pubkey,
 }
 
 pub use anchor_lang::prelude::Pubkey;
@@ -228,7 +231,27 @@ impl Fixture {
         fixture.write_mint(mint, decimals);
         fixture.write_token_account(custody, mint, custody_authority, None, None);
         fixture.write_token_account(escrow, mint, escrow_owner, None, None);
+        let administrator = fixture.administrator.pubkey();
+        fixture.write_program_data(Some(administrator));
         fixture
+    }
+
+    /// Where the upgradeable loader keeps the leg's upgrade authority.
+    pub fn program_data_address() -> Pubkey {
+        Pubkey::find_program_address(
+            &[solevm_remote_leg::ID.as_ref()],
+            &bpf_loader_upgradeable::ID,
+        )
+        .0
+    }
+
+    /// Records the leg as an upgradeable program with this upgrade authority.
+    pub fn write_program_data(&mut self, upgrade_authority: Option<Pubkey>) {
+        self.write_owned_account(
+            Self::program_data_address(),
+            program_data(upgrade_authority),
+            bpf_loader_upgradeable::ID,
+        );
     }
 
     /// Stores a mint directly so tests can choose its decimals.
@@ -357,6 +380,8 @@ impl Fixture {
             outbound_escrow: self.escrow,
             token_program: spl_token::ID,
             system_program: anchor_lang::system_program::ID,
+            upgrade_authority: self.administrator.pubkey(),
+            program_data: Self::program_data_address(),
         }
     }
 
@@ -381,8 +406,28 @@ impl Fixture {
         accounts: InitAccounts,
         params: InitializeParams,
     ) -> TxResult {
+        let upgrade_authority = accounts.upgrade_authority;
         let instruction = self.initialize_instruction(accounts, params);
-        self.send(instruction, &[&self.administrator.insecure_clone()])
+        let administrator = self.administrator.insecure_clone();
+        if upgrade_authority == administrator.pubkey() {
+            return self.send(instruction, &[&administrator]);
+        }
+        let authority = self.keypair_for(upgrade_authority);
+        self.send(instruction, &[&administrator, &authority])
+    }
+
+    /// The fixture key behind `key`, so a test may cast any of them in a role.
+    fn keypair_for(&self, key: Pubkey) -> Keypair {
+        [
+            &self.administrator,
+            &self.guardian,
+            &self.outsider,
+            &self.verifier,
+        ]
+        .into_iter()
+        .find(|keypair| keypair.pubkey() == key)
+        .expect("a fixture key")
+        .insecure_clone()
     }
 
     pub fn initialize_instruction(
@@ -398,6 +443,8 @@ impl Fixture {
             outbound_escrow: accounts.outbound_escrow,
             token_program: accounts.token_program,
             system_program: accounts.system_program,
+            upgrade_authority: accounts.upgrade_authority,
+            program_data: accounts.program_data,
         }
         .to_account_metas(None);
 
@@ -659,14 +706,10 @@ impl Fixture {
         authority: &Keypair,
         new_minimum_sequence: u64,
     ) -> TxResult {
-        let position = self
-            .svm
-            .get_account(&self.position_key())
-            .map(|_| self.position_key());
         let instruction = self.watermark_instruction(
             authority.pubkey(),
             self.control_lane_key(),
-            position,
+            self.position_key(),
             new_minimum_sequence,
         );
         self.send(instruction, &[&authority.insecure_clone()])
@@ -676,7 +719,7 @@ impl Fixture {
         &self,
         administrator: Pubkey,
         replay_lane: Pubkey,
-        remote_position: Option<Pubkey>,
+        remote_position: Pubkey,
         new_minimum_sequence: u64,
     ) -> Instruction {
         let metas = solevm_remote_leg::accounts::AdvanceReplayWatermark {
@@ -1158,7 +1201,51 @@ impl Fixture {
         self.send_as(instruction, &payer, &[&payer, &signer])
     }
 
+    /// Delivers a recall that `cosigner` co-signs in the guardian's place.
+    pub fn recall_cosigned(
+        &mut self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        bytes: Vec<u8>,
+        cosigner: &Keypair,
+    ) -> TxResult {
+        let accounts = self.recall_accounts(transfer_id, sequence);
+        let instruction =
+            self.recall_instruction_cosigned(accounts, bytes, Some(cosigner.pubkey()));
+        let payer = self.administrator.insecure_clone();
+        let verifier = self.verifier.insecure_clone();
+        self.send_cosigned(instruction, &payer, &[&verifier, cosigner])
+    }
+
+    /// Sends with each distinct signer once, whatever roles they share.
+    fn send_cosigned(
+        &mut self,
+        instruction: Instruction,
+        payer: &Keypair,
+        others: &[&Keypair],
+    ) -> TxResult {
+        let mut signers = vec![payer];
+        for signer in others {
+            if signers
+                .iter()
+                .all(|known| known.pubkey() != signer.pubkey())
+            {
+                signers.push(signer);
+            }
+        }
+        self.send_as(instruction, payer, &signers)
+    }
+
     pub fn recall_instruction(&self, accounts: AssetAccounts, bytes: Vec<u8>) -> Instruction {
+        self.recall_instruction_cosigned(accounts, bytes, None)
+    }
+
+    pub fn recall_instruction_cosigned(
+        &self,
+        accounts: AssetAccounts,
+        bytes: Vec<u8>,
+        emergency_guardian: Option<Pubkey>,
+    ) -> Instruction {
         let metas = solevm_remote_leg::accounts::ProcessRecall {
             transport_verifier: accounts.transport_verifier,
             remote_config: accounts.remote_config,
@@ -1168,6 +1255,7 @@ impl Fixture {
             transfer_record: accounts.transfer_record,
             consumed_message: accounts.consumed_message,
             system_program: accounts.system_program,
+            emergency_guardian,
         }
         .to_account_metas(None);
 
@@ -1187,16 +1275,37 @@ impl Fixture {
         self.send_as(instruction, &payer, &[&payer])
     }
 
+    /// Attributes with `cosigner` co-signing in the guardian's place.
+    pub fn attribute_cosigned(&mut self, transfer_id: [u8; 32], cosigner: &Keypair) -> TxResult {
+        let instruction = self.attribute_instruction_cosigned(
+            self.transfer_key(&transfer_id),
+            self.custody,
+            Some(cosigner.pubkey()),
+        );
+        let payer = self.outsider.insecure_clone();
+        self.send_cosigned(instruction, &payer, &[cosigner])
+    }
+
     pub fn attribute_instruction(
         &self,
         transfer_record: Pubkey,
         custody_token_account: Pubkey,
+    ) -> Instruction {
+        self.attribute_instruction_cosigned(transfer_record, custody_token_account, None)
+    }
+
+    pub fn attribute_instruction_cosigned(
+        &self,
+        transfer_record: Pubkey,
+        custody_token_account: Pubkey,
+        emergency_guardian: Option<Pubkey>,
     ) -> Instruction {
         let metas = solevm_remote_leg::accounts::AttributeAllocation {
             remote_config: self.config,
             remote_position: self.position_key(),
             transfer_record,
             custody_token_account,
+            emergency_guardian,
         }
         .to_account_metas(None);
 
@@ -1229,6 +1338,7 @@ impl Fixture {
             remote_position: accounts.remote_position,
             custody_authority: self.custody_authority,
             custody_token_account: self.custody,
+            adapter_caller: self.adapter_caller(),
             adapter_program: accounts.adapter_program,
             adapter_state: accounts.adapter_state,
             adapter_authority: accounts.adapter_authority,
@@ -1243,6 +1353,18 @@ impl Fixture {
             accounts: metas,
             data: solevm_remote_leg::instruction::DeployToStrategy { maximum_amount }.data(),
         }
+    }
+
+    /// The identity the leg signs adapter calls with.
+    pub fn adapter_caller(&self) -> Pubkey {
+        solevm_remote_leg::RemoteConfig::adapter_caller(&self.config).0
+    }
+
+    /// Swaps the adapter program for its `hostile` build, keeping its state.
+    pub fn install_hostile_adapter(&mut self) {
+        self.svm
+            .add_program(solevm_test_strategy::ID, &hostile_adapter_bytes())
+            .expect("hostile adapter loads");
     }
 
     pub fn withdraw(&mut self, transfer_id: [u8; 32], maximum_principal: u64) -> TxResult {
@@ -1266,6 +1388,7 @@ impl Fixture {
             transfer_record,
             custody_authority: self.custody_authority,
             custody_token_account: self.custody,
+            adapter_caller: self.adapter_caller(),
             adapter_program: accounts.adapter_program,
             adapter_state: accounts.adapter_state,
             adapter_authority: accounts.adapter_authority,
@@ -1893,25 +2016,49 @@ pub struct AssetAccounts {
 
 /// Reads the program built by cargo build-sbf.
 pub fn program_bytes() -> Vec<u8> {
-    built_program("solevm_remote_leg")
+    built_program("solevm_remote_leg", "SBF_OUT_DIR", "deploy")
 }
 
 /// Reads the strategy adapter built by cargo build-sbf.
 pub fn adapter_bytes() -> Vec<u8> {
-    built_program("solevm_test_strategy")
+    built_program("solevm_test_strategy", "SBF_OUT_DIR", "deploy")
 }
 
-fn built_program(name: &str) -> Vec<u8> {
+/// The loader's program data header, which precedes the program bytes.
+pub fn program_data(upgrade_authority: Option<Pubkey>) -> Vec<u8> {
+    // bincode of UpgradeableLoaderState::ProgramData: variant, slot, authority.
+    let mut data = 3u32.to_le_bytes().to_vec();
+    data.extend_from_slice(&0u64.to_le_bytes());
+    match upgrade_authority {
+        Some(authority) => {
+            data.push(1);
+            data.extend_from_slice(authority.as_ref());
+        }
+        None => data.resize(45, 0),
+    }
+    data
+}
+
+/// Reads the strategy adapter built with its `hostile` feature.
+pub fn hostile_adapter_bytes() -> Vec<u8> {
+    built_program(
+        "solevm_test_strategy",
+        "HOSTILE_SBF_OUT_DIR",
+        "deploy-hostile",
+    )
+}
+
+fn built_program(name: &str, directory_variable: &str, default_directory: &str) -> Vec<u8> {
     let mut paths = Vec::new();
-    if let Ok(directory) = std::env::var("SBF_OUT_DIR") {
+    if let Ok(directory) = std::env::var(directory_variable) {
         paths.push(format!("{directory}/{name}.so"));
     }
     paths.push(format!(
-        "{}/target/deploy/{name}.so",
+        "{}/target/{default_directory}/{name}.so",
         env!("CARGO_MANIFEST_DIR")
     ));
     paths.push(format!(
-        "{}/../target/deploy/{name}.so",
+        "{}/../target/{default_directory}/{name}.so",
         env!("CARGO_MANIFEST_DIR")
     ));
     for path in &paths {
@@ -1920,8 +2067,7 @@ fn built_program(name: &str) -> Vec<u8> {
         }
     }
     panic!(
-        "missing {name}.so, looked in {}, build it first with \
-         cargo-build-sbf --tools-version v1.54",
+        "missing {name}.so, looked in {}, build it first as the README describes",
         paths.join(", ")
     );
 }

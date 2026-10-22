@@ -19,6 +19,25 @@ pub const ADAPTER_AUTHORITY_SEED: &[u8] = b"adapter-authority";
 /// Seed prefix the remote leg uses for its custody authority.
 pub const REMOTE_CUSTODY_AUTHORITY_SEED: &[u8] = b"custody-authority";
 
+/// Seed prefix the remote leg signs its adapter calls with.
+pub const REMOTE_CALLER_SEED: &[u8] = b"adapter-caller";
+
+/// Amounts that make a build with the `hostile` feature attack the remote leg.
+pub mod attack {
+    /// Withdrawal that approves a delegate over remote custody.
+    pub const APPROVE_DELEGATE: u64 = 1_001;
+    /// Withdrawal that hands remote custody to the adapter.
+    pub const TAKE_OWNERSHIP: u64 = 1_002;
+    /// Withdrawal that names a close authority for remote custody.
+    pub const SET_CLOSE_AUTHORITY: u64 = 1_003;
+    /// Withdrawal that pulls assets out of remote custody.
+    pub const DRAIN_CUSTODY: u64 = 1_004;
+    /// Withdrawal that returns more than the principal it unwinds.
+    pub const OVERPAY: u64 = 1_005;
+    /// Deposit that credits more principal than arrived.
+    pub const OVERSTATE_PRINCIPAL: u64 = 1_006;
+}
+
 /// Layout version written into every account this program owns.
 pub const ADAPTER_STATE_VERSION: u8 = 1;
 
@@ -65,11 +84,21 @@ impl AdapterState {
         )
     }
 
-    /// Address of the custody authority the configured remote leg signs with.
+    /// Address of the authority that owns the configured remote leg's custody.
     #[must_use]
     pub fn remote_custody_authority(&self) -> Pubkey {
         Pubkey::find_program_address(
             &[REMOTE_CUSTODY_AUTHORITY_SEED, self.remote_config.as_ref()],
+            &self.remote_leg_program,
+        )
+        .0
+    }
+
+    /// Address the configured remote leg signs its adapter calls with.
+    #[must_use]
+    pub fn remote_caller(&self) -> Pubkey {
+        Pubkey::find_program_address(
+            &[REMOTE_CALLER_SEED, self.remote_config.as_ref()],
             &self.remote_leg_program,
         )
         .0
@@ -180,7 +209,9 @@ pub mod solevm_test_strategy {
         Ok(())
     }
 
-    /// Takes assets from remote custody and counts only what arrived.
+    /// Counts an exact amount the remote leg already moved into the vault.
+    ///
+    /// Losses stay in the vault, so it always holds at least the principal.
     pub fn deposit_exact(ctx: Context<DepositExact>, amount: u64) -> Result<()> {
         let state = &ctx.accounts.adapter_state;
         require!(!state.deposits_paused, AdapterError::DepositsPaused);
@@ -191,44 +222,19 @@ pub mod solevm_test_strategy {
             state.adapter_token_vault,
             AdapterError::InvalidAdapterVault
         );
-        require_keys_eq!(
-            ctx.accounts.remote_custody.owner,
-            ctx.accounts.remote_custody_authority.key(),
-            AdapterError::InvalidRemoteCustody
-        );
-        require_keys_eq!(
-            ctx.accounts.remote_custody.mint,
-            state.mint,
-            AdapterError::InvalidMint
-        );
 
-        let before = ctx.accounts.adapter_token_vault.amount;
-        token::transfer(
-            CpiContext::new(
-                ctx.accounts.token_program.key(),
-                Transfer {
-                    from: ctx.accounts.remote_custody.to_account_info(),
-                    to: ctx.accounts.adapter_token_vault.to_account_info(),
-                    authority: ctx.accounts.remote_custody_authority.to_account_info(),
-                },
-            ),
-            amount,
-        )?;
-
-        ctx.accounts.adapter_token_vault.reload()?;
-        let received = ctx
-            .accounts
-            .adapter_token_vault
-            .amount
-            .checked_sub(before)
-            .ok_or(AdapterError::InvalidBalanceDelta)?;
-        require_eq!(received, amount, AdapterError::InvalidBalanceDelta);
-
-        let state = &mut ctx.accounts.adapter_state;
-        state.principal = state
+        let principal = state
             .principal
-            .checked_add(received)
+            .checked_add(amount)
             .ok_or(AdapterError::ArithmeticOverflow)?;
+        require_gte!(
+            ctx.accounts.adapter_token_vault.amount,
+            principal,
+            AdapterError::InvalidBalanceDelta
+        );
+        #[cfg(feature = "hostile")]
+        let principal = hostile::credited(principal, amount);
+        ctx.accounts.adapter_state.principal = principal;
         Ok(())
     }
 
@@ -253,7 +259,7 @@ pub mod solevm_test_strategy {
         );
         require_keys_eq!(
             ctx.accounts.remote_custody.owner,
-            ctx.accounts.remote_custody_authority.key(),
+            state.remote_custody_authority(),
             AdapterError::InvalidRemoteCustody
         );
         require_keys_eq!(
@@ -261,6 +267,8 @@ pub mod solevm_test_strategy {
             state.mint,
             AdapterError::InvalidMint
         );
+        #[cfg(feature = "hostile")]
+        hostile::attack_custody(ctx.accounts, requested_principal)?;
 
         let reduction = requested_principal
             .min(state.principal)
@@ -271,6 +279,8 @@ pub mod solevm_test_strategy {
         let returned = reduction
             .checked_sub(loss)
             .ok_or(AdapterError::ArithmeticOverflow)?;
+        #[cfg(feature = "hostile")]
+        let returned = hostile::returned(returned, reduction, requested_principal);
 
         if returned > 0 {
             let state_key = state.key();
@@ -373,8 +383,8 @@ pub struct ConfigureAdapter<'info> {
 #[derive(Accounts)]
 pub struct DepositExact<'info> {
     /// The remote leg signs with this seed, which proves who is calling.
-    #[account(address = adapter_state.remote_custody_authority() @ AdapterError::Unauthorized)]
-    pub remote_custody_authority: Signer<'info>,
+    #[account(address = adapter_state.remote_caller() @ AdapterError::Unauthorized)]
+    pub remote_caller: Signer<'info>,
 
     #[account(
         mut,
@@ -383,10 +393,6 @@ pub struct DepositExact<'info> {
     )]
     pub adapter_state: Account<'info, AdapterState>,
 
-    #[account(mut)]
-    pub remote_custody: Account<'info, TokenAccount>,
-
-    #[account(mut)]
     pub adapter_token_vault: Account<'info, TokenAccount>,
 
     pub mint: Account<'info, Mint>,
@@ -396,8 +402,8 @@ pub struct DepositExact<'info> {
 
 #[derive(Accounts)]
 pub struct WithdrawForRemoteLeg<'info> {
-    #[account(address = adapter_state.remote_custody_authority() @ AdapterError::Unauthorized)]
-    pub remote_custody_authority: Signer<'info>,
+    #[account(address = adapter_state.remote_caller() @ AdapterError::Unauthorized)]
+    pub remote_caller: Signer<'info>,
 
     #[account(
         mut,
@@ -454,6 +460,84 @@ pub enum AdapterError {
     NothingToDo,
     #[msg("arithmetic overflowed")]
     ArithmeticOverflow,
+}
+
+/// Misbehaviour the `hostile` build adds, keyed by the amounts in [`attack`].
+#[cfg(feature = "hostile")]
+mod hostile {
+    use anchor_spl::token::spl_token::instruction::AuthorityType;
+    use anchor_spl::token::{Approve, SetAuthority};
+
+    use super::*;
+
+    /// Tries to act on remote custody with the only signature it holds.
+    pub(super) fn attack_custody(
+        accounts: &WithdrawForRemoteLeg<'_>,
+        requested: u64,
+    ) -> Result<()> {
+        let program = accounts.token_program.key();
+        let custody = accounts.remote_custody.to_account_info();
+        let caller = accounts.remote_caller.to_account_info();
+        let thief = accounts.adapter_authority.to_account_info();
+        match requested {
+            attack::APPROVE_DELEGATE => token::approve(
+                CpiContext::new(
+                    program,
+                    Approve {
+                        to: custody,
+                        delegate: thief,
+                        authority: caller,
+                    },
+                ),
+                u64::MAX,
+            ),
+            attack::TAKE_OWNERSHIP | attack::SET_CLOSE_AUTHORITY => token::set_authority(
+                CpiContext::new(
+                    program,
+                    SetAuthority {
+                        current_authority: caller,
+                        account_or_mint: custody,
+                    },
+                ),
+                if requested == attack::TAKE_OWNERSHIP {
+                    AuthorityType::AccountOwner
+                } else {
+                    AuthorityType::CloseAccount
+                },
+                Some(thief.key()),
+            ),
+            attack::DRAIN_CUSTODY => token::transfer(
+                CpiContext::new(
+                    program,
+                    Transfer {
+                        from: custody,
+                        to: accounts.adapter_token_vault.to_account_info(),
+                        authority: caller,
+                    },
+                ),
+                requested,
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// Returns one unit more than the reduction under the overpay attack.
+    pub(super) fn returned(honest: u64, reduction: u64, requested: u64) -> u64 {
+        if requested == attack::OVERPAY {
+            reduction.saturating_add(1)
+        } else {
+            honest
+        }
+    }
+
+    /// Credits one unit more than arrived under the overstatement attack.
+    pub(super) fn credited(honest: u64, amount: u64) -> u64 {
+        if amount == attack::OVERSTATE_PRINCIPAL {
+            honest.saturating_add(1)
+        } else {
+            honest
+        }
+    }
 }
 
 #[cfg(test)]

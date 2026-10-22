@@ -3,6 +3,9 @@
 //! The leg builds these calls itself and only ever sends them to the adapter
 //! stored in `StrategyConfig`. Nothing an adapter returns is trusted, so the
 //! only value read back is the principal it keeps in its own account.
+//!
+//! Calls are signed by the adapter caller, never by the custody authority, so
+//! an adapter holds no signature that could move or reassign custody.
 
 use anchor_lang::prelude::*;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
@@ -34,27 +37,26 @@ pub struct AdapterCall<'info> {
     pub adapter_state: AccountInfo<'info>,
     pub adapter_authority: AccountInfo<'info>,
     pub adapter_token_vault: AccountInfo<'info>,
-    pub custody_authority: AccountInfo<'info>,
+    pub caller: AccountInfo<'info>,
     pub custody_token_account: AccountInfo<'info>,
     pub asset_mint: AccountInfo<'info>,
     pub token_program: AccountInfo<'info>,
 }
 
 impl<'info> AdapterCall<'info> {
-    /// Asks the adapter to take an exact amount out of custody.
+    /// Asks the adapter to count an exact amount the leg already moved into
+    /// its vault.
     pub fn deposit_exact(&self, amount: u64, signer_seeds: &[&[u8]]) -> Result<()> {
         let metas = vec![
-            AccountMeta::new_readonly(*self.custody_authority.key, true),
+            AccountMeta::new_readonly(*self.caller.key, true),
             AccountMeta::new(*self.adapter_state.key, false),
-            AccountMeta::new(*self.custody_token_account.key, false),
-            AccountMeta::new(*self.adapter_token_vault.key, false),
+            AccountMeta::new_readonly(*self.adapter_token_vault.key, false),
             AccountMeta::new_readonly(*self.asset_mint.key, false),
             AccountMeta::new_readonly(*self.token_program.key, false),
         ];
         let infos = [
-            self.custody_authority.clone(),
+            self.caller.clone(),
             self.adapter_state.clone(),
-            self.custody_token_account.clone(),
             self.adapter_token_vault.clone(),
             self.asset_mint.clone(),
             self.token_program.clone(),
@@ -65,7 +67,7 @@ impl<'info> AdapterCall<'info> {
     /// Asks the adapter to return principal to custody.
     pub fn withdraw(&self, requested_principal: u64, signer_seeds: &[&[u8]]) -> Result<()> {
         let metas = vec![
-            AccountMeta::new_readonly(*self.custody_authority.key, true),
+            AccountMeta::new_readonly(*self.caller.key, true),
             AccountMeta::new(*self.adapter_state.key, false),
             AccountMeta::new_readonly(*self.adapter_authority.key, false),
             AccountMeta::new(*self.custody_token_account.key, false),
@@ -74,7 +76,7 @@ impl<'info> AdapterCall<'info> {
             AccountMeta::new_readonly(*self.token_program.key, false),
         ];
         let infos = [
-            self.custody_authority.clone(),
+            self.caller.clone(),
             self.adapter_state.clone(),
             self.adapter_authority.clone(),
             self.custody_token_account.clone(),

@@ -3,6 +3,7 @@ pragma solidity 0.8.30;
 
 import {RemoteAccounting} from "../../src/RemoteAccounting.sol";
 import {SolEVMVault} from "../../src/SolEVMVault.sol";
+import {IRemoteAccounting} from "../../src/interfaces/IRemoteAccounting.sol";
 import {EpochPhase, ISolEVMVault, VaultStatus} from "../../src/interfaces/ISolEVMVault.sol";
 import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {RemoteTestBase} from "../RemoteTestBase.sol";
@@ -253,8 +254,9 @@ contract RemoteAccountingTest is RemoteTestBase {
         _report(vault.currentEpochId(), 40e6, 40e6, 0, bytes32(0));
         assertTrue(vault.epochRemoteValuationLocked(vault.currentEpochId()));
         bytes memory encoded = _encodeReport(vault.currentEpochId(), 40e6, 30e6, 0, bytes32(0));
-        vm.expectRevert(RemoteAccounting.ValuationAlreadyFixed.selector);
+        _expectSkipped(vault.currentEpochId(), IRemoteAccounting.ReportSkipReason.ValuationFixed);
         coordinator.processRemoteReport(encoded);
+        assertEq(vault.acceptedRemoteValue(), 40e6);
     }
 
     function test_redemption_liquidity_uses_idle_only() public {
@@ -317,7 +319,7 @@ contract RemoteAccountingTest is RemoteTestBase {
         _report(vault.currentEpochId(), 40e6, 40e6, 0, bytes32(0));
         uint256 locked = vault.lockedPricingAssets(vault.currentEpochId());
         bytes memory encoded = _encodeReport(vault.currentEpochId(), 40e6, 10e6, 0, bytes32(0));
-        vm.expectRevert(RemoteAccounting.ValuationAlreadyFixed.selector);
+        _expectSkipped(vault.currentEpochId(), IRemoteAccounting.ReportSkipReason.ValuationFixed);
         coordinator.processRemoteReport(encoded);
         assertEq(vault.lockedPricingAssets(vault.currentEpochId()), locked);
         assertEq(vault.acceptedRemoteValue(), 40e6);

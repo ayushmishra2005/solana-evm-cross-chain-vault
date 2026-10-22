@@ -34,12 +34,12 @@ pub struct AdvanceReplayWatermark<'info> {
     )]
     pub replay_lane: Account<'info, ReplayLane>,
 
-    /// Required when a transfer is open, so its sequence stays protected.
+    /// Always required, so an open transfer's sequence stays protected.
     #[account(
         seeds = [REMOTE_POSITION_SEED, remote_config.key().as_ref()],
         bump = remote_position.bump,
     )]
-    pub remote_position: Option<Account<'info, RemotePosition>>,
+    pub remote_position: Account<'info, RemotePosition>,
 }
 
 pub fn process_advance_replay_watermark(
@@ -81,10 +81,7 @@ pub fn process_advance_replay_watermark(
         RemoteLegError::WatermarkLagViolation
     );
 
-    check_obligation(
-        new_minimum_sequence,
-        ctx.accounts.remote_position.as_deref(),
-    )?;
+    check_obligation(new_minimum_sequence, &ctx.accounts.remote_position)?;
 
     lane.minimum_acceptable_sequence = new_minimum_sequence;
     let advanced_at = Clock::get()?.unix_timestamp;
@@ -105,10 +102,7 @@ pub fn process_advance_replay_watermark(
 /// Keeps the replay record of an unresolved transfer out of reach.
 ///
 /// The watermark may reach the open sequence but never pass it.
-fn check_obligation(new_minimum_sequence: u64, position: Option<&RemotePosition>) -> Result<()> {
-    let Some(position) = position else {
-        return Ok(());
-    };
+fn check_obligation(new_minimum_sequence: u64, position: &RemotePosition) -> Result<()> {
     require_eq!(
         position.state_version,
         STATE_VERSION,

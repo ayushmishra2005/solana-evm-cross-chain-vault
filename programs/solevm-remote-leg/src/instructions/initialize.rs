@@ -1,6 +1,7 @@
 //! One time setup of the remote leg.
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_spl::token::{Mint, Token, TokenAccount};
 
 use crate::errors::RemoteLegError;
@@ -123,6 +124,19 @@ pub struct InitializeRemoteLeg<'info> {
     pub token_program: Program<'info, Token>,
 
     pub system_program: Program<'info, System>,
+
+    /// Only the program's upgrade authority may claim a namespace, so no one
+    /// can initialize a deployment ahead of its operator.
+    pub upgrade_authority: Signer<'info>,
+
+    #[account(
+        seeds = [crate::ID.as_ref()],
+        bump,
+        seeds::program = bpf_loader_upgradeable::ID,
+        constraint = program_data.upgrade_authority_address == Some(upgrade_authority.key())
+            @ RemoteLegError::Unauthorized,
+    )]
+    pub program_data: Account<'info, ProgramData>,
 }
 
 pub fn process_initialize(

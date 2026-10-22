@@ -105,13 +105,7 @@ library ResultMapping {
         if (selector == RemoteAccounting.InvalidRecallSentAmounts.selector) {
             return Code.INVALID_CONFIGURATION;
         }
-        if (selector == RemoteAccounting.InvalidReportEpoch.selector) {
-            return Code.INVALID_CONFIGURATION;
-        }
         if (selector == RemoteAccounting.StaleValuation.selector) {
-            return Code.INVALID_CONFIGURATION;
-        }
-        if (selector == RemoteAccounting.ValuationAlreadyFixed.selector) {
             return Code.INVALID_CONFIGURATION;
         }
         if (selector == ProtocolCodec.ZeroAmount.selector) return Code.ZERO_AMOUNT;

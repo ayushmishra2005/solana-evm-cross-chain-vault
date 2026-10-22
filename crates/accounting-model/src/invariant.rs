@@ -293,8 +293,10 @@ fn check_finalized_terms(state: &State) -> Result<(), Violation> {
 }
 
 /// Settlement rounds in favour of the vault, so the price can only rise.
+/// A loss reported during a recall lowers the price before its notice
+/// recognizes it.
 fn check_price_never_falls(state: &State) -> Result<(), Violation> {
-    if !state.recognized_loss.is_zero() {
+    if !state.recognized_loss.is_zero() || !state.inbound_cumulative_loss.is_zero() {
         return Ok(());
     }
     let mut earlier: Option<&EpochTerms> = None;

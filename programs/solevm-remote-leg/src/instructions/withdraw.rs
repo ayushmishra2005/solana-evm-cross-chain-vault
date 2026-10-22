@@ -9,7 +9,9 @@ use crate::adapter::{self, AdapterCall};
 use crate::custody;
 use crate::errors::RemoteLegError;
 use crate::events::{RecallCompleted, StrategyWithdrawalCompleted};
-use crate::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
+use crate::state::{
+    ADAPTER_CALLER_SEED, CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION,
+};
 use crate::strategy::{
     self, REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig,
     TRANSFER_RECORD_SEED, TransferKind, TransferRecord,
@@ -57,7 +59,7 @@ pub struct WithdrawForRecall<'info> {
     )]
     pub transfer_record: Box<Account<'info, TransferRecord>>,
 
-    /// CHECK: it signs the call, and its seeds prove the derivation.
+    /// CHECK: its seeds prove the derivation. It signs nothing here.
     #[account(
         seeds = [CUSTODY_AUTHORITY_SEED, remote_config.key().as_ref()],
         bump = remote_config.custody_authority_bump,
@@ -66,6 +68,10 @@ pub struct WithdrawForRecall<'info> {
 
     #[account(mut)]
     pub custody_token_account: Box<Account<'info, TokenAccount>>,
+
+    /// CHECK: it signs the adapter call, and its seeds prove the derivation.
+    #[account(seeds = [ADAPTER_CALLER_SEED, remote_config.key().as_ref()], bump)]
+    pub adapter_caller: UncheckedAccount<'info>,
 
     /// CHECK: the strategy configuration fixes this address.
     pub adapter_program: UncheckedAccount<'info>,
@@ -136,7 +142,7 @@ pub fn process_withdraw_for_recall(
         adapter_state: adapter_state_info.clone(),
         adapter_authority: ctx.accounts.adapter_authority.to_account_info(),
         adapter_token_vault: ctx.accounts.adapter_token_vault.to_account_info(),
-        custody_authority: ctx.accounts.custody_authority.to_account_info(),
+        caller: ctx.accounts.adapter_caller.to_account_info(),
         custody_token_account: ctx.accounts.custody_token_account.to_account_info(),
         asset_mint: ctx.accounts.asset_mint.to_account_info(),
         token_program: ctx.accounts.token_program.to_account_info(),
@@ -144,13 +150,17 @@ pub fn process_withdraw_for_recall(
     call.withdraw(
         request,
         &[
-            CUSTODY_AUTHORITY_SEED,
+            ADAPTER_CALLER_SEED,
             config_key.as_ref(),
-            &[ctx.accounts.remote_config.custody_authority_bump],
+            &[ctx.bumps.adapter_caller],
         ],
     )?;
 
     ctx.accounts.custody_token_account.reload()?;
+    custody::check_control(
+        &ctx.accounts.custody_token_account,
+        ctx.accounts.custody_authority.key,
+    )?;
     ctx.accounts.adapter_token_vault.reload()?;
     let custody_after = ctx.accounts.custody_token_account.amount;
     let vault_after = ctx.accounts.adapter_token_vault.amount;

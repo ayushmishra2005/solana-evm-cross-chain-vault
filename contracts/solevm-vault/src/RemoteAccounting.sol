@@ -35,6 +35,11 @@ contract RemoteAccounting is IRemoteAccounting {
     bytes32 public override activeTransferId;
     uint128 public activeAmount;
 
+    /// Accepted remote value and acknowledged cumulative loss when the active
+    /// recall began.
+    uint128 public recallBaselineValue;
+    uint128 public recallBaselineLoss;
+
     mapping(bytes32 transferId => bool) public usedTransferIds;
 
     error InvalidAddress();
@@ -56,14 +61,11 @@ contract RemoteAccounting is IRemoteAccounting {
     error WrongVault();
     error WrongLane(uint32 expected, uint32 actual);
     error WrongConfigVersion(uint64 expected, uint64 actual);
-    error MessageExpired(uint64 nowAt, uint64 expiresAt);
     error AllocateNotAllowed();
     error InsufficientRemotePrincipal(uint256 available, uint256 requested);
     error RecallIdentityMismatch();
     error InvalidRecallSentAmounts(uint128 principal, uint128 actual, uint128 loss);
-    error InvalidReportEpoch(uint64 expected, uint64 actual);
     error StaleValuation();
-    error ValuationAlreadyFixed();
 
     constructor(
         SolEVMVault vault_,
@@ -184,6 +186,8 @@ contract RemoteAccounting is IRemoteAccounting {
             })
         );
 
+        recallBaselineValue = _toU128(_vault.acceptedRemoteValue());
+        recallBaselineLoss = lastInboundCumulativeLoss;
         _vault.beginRecall(transferId, requestedAmount);
         _consumeOutbound(transferId, CycleKind.Recall, requestedAmount, message);
         emit RecallInitiated(transferId, requestedAmount, message);
@@ -197,48 +201,21 @@ contract RemoteAccounting is IRemoteAccounting {
         if (body.configVersion != _configVersion()) {
             revert WrongConfigVersion(_configVersion(), body.configVersion);
         }
-
-        uint256 navBefore = _vault.managedNav();
-        bool completedAllocate;
-        if (
-            activeCycleKind == CycleKind.Allocate
-                && body.latestCompletedTransferId == activeTransferId
-                && activeTransferId != bytes32(0)
-        ) {
-            _vault.completeAllocation(activeAmount, body.reportedValue);
-            emit AllocationCompleted(activeTransferId, activeAmount, _vault.acceptedRemoteValue());
-            _clearCycle();
-            completedAllocate = true;
-        }
-
-        bool cutoff = _vault.epochOpen() && _vault.currentEpochPhase() == EpochPhase.CutOff;
-        uint64 epochId = _vault.currentEpochId();
-        bool locked = cutoff && _vault.epochRemoteValuationLocked(epochId);
-
-        if (locked) {
-            if (!completedAllocate || _vault.managedNav() != navBefore) {
-                revert ValuationAlreadyFixed();
-            }
-        } else if (cutoff) {
-            if (body.epochId != epochId) revert InvalidReportEpoch(epochId, body.epochId);
-            if (header.observedAt < _vault.currentEpochCutoffAt()) revert StaleValuation();
-            _vault.applyRemoteValuation(body.reportedValue);
-            _vault.lockRemoteValuation(epochId);
-            emit EpochRemoteValuationLocked(epochId, _vault.acceptedRemoteValue());
-        } else {
-            _vault.applyRemoteValuation(body.reportedValue);
-        }
-
         if (body.realizedLoss < lastInboundCumulativeLoss) revert StaleValuation();
         lastInboundCumulativeLoss = body.realizedLoss;
-
         _advanceInbound(encoded);
-        emit RemoteReportAccepted(
-            header.sequence,
-            body.epochId,
-            _vault.acceptedRemoteValue(),
-            body.latestCompletedTransferId
-        );
+
+        ReportSkipReason skipped = _applyReport(header, body);
+        if (skipped == ReportSkipReason.None) {
+            emit RemoteReportAccepted(
+                header.sequence,
+                body.epochId,
+                _vault.acceptedRemoteValue(),
+                body.latestCompletedTransferId
+            );
+        } else {
+            emit RemoteReportSkipped(header.sequence, body.epochId, skipped);
+        }
     }
 
     function processRecallSent(bytes calldata encoded) external {
@@ -266,12 +243,23 @@ contract RemoteAccounting is IRemoteAccounting {
             );
         }
 
+        uint128 baselineValue = recallBaselineValue;
+        uint128 settledLoss = recallBaselineLoss + body.realizedLoss;
+        if (settledLoss > lastInboundCumulativeLoss) lastInboundCumulativeLoss = settledLoss;
+        recallBaselineValue = 0;
+        recallBaselineLoss = 0;
+        _clearCycle();
+        _advanceInbound(encoded);
+
+        // Reports during the recall deducted only its loss; settle from the
+        // pre-recall value so the loss is not deducted twice.
+        if (_vault.acceptedRemoteValue() != baselineValue) {
+            _vault.applyRemoteValuation(baselineValue);
+        }
         _vault.applyRecallSent(body.principalSent, body.actualAmountSent, body.realizedLoss);
         emit RecallSentAccepted(
             body.transferId, body.principalSent, body.actualAmountSent, body.realizedLoss
         );
-        _clearCycle();
-        _advanceInbound(encoded);
     }
 
     function _requireAdmin() private view {
@@ -317,6 +305,73 @@ contract RemoteAccounting is IRemoteAccounting {
         );
     }
 
+    /// Prices the report, or names why it cannot price anything. A report that
+    /// cannot be applied still advances the lane, so nothing queued behind it
+    /// is stranded; the next applicable report supersedes it.
+    function _applyReport(
+        ProtocolCodec.Header memory header,
+        ProtocolCodec.RemoteReportBody memory body
+    ) private returns (ReportSkipReason) {
+        if (header.expiresAt < uint64(block.timestamp)) {
+            return ReportSkipReason.Expired;
+        }
+
+        bool completes = activeCycleKind == CycleKind.Allocate
+            && body.latestCompletedTransferId == activeTransferId && activeTransferId != bytes32(0);
+        bool cutoff = _vault.epochOpen() && _vault.currentEpochPhase() == EpochPhase.CutOff;
+        uint64 epochId = _vault.currentEpochId();
+
+        if (cutoff && _vault.epochRemoteValuationLocked(epochId)) {
+            if (!completes || !_completionKeepsNav(body.reportedValue)) {
+                return ReportSkipReason.ValuationFixed;
+            }
+            _completeAllocation(body.reportedValue);
+            return ReportSkipReason.None;
+        }
+        if (cutoff) {
+            if (body.epochId != epochId) return ReportSkipReason.WrongEpoch;
+            if (header.observedAt < _vault.currentEpochCutoffAt()) {
+                return ReportSkipReason.StaleObservation;
+            }
+        }
+
+        if (completes) _completeAllocation(body.reportedValue);
+        _vault.applyRemoteValuation(
+            activeCycleKind == CycleKind.Recall
+                ? _valueDuringRecall(body.realizedLoss)
+                : body.reportedValue
+        );
+        if (cutoff) {
+            _vault.lockRemoteValuation(epochId);
+            emit EpochRemoteValuationLocked(epochId, _vault.acceptedRemoteValue());
+        }
+        return ReportSkipReason.None;
+    }
+
+    function _completeAllocation(uint256 reportedValue) private {
+        bytes32 transferId = activeTransferId;
+        uint128 amount = activeAmount;
+        _clearCycle();
+        _vault.completeAllocation(amount, reportedValue);
+        emit AllocationCompleted(transferId, amount, _vault.acceptedRemoteValue());
+    }
+
+    /// Completion moves the open amount from outbound transit into remote
+    /// value, so NAV is unchanged only if the report carries it in full.
+    function _completionKeepsNav(uint256 reportedValue) private view returns (bool) {
+        uint256 cap = _vault.remotePrincipalCap() + activeAmount;
+        uint256 value = reportedValue < cap ? reportedValue : cap;
+        return value == _vault.acceptedRemoteValue() + activeAmount;
+    }
+
+    /// Solana's reported value already excludes recalled principal it has sent
+    /// but the vault has not settled, so during a recall only the loss realized
+    /// since the recall began moves the pre-recall value.
+    function _valueDuringRecall(uint128 cumulativeLoss) private view returns (uint256) {
+        uint256 loss = cumulativeLoss > recallBaselineLoss ? cumulativeLoss - recallBaselineLoss : 0;
+        return loss < recallBaselineValue ? recallBaselineValue - loss : 0;
+    }
+
     function _clearCycle() private {
         activeCycleKind = CycleKind.None;
         activeTransferId = bytes32(0);
@@ -356,9 +411,6 @@ contract RemoteAccounting is IRemoteAccounting {
         if (header.deploymentId != deploymentId) revert WrongDeployment();
         if (header.vaultId != boundVaultId) revert WrongVault();
         if (header.laneId != inboundLaneId) revert WrongLane(inboundLaneId, header.laneId);
-        if (header.expiresAt < uint64(block.timestamp)) {
-            revert MessageExpired(uint64(block.timestamp), header.expiresAt);
-        }
         if (header.sequence != inboundExpectedSequence) {
             if (header.sequence < inboundExpectedSequence) revert Replay(header.sequence);
             revert WrongSequence(inboundExpectedSequence, header.sequence);

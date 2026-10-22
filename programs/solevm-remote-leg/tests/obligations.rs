@@ -170,13 +170,53 @@ fn a_foreign_position_cannot_authorize_a_watermark() {
     let instruction = fixture.watermark_instruction(
         administrator.pubkey(),
         fixture.control_lane_key(),
-        Some(Pubkey::new_unique()),
+        Pubkey::new_unique(),
         sequence,
     );
     expect_anchor_error(
         fixture.send(instruction, &[&administrator]),
         ErrorCode::AccountNotInitialized,
     );
+}
+
+#[test]
+fn the_placeholder_for_an_absent_position_cannot_skip_the_obligation() {
+    let mut fixture = Fixture::deployed();
+    let sequence = open_allocation(&mut fixture);
+
+    // Anchor reads the program id in an optional slot as an absent account.
+    let administrator = fixture.administrator.insecure_clone();
+    let instruction = fixture.watermark_instruction(
+        administrator.pubkey(),
+        fixture.control_lane_key(),
+        solevm_remote_leg::ID,
+        sequence + 1,
+    );
+    expect_anchor_error(
+        fixture.send(instruction, &[&administrator]),
+        ErrorCode::AccountOwnedByWrongProgram,
+    );
+    assert_eq!(fixture.control_lane().minimum_acceptable_sequence, 1);
+}
+
+#[test]
+fn a_watermark_without_the_position_is_rejected() {
+    let mut fixture = Fixture::deployed();
+    let sequence = open_allocation(&mut fixture);
+
+    let administrator = fixture.administrator.insecure_clone();
+    let mut instruction = fixture.watermark_instruction(
+        administrator.pubkey(),
+        fixture.control_lane_key(),
+        fixture.position_key(),
+        sequence + 1,
+    );
+    instruction.accounts.pop();
+    expect_anchor_error(
+        fixture.send(instruction, &[&administrator]),
+        ErrorCode::AccountNotEnoughKeys,
+    );
+    assert_eq!(fixture.control_lane().minimum_acceptable_sequence, 1);
 }
 
 #[test]

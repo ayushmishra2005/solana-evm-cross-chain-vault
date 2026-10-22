@@ -342,9 +342,10 @@ contract RustModelDifferentialTest is Test {
         uint128 reported = action.kind == Op.LOCK_REMOTE_VALUATION
             ? uint128(vault.acceptedRemoteValue())
             : uint128(action.amount);
+        uint128 newLoss = action.kind == Op.APPLY_REMOTE_VALUATION ? uint128(action.aux1) : 0;
         return abi.encodeCall(
             coordinator.processRemoteReport,
-            (_encodeReport(vault, coordinator, reported, completed))
+            (_encodeReport(vault, coordinator, reported, completed, newLoss))
         );
     }
 
@@ -400,7 +401,8 @@ contract RustModelDifferentialTest is Test {
         SolEVMVault vault,
         RemoteAccounting coordinator,
         uint128 reportedValue,
-        bytes32 completedTransferId
+        bytes32 completedTransferId,
+        uint128 newLoss
     ) private view returns (bytes memory) {
         uint64 epochId = vault.currentEpochId();
         if (epochId == 0) epochId = 1;
@@ -410,7 +412,7 @@ contract RustModelDifferentialTest is Test {
                 epochId: epochId,
                 remotePrincipal: uint128(vault.remotePrincipalCap()),
                 reportedValue: reportedValue,
-                realizedLoss: coordinator.lastInboundCumulativeLoss(),
+                realizedLoss: coordinator.lastInboundCumulativeLoss() + newLoss,
                 unattributedBalance: 0,
                 latestCompletedTransferId: completedTransferId,
                 probeStatus: ProtocolCodec.PROBE_NOT_REQUIRED,

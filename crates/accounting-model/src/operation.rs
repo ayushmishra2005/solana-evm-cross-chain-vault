@@ -77,6 +77,8 @@ pub enum Operation {
     },
     ApplyRemoteValuation {
         reported_value: AssetAmount,
+        /// Loss the leg realized since the last loss the vault acknowledged.
+        newly_realized_loss: AssetAmount,
     },
     LockRemoteValuation,
 }

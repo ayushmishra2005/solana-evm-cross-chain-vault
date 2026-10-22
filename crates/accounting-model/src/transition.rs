@@ -57,8 +57,11 @@ pub fn apply(state: &State, operation: Operation) -> Result<State, Rejection> {
             loss,
         } => accept_recall_sent(&mut next, transfer_id, principal, actual, loss)?,
         Operation::ObserveInbound { amount } => observe_inbound(&mut next, amount)?,
-        Operation::ApplyRemoteValuation { reported_value } => {
-            apply_remote_valuation(&mut next, reported_value)?;
+        Operation::ApplyRemoteValuation {
+            reported_value,
+            newly_realized_loss,
+        } => {
+            apply_remote_valuation(&mut next, reported_value, newly_realized_loss)?;
         }
         Operation::LockRemoteValuation => lock_remote_valuation(&mut next)?,
     }
@@ -663,6 +666,8 @@ fn begin_recall(
     if amount > state.remote_principal_cap {
         return Err(Rejection::InsufficientRemotePrincipal);
     }
+    state.recall_baseline_value = state.buckets.accepted_remote_value;
+    state.recall_baseline_loss = state.inbound_cumulative_loss;
     state.pending_recall_id = transfer_id;
     state.pending_recall_principal = amount;
     let _ = state.used_transfer_ids.insert(transfer_id);
@@ -694,6 +699,15 @@ fn accept_recall_sent(
     if principal > state.remote_principal_cap {
         return Err(Rejection::InsufficientRemotePrincipal);
     }
+    // Reports during the recall deducted only its loss; settle from the
+    // pre-recall value so the loss is not deducted twice.
+    set_accepted(state, state.recall_baseline_value);
+    let settled_loss = state.recall_baseline_loss.checked_add(loss)?;
+    if settled_loss > state.inbound_cumulative_loss {
+        state.inbound_cumulative_loss = settled_loss;
+    }
+    state.recall_baseline_value = AssetAmount::ZERO;
+    state.recall_baseline_loss = AssetAmount::ZERO;
     let accepted_decrease = if state.buckets.accepted_remote_value < principal {
         state.buckets.accepted_remote_value
     } else {
@@ -756,9 +770,32 @@ fn observe_inbound(state: &mut State, amount: AssetAmount) -> Result<(), Rejecti
     Ok(())
 }
 
-fn apply_remote_valuation(state: &mut State, reported_value: AssetAmount) -> Result<(), Rejection> {
-    set_accepted(state, reported_value);
+fn apply_remote_valuation(
+    state: &mut State,
+    reported_value: AssetAmount,
+    newly_realized_loss: AssetAmount,
+) -> Result<(), Rejection> {
+    let cumulative_loss = state
+        .inbound_cumulative_loss
+        .checked_add(newly_realized_loss)?;
+    let value = if state.active_cycle == CycleKind::Recall {
+        value_during_recall(state, cumulative_loss)
+    } else {
+        reported_value
+    };
+    set_accepted(state, value);
+    state.inbound_cumulative_loss = cumulative_loss;
     Ok(())
+}
+
+/// The leg's reported value already excludes recalled principal it has sent
+/// but the vault has not settled, so during a recall only the loss realized
+/// since the recall began moves the pre-recall value.
+fn value_during_recall(state: &State, cumulative_loss: AssetAmount) -> AssetAmount {
+    let loss = cumulative_loss
+        .raw()
+        .saturating_sub(state.recall_baseline_loss.raw());
+    AssetAmount::new(state.recall_baseline_value.raw().saturating_sub(loss))
 }
 
 fn lock_remote_valuation(state: &mut State) -> Result<(), Rejection> {

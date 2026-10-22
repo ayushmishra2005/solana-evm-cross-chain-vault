@@ -142,7 +142,15 @@ The current implementation permits only one unresolved allocation or recall cycl
 
 ### Freeze allows safe unwind
 
-Freezing the remote leg prevents new exposure while allowing an already accepted recall to continue withdrawing, sending and reporting.
+Freezing the remote leg prevents new exposure while allowing an already accepted recall to continue withdrawing, sending and reporting. Freeze is terminal. Principal that was not under recall when the leg froze can still return home, but only with the emergency guardian's co-signature: a frozen leg accepts a recall, or attributes an allocation accepted before the freeze, only when the guardian co-signs. Deploys, new allocations and configuration changes stay blocked.
+
+### Adapters never hold custody signing power
+
+The leg moves assets into the adapter vault itself and signs adapter calls with a dedicated caller identity that owns nothing. After every adapter call the leg checks the balance and principal deltas and requires custody to answer to the custody authority alone, with no delegate or close authority. Any violation reverts the whole transaction.
+
+### Initialization is reserved to the upgrade authority
+
+Only the program's upgrade authority can initialize a deployment and vault namespace, so no one can claim a deployment ahead of its operator. A program made immutable can no longer initialize new namespaces.
 
 ## Protocol flows
 
@@ -177,7 +185,11 @@ Solana state observation
 → RemoteReport built from on-chain state
 → canonical fixed-width encoding
 → ordered outbound commitment chain
+→ EVM consumes each report in order
+→ a report that can no longer price advances the lane and emits RemoteReportSkipped
 ```
+
+A report can no longer price once it has expired, when it names another epoch or an observation older than the cutoff while the epoch is at cutoff, or after the epoch's valuation is fixed, unless it only completes the open allocation without moving NAV. Integrity failures still revert. RecallSent never expires.
 
 ## Testing
 
@@ -208,6 +220,11 @@ The test suites exercise properties including:
 - Replay cannot execute financial state twice
 - Same control-lane sequence cannot be reused across message types
 - Strategy CPI is restricted to configured program and accounts
+- A hostile adapter cannot take custody ownership, approve a delegate, set a close authority, drain custody or misreport principal
+- The replay watermark cannot pass an unresolved transfer, and the position cannot be left out
+- Only the upgrade authority can initialize a deployment namespace
+- A frozen leg releases principal only with the guardian's co-signature
+- Reports published during a recall price against the recall's baseline, net of realized loss
 - Same-epoch EVM deposits cannot fund same-epoch redemptions
 - Claims remain pull-based
 - RecallSent is separate from EVM asset receipt
@@ -275,16 +292,28 @@ FOUNDRY_PROFILE=soak forge test
 
 ### Solana
 
-From `programs/solevm-remote-leg`:
+Requires `cargo-build-sbf` 4.4.0 (`cargo install cargo-build-sbf --version 4.4.0 --locked`), which fetches platform-tools v1.58 on first use. From `programs/solevm-remote-leg`:
 
 ```bash
-cargo-build-sbf --tools-version v1.54
-cargo-build-sbf --tools-version v1.54 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
+cargo-build-sbf --tools-version v1.58 --arch v0
+cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
+cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile
 
 cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo check --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
+```
+
+The `hostile` build is the misbehaving adapter that `tests/hostile_adapter.rs` loads. The artifacts above are SBPFv0. To check the program under SBPFv3 separately:
+
+```bash
+cargo-build-sbf --tools-version v1.58 --arch v3 --sbf-out-dir target/deploy-v3
+cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy-v3
+cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile-v3
+
+SBF_OUT_DIR=$PWD/target/deploy-v3 HOSTILE_SBF_OUT_DIR=$PWD/target/deploy-hostile-v3 \
+  cargo test --locked --workspace --all-features
 ```
 
 ### Cross-chain E2E
@@ -336,6 +365,8 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 - The repository is not presented as production-ready
 - One unresolved remote allocation or recall cycle is supported
 - Classic SPL Token is supported by the Solana leg, not Token-2022
+- Allocation and recall minimums and deadlines are encoded and structurally validated but advisory: the Solana leg completes an allocation only at its full authorized amount and enforces neither the recall minimum nor either deadline
+- An expired control message halts the Solana control lane, and a partially delivered or dropped allocation stays open. Recovering from either needs an explicit resolution message that is not yet designed
 
 ## License
 

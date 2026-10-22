@@ -8,6 +8,12 @@ pub const REMOTE_CONFIG_SEED: &[u8] = b"remote-config";
 /// Seed prefix of the custody authority.
 pub const CUSTODY_AUTHORITY_SEED: &[u8] = b"custody-authority";
 
+/// Seed prefix of the identity the leg signs adapter calls with.
+///
+/// It owns nothing, so an adapter that misuses the signature cannot move,
+/// delegate or close custody.
+pub const ADAPTER_CALLER_SEED: &[u8] = b"adapter-caller";
+
 /// Layout version written into every account this program owns.
 pub const STATE_VERSION: u8 = 1;
 
@@ -63,6 +69,12 @@ impl RemoteConfig {
     #[must_use]
     pub fn custody_authority(config: &Pubkey) -> (Pubkey, u8) {
         Pubkey::find_program_address(&[CUSTODY_AUTHORITY_SEED, config.as_ref()], &crate::ID)
+    }
+
+    /// Address and bump of the identity that signs adapter calls.
+    #[must_use]
+    pub fn adapter_caller(config: &Pubkey) -> (Pubkey, u8) {
+        Pubkey::find_program_address(&[ADAPTER_CALLER_SEED, config.as_ref()], &crate::ID)
     }
 
     /// True when the signer may act as administrator or guardian.

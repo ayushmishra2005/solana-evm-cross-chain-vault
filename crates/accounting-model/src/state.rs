@@ -254,6 +254,11 @@ pub struct State {
     pub active_cycle: CycleKind,
     pub active_transfer_id: TransferId,
     pub active_amount: AssetAmount,
+    /// Cumulative remote loss acknowledged by reports and recall notices.
+    pub inbound_cumulative_loss: AssetAmount,
+    /// Accepted remote value and acknowledged loss when the active recall began.
+    pub recall_baseline_value: AssetAmount,
+    pub recall_baseline_loss: AssetAmount,
     pub used_transfer_ids: BTreeSet<TransferId>,
     pub epoch_valuation_locked: BTreeMap<EpochId, AssetAmount>,
 }
@@ -322,6 +327,9 @@ impl State {
             active_cycle: CycleKind::None,
             active_transfer_id: TransferId::ZERO,
             active_amount: AssetAmount::ZERO,
+            inbound_cumulative_loss: AssetAmount::ZERO,
+            recall_baseline_value: AssetAmount::ZERO,
+            recall_baseline_loss: AssetAmount::ZERO,
             used_transfer_ids: BTreeSet::new(),
             epoch_valuation_locked: BTreeMap::new(),
         })

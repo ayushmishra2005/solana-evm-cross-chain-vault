@@ -354,6 +354,35 @@ fn a_standard_run_reaches_every_interesting_state() {
     );
 }
 
+/// Reports during a recall must reach the lock, not just the refusal path.
+#[test]
+fn some_epoch_locks_while_a_lossy_recall_is_open() {
+    let found = run(standard()).iter().any(|scenario| {
+        let mut recall_open = false;
+        let mut lossy_report = false;
+        scenario
+            .actions
+            .iter()
+            .filter(|entry| entry.result == ResultCode::Success)
+            .any(|entry| {
+                match entry.action.kind {
+                    ActionKind::BeginRecall => {
+                        recall_open = true;
+                        lossy_report = false;
+                    }
+                    ActionKind::AcceptRecallSent => recall_open = false,
+                    ActionKind::ApplyRemoteValuation if recall_open && entry.action.aux1 != 0 => {
+                        lossy_report = true;
+                    }
+                    ActionKind::LockRemoteValuation => return recall_open && lossy_report,
+                    _ => {}
+                }
+                false
+            })
+    });
+    assert!(found, "no epoch locked during a lossy recall");
+}
+
 /// Multi epoch traces must really settle three or more epochs.
 #[test]
 fn some_scenarios_settle_at_least_three_epochs() {

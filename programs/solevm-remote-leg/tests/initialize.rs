@@ -4,11 +4,14 @@
 
 mod common;
 
+use anchor_lang::error::ErrorCode;
+use anchor_lang::solana_program::bpf_loader_upgradeable;
 use common::{
     CONFIG_VERSION, CONTROL_LANE_ID, DEPLOYMENT_ID, DESTINATION_CHAIN_ID, Fixture,
     LOCAL_APPLICATION_ID, Pubkey, REPORT_LANE_ID, SOURCE_APPLICATION_ID, SOURCE_CHAIN_ID,
-    START_TIMESTAMP, VAULT_ID, expect_error, expect_rejection,
+    START_TIMESTAMP, VAULT_ID, expect_anchor_error, expect_error, expect_rejection, program_data,
 };
+use solana_signer::Signer;
 use solevm_remote_leg::state::STATE_VERSION;
 use solevm_remote_leg::{RemoteConfig, RemoteLegError};
 
@@ -384,4 +387,63 @@ fn setting_up_a_second_vault_of_the_same_deployment_is_allowed() {
     fixture
         .initialize_with(accounts, params)
         .expect("a second vault initializes");
+}
+
+// Namespace claims
+
+#[test]
+fn only_the_upgrade_authority_may_claim_a_namespace() {
+    let mut fixture = Fixture::new();
+    let mut accounts = fixture.default_accounts();
+    accounts.upgrade_authority = fixture.outsider.pubkey();
+
+    expect_error(
+        fixture.initialize_with_accounts(accounts),
+        RemoteLegError::Unauthorized,
+    );
+    assert!(fixture.svm.get_account(&fixture.config).is_none());
+}
+
+#[test]
+fn an_immutable_program_cannot_claim_a_namespace() {
+    let mut fixture = Fixture::new();
+    fixture.write_program_data(None);
+
+    expect_error(fixture.initialize(), RemoteLegError::Unauthorized);
+    assert!(fixture.svm.get_account(&fixture.config).is_none());
+}
+
+#[test]
+fn the_program_data_of_another_program_is_rejected() {
+    let mut fixture = Fixture::new();
+    let outsider = fixture.outsider.pubkey();
+    let foreign = Pubkey::new_unique();
+    fixture.write_owned_account(
+        foreign,
+        program_data(Some(outsider)),
+        bpf_loader_upgradeable::ID,
+    );
+
+    let mut accounts = fixture.default_accounts();
+    accounts.upgrade_authority = outsider;
+    accounts.program_data = foreign;
+    expect_anchor_error(
+        fixture.initialize_with_accounts(accounts),
+        ErrorCode::ConstraintSeeds,
+    );
+    assert!(fixture.svm.get_account(&fixture.config).is_none());
+}
+
+#[test]
+fn a_separate_upgrade_authority_may_set_up_another_administrator() {
+    let mut fixture = Fixture::new();
+    let deployer = fixture.outsider.pubkey();
+    fixture.write_program_data(Some(deployer));
+
+    let mut accounts = fixture.default_accounts();
+    accounts.upgrade_authority = deployer;
+    fixture
+        .initialize_with_accounts(accounts)
+        .expect("initialize succeeds");
+    assert_eq!(fixture.config().administrator, fixture.administrator_key());
 }

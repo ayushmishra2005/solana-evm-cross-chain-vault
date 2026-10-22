@@ -443,9 +443,25 @@ fn xchain_accounting(builder: &mut Builder, rng: &mut Rng, setup: Setup) {
     finalize(builder, rng);
     open_next(builder, rng);
 
-    builder.exec_aux(ActionKind::BeginRecall, ADMIN_SLOT, amount, 0, 2, 0);
+    // A lossy recall spanning a cutoff. Solana reports after the withdrawal
+    // and send but before the notice, and the lock prices the epoch then.
+    let recalled = amount / 2;
+    let loss = recalled / 4;
+    let remaining = amount.saturating_sub(recalled);
+    builder.exec_aux(ActionKind::BeginRecall, ADMIN_SLOT, recalled, 0, 4, 0);
+    builder.exec_aux(ActionKind::ApplyRemoteValuation, 0, remaining, 0, 0, loss);
+    cutoff(builder, rng);
+    builder.exec_aux(ActionKind::LockRemoteValuation, 0, 0, 0, 0, 0);
+    finalize(builder, rng);
+    open_next(builder, rng);
+    let returned = recalled.saturating_sub(loss);
+    builder.exec_aux(ActionKind::AcceptRecallSent, 0, recalled, 0, 4, returned);
+    builder.exec_aux(ActionKind::ObserveInbound, 0, returned, 0, 0, 0);
+    builder.exec_aux(ActionKind::ApplyRemoteValuation, 0, remaining, 0, 0, 0);
+
+    builder.exec_aux(ActionKind::BeginRecall, ADMIN_SLOT, remaining, 0, 2, 0);
     builder.exec_simple(ActionKind::Freeze, ADMIN_SLOT);
-    builder.exec_aux(ActionKind::AcceptRecallSent, 0, amount, 0, 2, amount);
-    builder.exec_aux(ActionKind::ObserveInbound, 0, amount, 0, 0, 0);
+    builder.exec_aux(ActionKind::AcceptRecallSent, 0, remaining, 0, 2, remaining);
+    builder.exec_aux(ActionKind::ObserveInbound, 0, remaining, 0, 0, 0);
     builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, amount, 0, 3, 0);
 }

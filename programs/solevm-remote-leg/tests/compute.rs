@@ -7,14 +7,16 @@
 
 mod common;
 
+use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_lang::solana_program::instruction::Instruction;
 use anchor_lang::solana_program::program_pack::Pack;
 use anchor_lang::{AnchorSerialize, Discriminator, InstructionData, ToAccountMetas};
 use anchor_spl::token::spl_token;
 use anchor_spl::token::spl_token::state::AccountState;
 use common::{
-    CONFIG_VERSION, CONTROL_LANE_ID, DEPLOYMENT_ID, DESTINATION_CHAIN_ID, LOCAL_APPLICATION_ID,
-    Pubkey, REPORT_LANE_ID, SOURCE_APPLICATION_ID, SOURCE_CHAIN_ID, START_TIMESTAMP, VAULT_ID,
+    CONFIG_VERSION, CONTROL_LANE_ID, DEPLOYMENT_ID, DESTINATION_CHAIN_ID, Fixture,
+    LOCAL_APPLICATION_ID, Pubkey, REPORT_LANE_ID, SOURCE_APPLICATION_ID, SOURCE_CHAIN_ID,
+    START_TIMESTAMP, VAULT_ID,
 };
 use mollusk_svm::Mollusk;
 use mollusk_svm::program::{
@@ -27,7 +29,8 @@ use solevm_remote_leg::state::{
 };
 use solevm_remote_leg::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams, MessageClass,
-    REPLAY_LANE_SEED, RISK_CONFIG_RESERVED, RISK_CONFIG_SEED, RemoteConfig, ReplayLane, RiskConfig,
+    REPLAY_LANE_SEED, RISK_CONFIG_RESERVED, RISK_CONFIG_SEED, RemoteConfig, RemotePosition,
+    ReplayLane, RiskConfig, TransferKind, TransferStatus,
 };
 
 use common::messages::MessageBuilder;
@@ -119,12 +122,22 @@ impl Bench {
                 outbound_escrow: self.escrow,
                 token_program: spl_token::ID,
                 system_program: anchor_lang::system_program::ID,
+                upgrade_authority: self.administrator,
+                program_data: Fixture::program_data_address(),
             }
             .to_account_metas(None),
             data: solevm_remote_leg::instruction::InitializeRemoteLeg { params }.data(),
         };
 
+        let program_data = Account {
+            lamports: 1_000_000_000,
+            data: common::program_data(Some(self.administrator)),
+            owner: bpf_loader_upgradeable::ID,
+            executable: false,
+            rent_epoch: 0,
+        };
         let accounts = vec![
+            (Fixture::program_data_address(), program_data),
             (self.administrator, funded_account()),
             (self.config, Account::default()),
             (self.mint, mint_account(6)),
@@ -310,13 +323,14 @@ impl Bench {
 
     fn watermark(&self, new_minimum: u64) -> (Instruction, Vec<(Pubkey, Account)>) {
         let lane = self.lane_address().0;
+        let (position, position_account) = self.idle_position();
         let instruction = Instruction {
             program_id: solevm_remote_leg::ID,
             accounts: solevm_remote_leg::accounts::AdvanceReplayWatermark {
                 administrator: self.administrator,
                 remote_config: self.config,
                 replay_lane: lane,
-                remote_position: None,
+                remote_position: position,
             }
             .to_account_metas(None),
             data: solevm_remote_leg::instruction::AdvanceReplayWatermark {
@@ -329,8 +343,41 @@ impl Bench {
             (self.administrator, funded_account()),
             (self.config, self.config_account(CONFIG_VERSION, false)),
             (lane, self.lane_account(1, 6, [0x31; 32])),
+            (position, position_account),
         ];
         (instruction, accounts)
+    }
+
+    /// A position with no transfer open.
+    fn idle_position(&self) -> (Pubkey, Account) {
+        let (address, bump) = Pubkey::find_program_address(
+            &RemotePosition::seeds(&self.config),
+            &solevm_remote_leg::ID,
+        );
+        let position = RemotePosition {
+            state_version: STATE_VERSION,
+            bump,
+            attributed_principal: 0,
+            deployed_principal: 0,
+            recalled_custody: 0,
+            unattributed_custody: 0,
+            cumulative_realized_loss: 0,
+            active_transfer_id: [0; 32],
+            active_transfer_kind: TransferKind::None,
+            active_transfer_sequence: 0,
+            active_transfer_status: TransferStatus::None,
+            latest_completed_transfer_id: [0; 32],
+            latest_completion_at: 0,
+            initialized_at: START_TIMESTAMP,
+        };
+        (
+            address,
+            owned_account(
+                RemotePosition::DISCRIMINATOR,
+                &position,
+                RemotePosition::LEN,
+            ),
+        )
     }
 
     fn close(&self, sequence: u64) -> (Instruction, Vec<(Pubkey, Account)>) {

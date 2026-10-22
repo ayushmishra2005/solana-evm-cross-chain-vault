@@ -46,6 +46,11 @@ pub struct AttributeAllocation<'info> {
     pub transfer_record: Box<Account<'info, TransferRecord>>,
 
     pub custody_token_account: Box<Account<'info, TokenAccount>>,
+
+    /// Co-signs while the leg is frozen, so an allocation accepted before the
+    /// freeze becomes recallable only with the guardian's consent.
+    #[account(address = remote_config.emergency_guardian @ RemoteLegError::Unauthorized)]
+    pub emergency_guardian: Option<Signer<'info>>,
 }
 
 pub fn process_attribute_allocation(ctx: Context<AttributeAllocation>) -> Result<()> {
@@ -54,7 +59,10 @@ pub fn process_attribute_allocation(ctx: Context<AttributeAllocation>) -> Result
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
-    require!(!ctx.accounts.remote_config.frozen, RemoteLegError::Frozen);
+    require!(
+        !ctx.accounts.remote_config.frozen || ctx.accounts.emergency_guardian.is_some(),
+        RemoteLegError::Frozen
+    );
 
     ctx.accounts
         .transfer_record

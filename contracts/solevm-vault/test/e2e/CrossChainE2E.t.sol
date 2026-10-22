@@ -212,6 +212,55 @@ contract CrossChainE2ETest is RemoteTestBase {
         assertEq(vault.recognizedLoss(), 250_000);
     }
 
+    function test_report_published_between_send_and_recall_sent() public {
+        uint256 origin = _start();
+        _fundRemote(AMOUNT);
+        _lossyHalfRecall();
+        _publishReport(1, 10);
+        _idle();
+        bytes memory report = _leg().latestReport;
+        _publishRecallSent(RECALL_TID, 11);
+        _idle();
+        Leg memory sent = _leg();
+        assertTrue(sent.lastAccepted, sent.lastError);
+        assertEq(sent.realizedLoss, 125_000);
+
+        coordinator.processRemoteReport(report);
+        assertEq(_managed(), origin - 125_000, "report before notice");
+        coordinator.processRecallSent(sent.latestRecallSent);
+        assertEq(_managed(), origin - 125_000, "notice");
+        assertEq(vault.acceptedRemoteValue(), AMOUNT / 2);
+        assertEq(vault.recognizedLoss(), 125_000);
+        _observe(sent.inboundAsset);
+        assertEq(_managed(), origin - 125_000, "arrival");
+    }
+
+    function test_lossy_recall_across_cutoff_prices_the_epoch_net_of_loss() public {
+        uint256 origin = _start();
+        _fundRemote(AMOUNT);
+        _lossyHalfRecall();
+        uint64 epochId = vault.currentEpochId();
+        uint64 cutoffAt = vault.currentEpochCutoffAt();
+        if (block.timestamp < cutoffAt) vm.warp(cutoffAt);
+        vault.cutoffEpoch();
+        _sync();
+        _publishReport(epochId, 20);
+        _idle();
+        bytes memory report = _leg().latestReport;
+        _publishRecallSent(RECALL_TID, 21);
+        _idle();
+        Leg memory sent = _leg();
+        assertTrue(sent.lastAccepted, sent.lastError);
+
+        coordinator.processRemoteReport(report);
+        assertEq(vault.lockedPricingAssets(epochId), origin - 125_000, "locked value");
+        vault.finalizeEpoch();
+        assertEq(vault.settledEpoch(epochId).totalAssets, origin - 125_000, "pricing basis");
+        coordinator.processRecallSent(sent.latestRecallSent);
+        _observe(sent.inboundAsset);
+        assertEq(_managed(), origin - 125_000, "settled");
+    }
+
     function test_total_loss_recall() public {
         uint256 origin = _start();
         _fundRemote(AMOUNT);
@@ -475,7 +524,7 @@ contract CrossChainE2ETest is RemoteTestBase {
         _publishReport(epochId, 21);
         _idle();
         bytes memory later = _leg().latestReport;
-        vm.expectRevert(RemoteAccounting.ValuationAlreadyFixed.selector);
+        _expectSkipped(epochId, IRemoteAccounting.ReportSkipReason.ValuationFixed);
         coordinator.processRemoteReport(later);
         vault.finalizeEpoch();
         uint256 priced = vault.claimableDepositShares(epochId, alice);
@@ -561,6 +610,17 @@ contract CrossChainE2ETest is RemoteTestBase {
         bytes memory report = _leg().latestReport;
         assertGt(report.length, 0);
         coordinator.processRemoteReport(report);
+    }
+
+    /// Recalls half the position at a 25% loss and sends what came back.
+    function _lossyHalfRecall() internal {
+        _outRecall(RECALL_TID, AMOUNT / 2);
+        _scheduleLastOutbound(8);
+        _idle();
+        _applyControl();
+        _configureAdapter(type(uint64).max, 2500);
+        _withdraw(RECALL_TID, AMOUNT / 2);
+        _send(RECALL_TID, 375_000, 9);
     }
 
     function _completeAllocateOnHub(uint64 at) internal {

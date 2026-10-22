@@ -325,7 +325,7 @@ fn a_watermark_blocked_by_a_transfer_stays_within_its_compute_limit() {
     let instruction =
         bench
             .fixture
-            .watermark_instruction(administrator, lane, Some(position), sequence + 1);
+            .watermark_instruction(administrator, lane, position, sequence + 1);
     bench.measure(
         "blocked advance_replay_watermark",
         instruction,
