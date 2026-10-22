@@ -152,6 +152,46 @@ pub struct ResolveProcessed {
     pub processed_at: i64,
 }
 
+/// Emitted for every consumed close or recovery. Both always settle.
+#[event]
+#[derive(Debug)]
+pub struct SettlementProcessed {
+    pub remote_config: Pubkey,
+    pub transfer_record: Pubkey,
+    pub transfer_id: [u8; 32],
+    pub target_sequence: u64,
+    pub kind: u8,
+    pub claim_amount: u128,
+    pub credited_amount: u64,
+    pub impaired_outstanding: u128,
+    /// The resolution arrived after its expiry. It still binds, because the
+    /// vault holds the cycle open until this settlement.
+    pub arrived_late: bool,
+    pub guardian_cosigned: bool,
+    pub message_id: [u8; 32],
+    pub sequence: u64,
+    pub lane_commitment: [u8; 32],
+    pub processed_at: i64,
+}
+
+/// Emitted once per settlement, with the exact bytes the vault must accept.
+#[event]
+#[derive(Debug)]
+pub struct TransportSettlementPublished {
+    pub remote_config: Pubkey,
+    pub report_record: Pubkey,
+    pub transfer_id: [u8; 32],
+    pub lane_id: u32,
+    pub sequence: u64,
+    pub message_id: [u8; 32],
+    pub body_hash: [u8; 32],
+    pub previous_commitment: [u8; 32],
+    pub next_commitment: [u8; 32],
+    pub encoded_len: u16,
+    pub message_bytes: Vec<u8>,
+    pub published_at: i64,
+}
+
 /// Emitted whenever observed custody becomes accepted principal.
 #[event]
 #[derive(Debug)]

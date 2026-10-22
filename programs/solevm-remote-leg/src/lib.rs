@@ -19,6 +19,7 @@ pub mod records;
 pub mod remote_state;
 pub mod state;
 pub mod strategy;
+pub mod transport;
 
 pub use control::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, MAX_BASIS_POINTS, MessageClass, REPLAY_LANE_SEED,
@@ -30,8 +31,8 @@ pub use events::{
     ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, MessageQuarantined,
     OutboundStateInitialized, RecallAccepted, RecallAssetsSent, RecallCompleted,
     RecallCustodyReserved, RecallSentPublished, RemoteLegFrozen, RemoteLegInitialized,
-    RemoteReportPublished, ReplayWatermarkAdvanced, ResolveProcessed, StrategyStateInitialized,
-    StrategyWithdrawalCompleted,
+    RemoteReportPublished, ReplayWatermarkAdvanced, ResolveProcessed, SettlementProcessed,
+    StrategyStateInitialized, StrategyWithdrawalCompleted, TransportSettlementPublished,
 };
 pub use instructions::*;
 pub use outbound::{
@@ -49,6 +50,7 @@ pub use strategy::{
     STRATEGY_CONFIG_RESERVED, STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED,
     TransferKind, TransferRecord, TransferStatus,
 };
+pub use transport::{TRANSPORT_LEDGER_SEED, TransportLedger};
 
 declare_id!("4sLaaRdiY74cvqVCXLjW2wPncy2ArQkTRauNTdphKByo");
 
@@ -117,6 +119,13 @@ pub mod solevm_remote_leg {
 
     pub fn process_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Result<()> {
         instructions::recall::handle_recall(ctx, message_bytes)
+    }
+
+    pub fn process_settlement(
+        ctx: Context<ProcessSettlement>,
+        message_bytes: Vec<u8>,
+    ) -> Result<()> {
+        settlement::handle_settlement(ctx, message_bytes)
     }
 
     pub fn process_resolve(ctx: Context<ProcessResolve>, message_bytes: Vec<u8>) -> Result<()> {

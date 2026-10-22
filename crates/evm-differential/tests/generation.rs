@@ -383,6 +383,34 @@ fn some_epoch_locks_while_a_lossy_recall_is_open() {
     assert!(found, "no epoch locked during a lossy recall");
 }
 
+/// A close must really impair a shortfall and a recovery must really return
+/// part of it, not only be refused.
+#[test]
+fn some_close_settles_short_and_a_recovery_returns_part_of_it() {
+    let found = run(standard()).iter().any(|scenario| {
+        let succeeded = |kind: ActionKind| {
+            scenario
+                .actions
+                .iter()
+                .zip(&scenario.snapshots)
+                .filter(move |(entry, _)| {
+                    entry.action.kind == kind && entry.result == ResultCode::Success
+                })
+        };
+        let closed_short =
+            succeeded(ActionKind::SettleClose).any(|(_, shot)| shot.impaired_transport > 0);
+        let recovered =
+            succeeded(ActionKind::SettleRecover).any(|(entry, _)| entry.action.amount > 0);
+        let skipped_report =
+            succeeded(ActionKind::CompleteAllocation).any(|(_, shot)| shot.outbound_in_transit > 0);
+        closed_short && recovered && skipped_report
+    });
+    assert!(
+        found,
+        "no close impaired a shortfall that a recovery then returned"
+    );
+}
+
 /// Multi epoch traces must really settle three or more epochs.
 #[test]
 fn some_scenarios_settle_at_least_three_epochs() {

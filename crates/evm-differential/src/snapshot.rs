@@ -36,6 +36,7 @@ pub struct Snapshot {
     pub accepted_remote_value: u128,
     pub inbound_in_transit: u128,
     pub remote_principal_cap: u128,
+    pub impaired_transport: u128,
 }
 
 /// Bit position of one consumption flag inside the mask.
@@ -105,6 +106,7 @@ impl Snapshot {
             accepted_remote_value: state.buckets.accepted_remote_value.raw(),
             inbound_in_transit: state.buckets.inbound_in_transit.raw(),
             remote_principal_cap: state.remote_principal_cap.raw(),
+            impaired_transport: state.impaired_transport.raw(),
         };
 
         if let Some(epoch) = state.epoch {

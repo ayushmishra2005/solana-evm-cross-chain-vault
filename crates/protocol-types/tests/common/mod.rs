@@ -9,8 +9,8 @@ use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
     ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
     LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
-    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId,
-    VaultId,
+    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, SettlementKind,
+    Timestamp, TransferId, TransportSettlementBody, VaultId,
 };
 
 pub const OBSERVED_AT: u64 = 1_700_000_000;
@@ -121,6 +121,19 @@ pub fn resolve_body() -> ResolveBody {
     }
 }
 
+/// A closed allocation whose whole shortfall is the outstanding impairment.
+#[must_use]
+pub fn transport_settlement_body() -> TransportSettlementBody {
+    TransportSettlementBody {
+        transfer_id: TransferId::new([0x66; 32]),
+        kind: SettlementKind::Closed,
+        claim_amount: AssetAmount::new(1_000_000),
+        credited_amount: AssetAmount::new(600_000),
+        impaired_outstanding: AssetAmount::new(400_000),
+        config_version: ConfigVersion::new(4),
+    }
+}
+
 #[must_use]
 pub fn body_of(kind: MessageType) -> Body {
     match kind {
@@ -130,6 +143,7 @@ pub fn body_of(kind: MessageType) -> Body {
         MessageType::RecallSent => Body::RecallSent(recall_sent_body()),
         MessageType::ConfigUpdate => Body::ConfigUpdate(config_update_body()),
         MessageType::Resolve => Body::Resolve(resolve_body()),
+        MessageType::TransportSettlement => Body::TransportSettlement(transport_settlement_body()),
     }
 }
 

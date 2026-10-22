@@ -11,7 +11,15 @@ import {ISolEVMVault, SettledEpoch} from "../../src/interfaces/ISolEVMVault.sol"
 import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {MockAsset} from "../mocks/MockAsset.sol";
 import {TestMessageAuthenticator} from "../mocks/TestMessageAuthenticator.sol";
-import {Action, Code, EpochTerms, Op, Scenario, Snapshot} from "./DifferentialTypes.sol";
+import {
+    Action,
+    Code,
+    EpochTerms,
+    Op,
+    RemoteBuckets,
+    Scenario,
+    Snapshot
+} from "./DifferentialTypes.sol";
 import {Actors, ResultMapping} from "./ResultMapping.sol";
 
 /// @notice Replays traces produced by the Rust accounting model against the
@@ -107,7 +115,7 @@ contract RustModelDifferentialTest is Test {
             uint64 previous = scenario.startTimestamp;
             for (uint256 step = 0; step < scenario.actions.length; ++step) {
                 Action memory action = scenario.actions[step];
-                assertLt(action.kind, 22, "action kind");
+                assertLe(action.kind, Op.SETTLE_RECOVER, "action kind");
                 assertLt(action.actor, 6, "actor slot");
                 assertLe(action.expectedResult, Code.ARITHMETIC_FAILURE, "result code");
                 assertGe(action.timestamp, previous, "time moves forward");
@@ -289,7 +297,79 @@ contract RustModelDifferentialTest is Test {
             token.mint(address(vault), action.amount);
             return _callAs(address(vault), address(this), abi.encodeCall(vault.observeInbound, ()));
         }
+        if (action.kind == Op.REQUEST_CLOSE) {
+            return _close(coordinator, action, users);
+        }
+        if (action.kind == Op.BEGIN_RECOVER) {
+            uint64 nowAt = uint64(block.timestamp);
+            return _callAs(
+                address(coordinator),
+                _actorAddress(action.actor, users),
+                abi.encodeCall(
+                    coordinator.recover, (bytes32(action.aux0), nowAt, nowAt, nowAt + 7 days)
+                )
+            );
+        }
+        if (action.kind == Op.SETTLE_CLOSE || action.kind == Op.SETTLE_RECOVER) {
+            return _settle(vault, coordinator, action, users);
+        }
         return (_codeFor(hex"deadbeef"), 0);
+    }
+
+    /// Closes once the allocation's deadline has passed. The model carries no
+    /// deadline, so the clock moves past it for this call alone.
+    function _close(
+        RemoteAccounting coordinator,
+        Action memory action,
+        address[USER_COUNT] memory users
+    ) private returns (uint8 code, uint256 returned) {
+        uint256 resume = block.timestamp;
+        uint64 deadline = coordinator.activeDeadline();
+        if (deadline >= block.timestamp) vm.warp(uint256(deadline) + 1);
+        uint64 nowAt = uint64(block.timestamp);
+        (code, returned) = _callAs(
+            address(coordinator),
+            _actorAddress(action.actor, users),
+            abi.encodeCall(coordinator.close, (bytes32(action.aux0), nowAt, nowAt, nowAt + 7 days))
+        );
+        vm.warp(resume);
+    }
+
+    /// Delivers the leg's settlement for the cycle the action names. A credit
+    /// above the claim can never be encoded, so it surfaces as the decoder's
+    /// own rejection.
+    function _settle(
+        SolEVMVault vault,
+        RemoteAccounting coordinator,
+        Action memory action,
+        address[USER_COUNT] memory users
+    ) private returns (uint8 code, uint256 returned) {
+        bool closing = action.kind == Op.SETTLE_CLOSE;
+        uint256 impaired = vault.impairedTransport();
+        uint256 claim = closing ? coordinator.activeAmount() : impaired;
+        if (claim == 0) claim = 1;
+        if (action.amount > claim) {
+            return (_codeFor(abi.encodeWithSelector(ProtocolCodec.CreditAboveClaim.selector)), 0);
+        }
+        uint256 shortfall = claim - action.amount;
+        bytes memory encoded = ProtocolCodec.encodeTransportSettlement(
+            _inboundHeader(coordinator),
+            ProtocolCodec.TransportSettlementBody({
+                transferId: bytes32(action.aux0),
+                kind: closing
+                    ? ProtocolCodec.SETTLEMENT_CLOSED
+                    : ProtocolCodec.SETTLEMENT_RECOVERED,
+                claimAmount: uint128(claim),
+                creditedAmount: uint128(action.amount),
+                impairedOutstanding: uint128(closing ? impaired + shortfall : shortfall),
+                configVersion: uint64(vault.configVersion())
+            })
+        );
+        return _callAs(
+            address(coordinator),
+            _actorAddress(action.actor, users),
+            abi.encodeCall(coordinator.processTransportSettlement, (encoded))
+        );
     }
 
     function _allocatePayload(RemoteAccounting coordinator, Action memory action)
@@ -535,11 +615,12 @@ contract RustModelDifferentialTest is Test {
         }
 
         shot.consumedMask = _consumedMask(vault, users);
-        shot.unattributedInbound = vault.unattributedInbound();
-        shot.outboundInTransit = vault.outboundInTransit();
-        shot.acceptedRemoteValue = vault.acceptedRemoteValue();
-        shot.inboundInTransit = vault.inboundInTransit();
-        shot.remotePrincipalCap = vault.remotePrincipalCap();
+        shot.remote.unattributedInbound = vault.unattributedInbound();
+        shot.remote.outboundInTransit = vault.outboundInTransit();
+        shot.remote.acceptedRemoteValue = vault.acceptedRemoteValue();
+        shot.remote.inboundInTransit = vault.inboundInTransit();
+        shot.remote.remotePrincipalCap = vault.remotePrincipalCap();
+        shot.remote.impairedTransport = vault.impairedTransport();
     }
 
     /// One bit per consumed claim or refund, matching the generator layout.
@@ -585,11 +666,26 @@ contract RustModelDifferentialTest is Test {
         _eq(want.epochDepositAssets, got.epochDepositAssets, label, "epochDepositAssets");
         _eq(want.epochRedeemShares, got.epochRedeemShares, label, "epochRedeemShares");
         _eq(want.consumedMask, got.consumedMask, label, "consumedMask");
-        _eq(want.unattributedInbound, got.unattributedInbound, label, "unattributedInbound");
-        _eq(want.outboundInTransit, got.outboundInTransit, label, "outboundInTransit");
-        _eq(want.acceptedRemoteValue, got.acceptedRemoteValue, label, "acceptedRemoteValue");
-        _eq(want.inboundInTransit, got.inboundInTransit, label, "inboundInTransit");
-        _eq(want.remotePrincipalCap, got.remotePrincipalCap, label, "remotePrincipalCap");
+        RemoteBuckets memory wantRemote = want.remote;
+        RemoteBuckets memory gotRemote = got.remote;
+        _eq(
+            wantRemote.unattributedInbound,
+            gotRemote.unattributedInbound,
+            label,
+            "unattributedInbound"
+        );
+        _eq(wantRemote.outboundInTransit, gotRemote.outboundInTransit, label, "outboundInTransit");
+        _eq(
+            wantRemote.acceptedRemoteValue,
+            gotRemote.acceptedRemoteValue,
+            label,
+            "acceptedRemoteValue"
+        );
+        _eq(wantRemote.inboundInTransit, gotRemote.inboundInTransit, label, "inboundInTransit");
+        _eq(
+            wantRemote.remotePrincipalCap, gotRemote.remotePrincipalCap, label, "remotePrincipalCap"
+        );
+        _eq(wantRemote.impairedTransport, gotRemote.impairedTransport, label, "impairedTransport");
 
         for (uint256 i = 0; i < USER_COUNT; ++i) {
             _eq(want.actorAssets[i], got.actorAssets[i], label, "actor asset balance");

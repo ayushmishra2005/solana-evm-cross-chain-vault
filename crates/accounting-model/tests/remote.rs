@@ -369,3 +369,171 @@ fn a_lock_during_a_recall_prices_the_epoch_net_of_loss() {
     );
     assert_nav(&state, 10_000_000, "notice after finalize");
 }
+
+// Close and recovery
+
+fn close(id: u8) -> Operation {
+    Operation::RequestClose {
+        actor: ADMIN,
+        transfer_id: tid(id),
+    }
+}
+
+fn settle_close(id: u8, credited: u128) -> Operation {
+    Operation::SettleClose {
+        transfer_id: tid(id),
+        credited: AssetAmount::new(credited),
+    }
+}
+
+fn recover(id: u8) -> Operation {
+    Operation::BeginRecover {
+        actor: ADMIN,
+        transfer_id: tid(id),
+    }
+}
+
+fn settle_recover(id: u8, credited: u128) -> Operation {
+    Operation::SettleRecover {
+        transfer_id: tid(id),
+        credited: AssetAmount::new(credited),
+    }
+}
+
+/// 40 allocated, 25 arrived: NAV falls by exactly the 15 shortfall, which is
+/// impaired outside NAV and is not recognized loss.
+#[test]
+fn a_short_close_impairs_only_the_shortfall_outside_nav() {
+    let start = funded();
+    let nav = start.managed_nav();
+    let pending = run(&start, &[allocate(1, 40_000_000), close(1)]);
+    assert_eq!(pending.managed_nav(), nav);
+    assert!(pending.close_requested);
+
+    let state = run(&pending, &[settle_close(1, 25_000_000)]);
+    check_invariants(&state).expect("invariants");
+    assert!(state.buckets.outbound_in_transit.is_zero());
+    assert_eq!(state.remote_principal_cap, AssetAmount::new(25_000_000));
+    assert_eq!(
+        state.buckets.accepted_remote_value,
+        AssetAmount::new(25_000_000)
+    );
+    assert_eq!(state.impaired_transport, AssetAmount::new(15_000_000));
+    assert!(state.recognized_loss.is_zero());
+    assert_eq!(state.managed_nav(), AssetAmount::new(85_000_000));
+    assert_eq!(state.active_cycle, CycleKind::None);
+    assert!(!state.close_requested);
+}
+
+#[test]
+fn reports_change_nothing_while_a_close_is_pending() {
+    let pending = run(&funded(), &[allocate(1, 40_000_000), close(1)]);
+    let after = run(
+        &pending,
+        &[
+            complete(1, 40_000_000),
+            Operation::ApplyRemoteValuation {
+                reported_value: AssetAmount::new(10_000_000),
+                newly_realized_loss: AssetAmount::new(3),
+            },
+        ],
+    );
+    assert_eq!(after.buckets, pending.buckets);
+    assert_eq!(after.remote_principal_cap, pending.remote_principal_cap);
+    assert_eq!(after.active_cycle, CycleKind::Allocate);
+    assert_eq!(after.inbound_cumulative_loss, AssetAmount::new(3));
+}
+
+#[test]
+fn only_the_admin_closes_only_the_active_allocation_once() {
+    let state = run(&funded(), &[allocate(1, 40_000_000)]);
+    let outsider = Operation::RequestClose {
+        actor: ALICE,
+        transfer_id: tid(1),
+    };
+    assert_eq!(apply(&state, outsider), Err(Rejection::UnauthorizedActor));
+    assert_eq!(apply(&state, close(2)), Err(Rejection::NoActiveTransfer));
+    let closing = run(&state, &[close(1)]);
+    assert_eq!(
+        apply(&closing, close(1)),
+        Err(Rejection::CloseAlreadyRequested)
+    );
+}
+
+#[test]
+fn a_settlement_needs_the_close_it_settles() {
+    let state = run(&funded(), &[allocate(1, 40_000_000)]);
+    assert_eq!(
+        apply(&state, settle_close(1, 0)),
+        Err(Rejection::NoPendingSettlement)
+    );
+    let closing = run(&state, &[close(1)]);
+    assert_eq!(
+        apply(&closing, settle_close(2, 0)),
+        Err(Rejection::NoActiveTransfer)
+    );
+    assert_eq!(
+        apply(&closing, settle_close(1, 40_000_001)),
+        Err(Rejection::SettlementMismatch)
+    );
+    assert_eq!(
+        apply(&closing, settle_recover(1, 0)),
+        Err(Rejection::NoPendingSettlement)
+    );
+}
+
+#[test]
+fn a_recovery_returns_impairment_to_principal_at_par() {
+    let impaired = run(
+        &funded(),
+        &[
+            allocate(1, 40_000_000),
+            close(1),
+            settle_close(1, 25_000_000),
+        ],
+    );
+    let nav = impaired.managed_nav();
+    let state = run(&impaired, &[recover(2), settle_recover(2, 10_000_000)]);
+    check_invariants(&state).expect("invariants");
+    assert_eq!(state.impaired_transport, AssetAmount::new(5_000_000));
+    assert_eq!(state.cumulative_impairment, AssetAmount::new(15_000_000));
+    assert_eq!(state.remote_principal_cap, AssetAmount::new(35_000_000));
+    assert_eq!(
+        state.managed_nav(),
+        nav.checked_add(AssetAmount::new(10_000_000)).expect("fits")
+    );
+    assert!(state.recognized_loss.is_zero());
+}
+
+#[test]
+fn a_recovery_needs_impairment_a_fresh_id_and_no_open_cycle() {
+    let state = funded();
+    assert_eq!(apply(&state, recover(2)), Err(Rejection::NothingToRecover));
+
+    let impaired = run(
+        &state,
+        &[
+            allocate(1, 40_000_000),
+            close(1),
+            settle_close(1, 25_000_000),
+        ],
+    );
+    assert_eq!(
+        apply(&impaired, recover(1)),
+        Err(Rejection::TransferIdReused)
+    );
+    let recovering = run(&impaired, &[recover(2)]);
+    assert_eq!(recovering.active_cycle, CycleKind::Recover);
+    assert_eq!(
+        apply(&recovering, allocate(3, 1)),
+        Err(Rejection::ActiveTransferExists)
+    );
+    assert_eq!(
+        apply(&recovering, recall(3, 1)),
+        Err(Rejection::ActiveTransferExists)
+    );
+    assert_eq!(
+        apply(&recovering, settle_recover(2, 15_000_001)),
+        Err(Rejection::SettlementMismatch)
+    );
+}

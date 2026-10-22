@@ -15,6 +15,7 @@ library ProtocolCodec {
     uint8 internal constant TYPE_REMOTE_REPORT = 3;
     uint8 internal constant TYPE_RECALL_SENT = 4;
     uint8 internal constant TYPE_RESOLVE = 6;
+    uint8 internal constant TYPE_TRANSPORT_SETTLEMENT = 7;
 
     uint256 internal constant HEADER_LEN = 247;
     uint256 internal constant ALLOCATE_BODY_LEN = 96;
@@ -22,15 +23,22 @@ library ProtocolCodec {
     uint256 internal constant REMOTE_REPORT_BODY_LEN = 153;
     uint256 internal constant RECALL_SENT_BODY_LEN = 128;
     uint256 internal constant RESOLVE_BODY_LEN = 49;
+    uint256 internal constant TRANSPORT_SETTLEMENT_BODY_LEN = 89;
 
     uint256 internal constant ALLOCATE_MESSAGE_LEN = 343;
     uint256 internal constant RECALL_MESSAGE_LEN = 327;
     uint256 internal constant REMOTE_REPORT_MESSAGE_LEN = 400;
     uint256 internal constant RECALL_SENT_MESSAGE_LEN = 375;
     uint256 internal constant RESOLVE_MESSAGE_LEN = 296;
+    uint256 internal constant TRANSPORT_SETTLEMENT_MESSAGE_LEN = 336;
 
     /// Runs a quarantined transfer on its original terms.
     uint8 internal constant RESOLVE_ADMIT = 1;
+    uint8 internal constant RESOLVE_CLOSE = 2;
+    uint8 internal constant RESOLVE_RECOVER = 3;
+
+    uint8 internal constant SETTLEMENT_CLOSED = 1;
+    uint8 internal constant SETTLEMENT_RECOVERED = 2;
 
     bytes internal constant MESSAGE_ID_DOMAIN = "SOLEVM_MESSAGE_ID_V1";
     bytes internal constant COMMITMENT_DOMAIN = "SOLEVM_COMMITMENT_V1";
@@ -92,6 +100,18 @@ library ProtocolCodec {
         uint64 configVersion;
     }
 
+    /// @dev The claim is a closed allocation's authorized amount, or the
+    /// pooled impairment before a recovery. Impairment is pooled because
+    /// custody is fungible.
+    struct TransportSettlementBody {
+        bytes32 transferId;
+        uint8 kind;
+        uint128 claimAmount;
+        uint128 creditedAmount;
+        uint128 impairedOutstanding;
+        uint64 configVersion;
+    }
+
     struct RecallSentBody {
         bytes32 transferId;
         uint128 principalSent;
@@ -125,6 +145,10 @@ library ProtocolCodec {
     error RealizedLossAbovePrincipal();
     error UnknownResolveAction(uint8 action);
     error TargetNotBeforeResolution();
+    error UnknownSettlementKind(uint8 kind);
+    error CreditAboveClaim();
+    error ImpairmentBelowShortfall();
+    error RecoveryImpairmentMismatch();
 
     function encodeAllocate(Header memory header, AllocateBody memory body)
         internal
@@ -186,6 +210,18 @@ library ProtocolCodec {
         _seal(encoded, header, TYPE_RECALL_SENT, RECALL_SENT_BODY_LEN);
     }
 
+    function encodeTransportSettlement(Header memory header, TransportSettlementBody memory body)
+        internal
+        pure
+        returns (bytes memory encoded)
+    {
+        _validateHeader(header);
+        _validateTransportSettlement(body);
+        encoded = new bytes(TRANSPORT_SETTLEMENT_MESSAGE_LEN);
+        _writeTransportSettlementBody(encoded, HEADER_LEN, body);
+        _seal(encoded, header, TYPE_TRANSPORT_SETTLEMENT, TRANSPORT_SETTLEMENT_BODY_LEN);
+    }
+
     function decodeRemoteReport(bytes memory encoded)
         internal
         pure
@@ -208,6 +244,18 @@ library ProtocolCodec {
         _validateHeader(header);
         body = _readRecallSentBody(encoded, HEADER_LEN);
         _validateRecallSent(body, header.observedAt);
+    }
+
+    function decodeTransportSettlement(bytes memory encoded)
+        internal
+        pure
+        returns (Header memory header, TransportSettlementBody memory body)
+    {
+        _inspectFrame(encoded, TYPE_TRANSPORT_SETTLEMENT, TRANSPORT_SETTLEMENT_MESSAGE_LEN);
+        header = _readHeader(encoded);
+        _validateHeader(header);
+        body = _readTransportSettlementBody(encoded, HEADER_LEN);
+        _validateTransportSettlement(body);
     }
 
     function messageId(bytes memory encoded) internal pure returns (bytes32) {
@@ -287,7 +335,26 @@ library ProtocolCodec {
         if (body.transferId == bytes32(0) || body.configVersion == 0) revert ZeroIdentifier();
         if (body.targetSequence == 0) revert ZeroIdentifier();
         if (body.targetSequence >= sequence) revert TargetNotBeforeResolution();
-        if (body.action != RESOLVE_ADMIT) revert UnknownResolveAction(body.action);
+        if (body.action == 0 || body.action > RESOLVE_RECOVER) {
+            revert UnknownResolveAction(body.action);
+        }
+    }
+
+    /// @dev A close adds its shortfall to the pool. A recovery leaves exactly
+    /// the uncredited part of the pool behind.
+    function _validateTransportSettlement(TransportSettlementBody memory body) private pure {
+        if (body.transferId == bytes32(0) || body.configVersion == 0) revert ZeroIdentifier();
+        if (body.kind != SETTLEMENT_CLOSED && body.kind != SETTLEMENT_RECOVERED) {
+            revert UnknownSettlementKind(body.kind);
+        }
+        if (body.claimAmount == 0) revert ZeroAmount();
+        if (body.creditedAmount > body.claimAmount) revert CreditAboveClaim();
+        uint128 shortfall = body.claimAmount - body.creditedAmount;
+        if (body.kind == SETTLEMENT_CLOSED) {
+            if (body.impairedOutstanding < shortfall) revert ImpairmentBelowShortfall();
+        } else if (body.impairedOutstanding != shortfall) {
+            revert RecoveryImpairmentMismatch();
+        }
     }
 
     function _validateRemoteReport(RemoteReportBody memory body, uint64 observedAt) private pure {
@@ -382,6 +449,32 @@ library ProtocolCodec {
         _writeU64(encoded, off + 32, body.targetSequence);
         encoded[off + 40] = bytes1(body.action);
         _writeU64(encoded, off + 41, body.configVersion);
+    }
+
+    function _writeTransportSettlementBody(
+        bytes memory encoded,
+        uint256 off,
+        TransportSettlementBody memory body
+    ) private pure {
+        _writeBytes32(encoded, off, body.transferId);
+        encoded[off + 32] = bytes1(body.kind);
+        _writeU128(encoded, off + 33, body.claimAmount);
+        _writeU128(encoded, off + 49, body.creditedAmount);
+        _writeU128(encoded, off + 65, body.impairedOutstanding);
+        _writeU64(encoded, off + 81, body.configVersion);
+    }
+
+    function _readTransportSettlementBody(bytes memory encoded, uint256 off)
+        private
+        pure
+        returns (TransportSettlementBody memory body)
+    {
+        body.transferId = _readBytes32(encoded, off);
+        body.kind = uint8(encoded[off + 32]);
+        body.claimAmount = _readU128(encoded, off + 33);
+        body.creditedAmount = _readU128(encoded, off + 49);
+        body.impairedOutstanding = _readU128(encoded, off + 65);
+        body.configVersion = _readU64(encoded, off + 81);
     }
 
     function _writeRemoteReportBody(bytes memory encoded, uint256 off, RemoteReportBody memory body)

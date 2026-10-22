@@ -459,9 +459,65 @@ fn xchain_accounting(builder: &mut Builder, rng: &mut Rng, setup: Setup) {
     builder.exec_aux(ActionKind::ObserveInbound, 0, returned, 0, 0, 0);
     builder.exec_aux(ActionKind::ApplyRemoteValuation, 0, remaining, 0, 0, 0);
 
+    transport_shortfall(builder, rng, remaining);
+
     builder.exec_aux(ActionKind::BeginRecall, ADMIN_SLOT, remaining, 0, 2, 0);
     builder.exec_simple(ActionKind::Freeze, ADMIN_SLOT);
     builder.exec_aux(ActionKind::AcceptRecallSent, 0, remaining, 0, 2, remaining);
     builder.exec_aux(ActionKind::ObserveInbound, 0, remaining, 0, 0, 0);
     builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, amount, 0, 3, 0);
+}
+
+/// An allocation that only partly arrives: closed after its deadline across a
+/// cutoff, so pricing waits for the settlement, then partly recovered once
+/// late custody shows up.
+fn transport_shortfall(builder: &mut Builder, rng: &mut Rng, remote: u128) {
+    let idle = builder.state().buckets.idle_backing.raw();
+    let sent = idle / 5;
+    if sent < 4 {
+        return;
+    }
+    let credited = sent / 4 * 3;
+    let shortfall = sent - credited;
+    let recovered = shortfall / 2;
+
+    builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, sent, 0, 5, 0);
+    builder.exec_aux(ActionKind::RequestClose, 0, 0, 0, 5, 0);
+    builder.exec_aux(ActionKind::RequestClose, ADMIN_SLOT, 0, 0, 6, 0);
+    builder.exec_aux(ActionKind::SettleClose, 0, credited, 0, 5, 0);
+    builder.exec_aux(ActionKind::RequestClose, ADMIN_SLOT, 0, 0, 5, 0);
+    builder.exec_aux(ActionKind::RequestClose, ADMIN_SLOT, 0, 0, 5, 0);
+
+    // Reports neither complete nor price the closing allocation.
+    builder.exec_aux(ActionKind::CompleteAllocation, 0, sent, 0, 5, 0);
+    builder.exec_aux(ActionKind::ApplyRemoteValuation, 0, remote / 2, 0, 0, 0);
+    builder.exec_aux(ActionKind::BeginRecover, ADMIN_SLOT, 0, 0, 7, 0);
+    builder.exec_aux(ActionKind::SettleRecover, 0, 0, 0, 5, 0);
+    builder.exec_aux(ActionKind::SettleClose, 0, sent + 1, 0, 5, 0);
+    cutoff(builder, rng);
+    builder.exec_aux(ActionKind::LockRemoteValuation, 0, 0, 0, 0, 0);
+    finalize(builder, rng);
+
+    builder.exec_aux(ActionKind::SettleClose, 0, credited, 0, 5, 0);
+    builder.exec_aux(ActionKind::SettleClose, 0, credited, 0, 5, 0);
+    builder.exec_aux(ActionKind::LockRemoteValuation, 0, 0, 0, 0, 0);
+    finalize(builder, rng);
+    open_next(builder, rng);
+
+    builder.exec_aux(ActionKind::BeginRecover, 0, 0, 0, 7, 0);
+    builder.exec_aux(ActionKind::BeginRecover, ADMIN_SLOT, 0, 0, 5, 0);
+    builder.exec_aux(ActionKind::BeginRecover, ADMIN_SLOT, 0, 0, 7, 0);
+    builder.exec_aux(ActionKind::BeginAllocate, ADMIN_SLOT, sent, 0, 8, 0);
+    builder.exec_aux(ActionKind::SettleRecover, 0, shortfall + 1, 0, 7, 0);
+    builder.exec_aux(ActionKind::SettleRecover, 0, recovered, 0, 7, 0);
+    builder.exec_aux(ActionKind::BeginRecover, ADMIN_SLOT, 0, 0, 9, 0);
+    builder.exec_aux(ActionKind::SettleRecover, 0, 0, 0, 9, 0);
+    builder.exec_aux(
+        ActionKind::ApplyRemoteValuation,
+        0,
+        remote.saturating_add(credited).saturating_add(recovered),
+        0,
+        0,
+        0,
+    );
 }

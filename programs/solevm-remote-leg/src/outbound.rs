@@ -25,6 +25,7 @@ pub const FIRST_OUTBOUND_SEQUENCE: u64 = 1;
 pub enum ReportType {
     RemoteReport = 1,
     RecallSent = 2,
+    TransportSettlement = 3,
 }
 
 impl ReportType {
@@ -82,9 +83,12 @@ impl OutboundLane {
         self.current_commitment = next_commitment;
         self.last_publication_at = published_at;
 
+        // The lane keeps its fixed size, so settlements are counted on the
+        // transport ledger instead.
         let counter = match report_type {
             ReportType::RemoteReport => &mut self.total_reports,
             ReportType::RecallSent => &mut self.total_recall_notifications,
+            ReportType::TransportSettlement => return Ok(()),
         };
         *counter = counter
             .checked_add(1)

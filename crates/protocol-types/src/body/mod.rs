@@ -6,6 +6,7 @@ mod recall;
 mod recall_sent;
 mod remote_report;
 mod resolve;
+mod transport_settlement;
 
 pub use allocate::AllocateBody;
 pub use config_update::ConfigUpdateBody;
@@ -13,6 +14,7 @@ pub use recall::RecallBody;
 pub use recall_sent::RecallSentBody;
 pub use remote_report::{ProbeStatus, RemoteReportBody};
 pub use resolve::{ResolveAction, ResolveBody};
+pub use transport_settlement::{SettlementKind, TransportSettlementBody};
 
 use crate::error::{DecodeError, EncodeError, ValidationError};
 use crate::identifier::{Sequence, Timestamp};
@@ -36,6 +38,7 @@ pub enum Body {
     RecallSent(RecallSentBody),
     ConfigUpdate(ConfigUpdateBody),
     Resolve(ResolveBody),
+    TransportSettlement(TransportSettlementBody),
 }
 
 impl Body {
@@ -48,6 +51,7 @@ impl Body {
             Self::RecallSent(_) => MessageType::RecallSent,
             Self::ConfigUpdate(_) => MessageType::ConfigUpdate,
             Self::Resolve(_) => MessageType::Resolve,
+            Self::TransportSettlement(_) => MessageType::TransportSettlement,
         }
     }
 
@@ -65,6 +69,7 @@ impl Body {
             Self::RecallSent(body) => body.encode_into(out),
             Self::ConfigUpdate(body) => body.encode_into(out),
             Self::Resolve(body) => body.encode_into(out),
+            Self::TransportSettlement(body) => body.encode_into(out),
         }
     }
 
@@ -76,6 +81,9 @@ impl Body {
             MessageType::RecallSent => RecallSentBody::decode(bytes).map(Self::RecallSent),
             MessageType::ConfigUpdate => ConfigUpdateBody::decode(bytes).map(Self::ConfigUpdate),
             MessageType::Resolve => ResolveBody::decode(bytes).map(Self::Resolve),
+            MessageType::TransportSettlement => {
+                TransportSettlementBody::decode(bytes).map(Self::TransportSettlement)
+            }
         }
     }
 
@@ -92,6 +100,7 @@ impl Body {
             Self::RecallSent(body) => body.validate(times),
             Self::ConfigUpdate(body) => body.validate(times.published_at),
             Self::Resolve(body) => body.validate(sequence),
+            Self::TransportSettlement(body) => body.validate(),
         }
     }
 }
@@ -124,6 +133,10 @@ mod tests {
             (
                 Body::Resolve(ResolveBody::sample()),
                 layout::RESOLVE_BODY_LEN,
+            ),
+            (
+                Body::TransportSettlement(TransportSettlementBody::sample()),
+                layout::TRANSPORT_SETTLEMENT_BODY_LEN,
             ),
         ];
         for (body, expected) in cases {

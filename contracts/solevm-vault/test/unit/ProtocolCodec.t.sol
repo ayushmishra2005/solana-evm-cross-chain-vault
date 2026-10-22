@@ -158,15 +158,128 @@ contract ProtocolCodecTest is Test {
         this.encodeResolve(_header(), body);
     }
 
-    function test_resolve_accepts_only_admit() public {
+    function test_resolve_accepts_only_defined_actions() public {
         ProtocolCodec.ResolveBody memory body = _resolveBody();
-        body.action = 2;
-        vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownResolveAction.selector, 2));
+        body.action = 4;
+        vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownResolveAction.selector, 4));
         this.encodeResolve(_header(), body);
 
         body.action = 0;
         vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownResolveAction.selector, 0));
         this.encodeResolve(_header(), body);
+    }
+
+    function test_close_and_recover_differ_from_admit_only_in_the_action_and_body_hash() public {
+        bytes memory admit = ProtocolCodec.encodeResolve(_header(), _resolveBody());
+        uint8[2] memory actions = [ProtocolCodec.RESOLVE_CLOSE, ProtocolCodec.RESOLVE_RECOVER];
+        for (uint256 a; a < actions.length; ++a) {
+            ProtocolCodec.ResolveBody memory body = _resolveBody();
+            body.action = actions[a];
+            bytes memory other = ProtocolCodec.encodeResolve(_header(), body);
+            assertEq(other.length, admit.length);
+            for (uint256 i; i < admit.length; ++i) {
+                bool action = i == BODY_OFF + 40;
+                bool bodyHash = i >= BODY_HASH_OFF && i < BODY_HASH_OFF + 32;
+                if (action) assertEq(uint8(other[i]), actions[a]);
+                else if (!bodyHash) assertEq(other[i], admit[i]);
+            }
+        }
+    }
+
+    function test_transport_settlement_bytes_match_rust() public {
+        bytes memory rust = _ffi("encode-transport-settlement");
+        bytes memory sol = ProtocolCodec.encodeTransportSettlement(_header(), _settlementBody());
+        assertEq(keccak256(sol), keccak256(rust));
+        assertEq(sol.length, 336);
+        assertEq(uint8(sol[TYPE_OFF]), ProtocolCodec.TYPE_TRANSPORT_SETTLEMENT);
+    }
+
+    function test_transport_settlement_id_and_commitment_match_rust() public {
+        bytes memory ids = _ffi("ids-transport-settlement");
+        assertEq(ids.length, 64);
+        bytes32 rustId;
+        bytes32 rustNext;
+        assembly {
+            rustId := mload(add(ids, 32))
+            rustNext := mload(add(ids, 64))
+        }
+        bytes32 solId = ProtocolCodec.messageId(
+            ProtocolCodec.encodeTransportSettlement(_header(), _settlementBody())
+        );
+        assertEq(solId, rustId);
+        assertEq(ProtocolCodec.nextCommitment(_header().previousCommitment, solId), rustNext);
+    }
+
+    function test_rust_transport_settlement_bytes_decode_to_the_fixture() public {
+        (ProtocolCodec.Header memory header, ProtocolCodec.TransportSettlementBody memory body) =
+            ProtocolCodec.decodeTransportSettlement(_ffi("encode-transport-settlement"));
+        ProtocolCodec.TransportSettlementBody memory expected = _settlementBody();
+        assertEq(header.sequence, _header().sequence);
+        assertEq(body.transferId, expected.transferId);
+        assertEq(body.kind, expected.kind);
+        assertEq(body.claimAmount, expected.claimAmount);
+        assertEq(body.creditedAmount, expected.creditedAmount);
+        assertEq(body.impairedOutstanding, expected.impairedOutstanding);
+        assertEq(body.configVersion, expected.configVersion);
+    }
+
+    function test_transport_settlement_rejects_every_inconsistent_body() public {
+        ProtocolCodec.TransportSettlementBody memory body = _settlementBody();
+        body.creditedAmount = body.claimAmount + 1;
+        vm.expectRevert(ProtocolCodec.CreditAboveClaim.selector);
+        this.encodeSettlement(_header(), body);
+
+        body = _settlementBody();
+        body.impairedOutstanding = 399_999;
+        vm.expectRevert(ProtocolCodec.ImpairmentBelowShortfall.selector);
+        this.encodeSettlement(_header(), body);
+
+        body = _settlementBody();
+        body.kind = ProtocolCodec.SETTLEMENT_RECOVERED;
+        body.impairedOutstanding = 400_001;
+        vm.expectRevert(ProtocolCodec.RecoveryImpairmentMismatch.selector);
+        this.encodeSettlement(_header(), body);
+        body.impairedOutstanding = 400_000;
+        this.encodeSettlement(_header(), body);
+
+        body = _settlementBody();
+        body.claimAmount = 0;
+        body.creditedAmount = 0;
+        body.impairedOutstanding = 0;
+        vm.expectRevert(ProtocolCodec.ZeroAmount.selector);
+        this.encodeSettlement(_header(), body);
+
+        body = _settlementBody();
+        body.transferId = bytes32(0);
+        vm.expectRevert(ProtocolCodec.ZeroIdentifier.selector);
+        this.encodeSettlement(_header(), body);
+    }
+
+    function test_transport_settlement_rejects_unknown_kinds() public {
+        uint8[3] memory kinds = [uint8(0), 3, 255];
+        for (uint256 i; i < kinds.length; ++i) {
+            ProtocolCodec.TransportSettlementBody memory body = _settlementBody();
+            body.kind = kinds[i];
+            vm.expectRevert(
+                abi.encodeWithSelector(ProtocolCodec.UnknownSettlementKind.selector, kinds[i])
+            );
+            this.encodeSettlement(_header(), body);
+        }
+    }
+
+    function test_a_resealed_settlement_with_a_tampered_kind_does_not_decode() public {
+        bytes memory encoded = _ffi("encode-transport-settlement");
+        encoded[BODY_OFF + 32] = 0x03;
+        bytes memory body = new bytes(ProtocolCodec.TRANSPORT_SETTLEMENT_BODY_LEN);
+        for (uint256 i; i < body.length; ++i) {
+            body[i] = encoded[BODY_OFF + i];
+        }
+        bytes32 resealed = keccak256(body);
+        for (uint256 i; i < 32; ++i) {
+            encoded[BODY_HASH_OFF + i] = resealed[i];
+        }
+        vm.expectRevert(abi.encodeWithSelector(ProtocolCodec.UnknownSettlementKind.selector, 3));
+        this.decodeSettlement(encoded);
     }
 
     function test_wrong_type_is_rejected() public {
@@ -242,6 +355,17 @@ contract ProtocolCodecTest is Test {
         return ProtocolCodec.encodeResolve(header, body);
     }
 
+    function encodeSettlement(
+        ProtocolCodec.Header memory header,
+        ProtocolCodec.TransportSettlementBody memory body
+    ) external pure returns (bytes memory) {
+        return ProtocolCodec.encodeTransportSettlement(header, body);
+    }
+
+    function decodeSettlement(bytes memory encoded) external pure {
+        ProtocolCodec.decodeTransportSettlement(encoded);
+    }
+
     function decodeReport(bytes memory encoded) external pure {
         ProtocolCodec.decodeRemoteReport(encoded);
     }
@@ -272,6 +396,23 @@ contract ProtocolCodecTest is Test {
             action: ProtocolCodec.RESOLVE_ADMIT,
             configVersion: 4
         });
+    }
+
+    function _settlementBody()
+        internal
+        pure
+        returns (ProtocolCodec.TransportSettlementBody memory)
+    {
+        return ProtocolCodec.TransportSettlementBody({
+                transferId: bytes32(
+                    hex"6666666666666666666666666666666666666666666666666666666666666666"
+                ),
+                kind: ProtocolCodec.SETTLEMENT_CLOSED,
+                claimAmount: 1_000_000,
+                creditedAmount: 600_000,
+                impairedOutstanding: 400_000,
+                configVersion: 4
+            });
     }
 
     function _validReport() internal pure returns (bytes memory) {

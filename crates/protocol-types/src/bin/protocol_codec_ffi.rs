@@ -10,8 +10,8 @@ use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, ConfigVersion,
     DeploymentId, DestinationReference, EpochId, Flags, Header, LaneId, Message, MessageType,
     PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody, RemoteReportBody, ResolveAction,
-    ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId, decode_message,
-    encode_message, next_commitment,
+    ResolveBody, SCHEMA_VERSION, Sequence, SettlementKind, Timestamp, TransferId,
+    TransportSettlementBody, VaultId, decode_message, encode_message, next_commitment,
 };
 
 const OBSERVED_AT: u64 = 1_700_000_000;
@@ -34,11 +34,13 @@ fn main() -> ExitCode {
         "encode-remote-report" => write_hex(&encode_kind(MessageType::RemoteReport)),
         "encode-recall-sent" => write_hex(&encode_kind(MessageType::RecallSent)),
         "encode-resolve" => write_hex(&encode_kind(MessageType::Resolve)),
+        "encode-transport-settlement" => write_hex(&encode_kind(MessageType::TransportSettlement)),
         "ids-allocate" => write_ids(MessageType::Allocate),
         "ids-recall" => write_ids(MessageType::Recall),
         "ids-remote-report" => write_ids(MessageType::RemoteReport),
         "ids-recall-sent" => write_ids(MessageType::RecallSent),
         "ids-resolve" => write_ids(MessageType::Resolve),
+        "ids-transport-settlement" => write_ids(MessageType::TransportSettlement),
         "decode-remote-report" => decode_kind(MessageType::RemoteReport),
         "decode-recall-sent" => decode_kind(MessageType::RecallSent),
         other => fail(&format!("unknown command {other}")),
@@ -107,6 +109,14 @@ fn body_of(kind: MessageType) -> Body {
             transfer_id: TransferId::new([0x55; 32]),
             target_sequence: Sequence::new(41),
             action: ResolveAction::Admit,
+            config_version: ConfigVersion::new(4),
+        }),
+        MessageType::TransportSettlement => Body::TransportSettlement(TransportSettlementBody {
+            transfer_id: TransferId::new([0x66; 32]),
+            kind: SettlementKind::Closed,
+            claim_amount: AssetAmount::new(1_000_000),
+            credited_amount: AssetAmount::new(600_000),
+            impaired_outstanding: AssetAmount::new(400_000),
             config_version: ConfigVersion::new(4),
         }),
         MessageType::ConfigUpdate => {

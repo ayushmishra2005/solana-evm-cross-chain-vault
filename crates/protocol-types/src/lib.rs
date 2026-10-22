@@ -33,7 +33,7 @@ mod validation;
 
 pub use body::{
     AllocateBody, Body, ConfigUpdateBody, ProbeStatus, RecallBody, RecallSentBody,
-    RemoteReportBody, ResolveAction, ResolveBody,
+    RemoteReportBody, ResolveAction, ResolveBody, SettlementKind, TransportSettlementBody,
 };
 pub use codec::{EncodedMessage, decode_message, encode_into};
 pub use commitment::{COMMITMENT_DOMAIN, MESSAGE_ID_DOMAIN, next_commitment};

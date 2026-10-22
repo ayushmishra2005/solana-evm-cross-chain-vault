@@ -5,7 +5,9 @@ import {Test} from "forge-std/Test.sol";
 
 import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 
+import {RemoteAccounting} from "../../src/RemoteAccounting.sol";
 import {ISolEVMVault} from "../../src/interfaces/ISolEVMVault.sol";
+import {ProtocolCodec} from "../../src/libraries/ProtocolCodec.sol";
 import {
     Action,
     Code,
@@ -55,6 +57,21 @@ contract DifferentialMappingTest is Test {
                 keccak256(bytes(Code.name(code))) != keccak256(bytes("Unknown")), "code is unnamed"
             );
         }
+    }
+
+    /// Every refusal of a close, a recovery or their settlement has a code.
+    function test_every_transport_settlement_error_maps_to_a_known_code() public pure {
+        bytes4[5] memory selectors = [
+            RemoteAccounting.CloseAlreadyRequested.selector,
+            RemoteAccounting.NothingToRecover.selector,
+            RemoteAccounting.NoPendingSettlement.selector,
+            RemoteAccounting.SettlementMismatch.selector,
+            ProtocolCodec.CreditAboveClaim.selector
+        ];
+        for (uint256 i = 0; i < selectors.length; ++i) {
+            assertEq(ResultMapping.codeFor(selectors[i]), Code.INVALID_CONFIGURATION);
+        }
+        assertEq(ResultMapping.codeFor(RemoteAccounting.DeadlineNotPassed.selector), Code.UNKNOWN);
     }
 
     /// Errors outside the shared operation set must stay unmapped, so the
@@ -156,7 +173,7 @@ contract DifferentialMappingTest is Test {
     }
 
     function test_operation_codes_have_unique_names() public pure {
-        for (uint8 kind = 0; kind < 22; ++kind) {
+        for (uint8 kind = 0; kind < 26; ++kind) {
             string memory name = Op.name(kind);
             assertTrue(keccak256(bytes(name)) != keccak256(bytes("Unknown")), "kind is unnamed");
             for (uint8 other = 0; other < kind; ++other) {
@@ -166,7 +183,7 @@ contract DifferentialMappingTest is Test {
                 );
             }
         }
-        assertEq(Op.name(22), "Unknown");
+        assertEq(Op.name(26), "Unknown");
     }
 
     /// The scenario layout must survive an encode and decode round trip, so a
@@ -200,6 +217,7 @@ contract DifferentialMappingTest is Test {
         scenario.snapshots[0].idleBacking = 42;
         scenario.snapshots[0].consumedMask = 1 << 130;
         scenario.snapshots[0].actorShares = [uint256(9), 8, 7, 6];
+        scenario.snapshots[0].remote.impairedTransport = 31;
 
         scenario.epochs = new EpochTerms[](1);
         scenario.epochs[0].epochId = 5;
@@ -220,6 +238,7 @@ contract DifferentialMappingTest is Test {
         assertEq(back.snapshots[0].idleBacking, 42);
         assertEq(back.snapshots[0].consumedMask, 1 << 130);
         assertEq(back.snapshots[0].actorShares[0], 9);
+        assertEq(back.snapshots[0].remote.impairedTransport, 31);
         assertEq(back.epochs[0].cutoffAt, 1_700_003_600);
         assertEq(back.epochs[0].depositDust, 2);
         assertEq(back.epochs[0].actors[1].claimAssets, 14);

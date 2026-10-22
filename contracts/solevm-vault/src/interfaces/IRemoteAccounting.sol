@@ -6,7 +6,8 @@ interface IRemoteAccounting {
     enum CycleKind {
         None,
         Allocate,
-        Recall
+        Recall,
+        Recover
     }
 
     /// Why an authentic, in-order report advanced the lane without pricing.
@@ -15,7 +16,8 @@ interface IRemoteAccounting {
         Expired,
         WrongEpoch,
         StaleObservation,
-        ValuationFixed
+        ValuationFixed,
+        SettlementPending
     }
 
     struct Identities {
@@ -37,6 +39,20 @@ interface IRemoteAccounting {
     event AllocationCompleted(bytes32 indexed transferId, uint256 amount, uint256 acceptedValue);
     event RecallInitiated(bytes32 indexed transferId, uint256 amount, bytes message);
     event AdmissionRequested(bytes32 indexed transferId, uint64 targetSequence, bytes message);
+    event CloseRequested(bytes32 indexed transferId, uint64 targetSequence, bytes message);
+    event RecoveryRequested(bytes32 indexed recoveryId, uint64 targetSequence, bytes message);
+    event AllocationClosed(
+        bytes32 indexed transferId,
+        uint256 claimAmount,
+        uint256 creditedAmount,
+        uint256 impairedOutstanding
+    );
+    event ImpairmentRecovered(
+        bytes32 indexed recoveryId,
+        uint256 claimAmount,
+        uint256 creditedAmount,
+        uint256 impairedOutstanding
+    );
     event RecallSentAccepted(
         bytes32 indexed transferId,
         uint256 principalSent,

@@ -36,6 +36,14 @@ contract RemoteAccounting is IRemoteAccounting {
     uint128 public activeAmount;
     /// Outbound sequence of the message that opened the active cycle.
     uint64 public activeSequence;
+    /// Deadline the active transfer was sent with.
+    uint64 public activeDeadline;
+    /// Set once the active allocation is being closed. Only its transport
+    /// settlement ends the cycle, so reports skip until it arrives.
+    bool public closeRequested;
+    /// Outbound sequence of the last allocation closed with a shortfall. A
+    /// recovery names it to bind itself to the impairment it saw.
+    uint64 public lastImpairedSequence;
 
     /// Accepted remote value and acknowledged cumulative loss when the active
     /// recall began.
@@ -68,6 +76,11 @@ contract RemoteAccounting is IRemoteAccounting {
     error RecallIdentityMismatch();
     error InvalidRecallSentAmounts(uint128 principal, uint128 actual, uint128 loss);
     error StaleValuation();
+    error DeadlineNotPassed(uint64 deadline, uint64 nowAt);
+    error CloseAlreadyRequested();
+    error NothingToRecover();
+    error NoPendingSettlement();
+    error SettlementMismatch();
 
     constructor(
         SolEVMVault vault_,
@@ -153,7 +166,7 @@ contract RemoteAccounting is IRemoteAccounting {
         );
 
         _vault.beginOutbound(amount, outboundSink);
-        _consumeOutbound(transferId, CycleKind.Allocate, amount, message);
+        _consumeOutbound(transferId, CycleKind.Allocate, amount, deadline, message);
         emit AllocationInitiated(transferId, amount, message);
     }
 
@@ -191,7 +204,7 @@ contract RemoteAccounting is IRemoteAccounting {
         recallBaselineValue = _toU128(_vault.acceptedRemoteValue());
         recallBaselineLoss = lastInboundCumulativeLoss;
         _vault.beginRecall(transferId, requestedAmount);
-        _consumeOutbound(transferId, CycleKind.Recall, requestedAmount, message);
+        _consumeOutbound(transferId, CycleKind.Recall, requestedAmount, deadline, message);
         emit RecallInitiated(transferId, requestedAmount, message);
     }
 
@@ -203,8 +216,11 @@ contract RemoteAccounting is IRemoteAccounting {
         returns (bytes memory message)
     {
         _requireAdmin();
-        if (activeCycleKind == CycleKind.None) revert NoActiveTransfer();
+        if (activeCycleKind != CycleKind.Allocate && activeCycleKind != CycleKind.Recall) {
+            revert NoActiveTransfer();
+        }
         if (transferId != activeTransferId) revert WrongTransferId(activeTransferId, transferId);
+        if (closeRequested) revert CloseAlreadyRequested();
         if (activeCycleKind == CycleKind.Allocate && _vault.vaultStatus() != VaultStatus.Active) {
             revert AllocateNotAllowed();
         }
@@ -221,6 +237,62 @@ contract RemoteAccounting is IRemoteAccounting {
         );
         _publishOutbound(ProtocolCodec.TYPE_RESOLVE, message);
         emit AdmissionRequested(transferId, activeSequence, message);
+    }
+
+    /// @notice Asks the remote leg to end the active allocation after its
+    /// deadline, crediting only what arrived. A timeout alone proves no loss,
+    /// so nothing changes here until the leg's settlement says what arrived.
+    function close(bytes32 transferId, uint64 observedAt, uint64 publishedAt, uint64 expiresAt)
+        external
+        returns (bytes memory message)
+    {
+        _requireAdmin();
+        if (activeCycleKind != CycleKind.Allocate) revert NoActiveTransfer();
+        if (transferId != activeTransferId) revert WrongTransferId(activeTransferId, transferId);
+        if (closeRequested) revert CloseAlreadyRequested();
+        if (uint64(block.timestamp) <= activeDeadline) {
+            revert DeadlineNotPassed(activeDeadline, uint64(block.timestamp));
+        }
+
+        ProtocolCodec.Header memory header = _outboundHeader(observedAt, publishedAt, expiresAt);
+        message = ProtocolCodec.encodeResolve(
+            header,
+            ProtocolCodec.ResolveBody({
+                transferId: transferId,
+                targetSequence: activeSequence,
+                action: ProtocolCodec.RESOLVE_CLOSE,
+                configVersion: _configVersion()
+            })
+        );
+        closeRequested = true;
+        _publishOutbound(ProtocolCodec.TYPE_RESOLVE, message);
+        emit CloseRequested(transferId, activeSequence, message);
+    }
+
+    /// @notice Asks the remote leg to credit unattributed custody against the
+    /// pooled impairment. The recovery has its own fresh id; it claims no
+    /// closed allocation's assets, because custody is fungible.
+    function recover(bytes32 recoveryId, uint64 observedAt, uint64 publishedAt, uint64 expiresAt)
+        external
+        returns (bytes memory message)
+    {
+        _requireAdmin();
+        _requireNoActiveCycle();
+        _requireFreshTransfer(recoveryId);
+        if (_vault.impairedTransport() == 0) revert NothingToRecover();
+
+        ProtocolCodec.Header memory header = _outboundHeader(observedAt, publishedAt, expiresAt);
+        message = ProtocolCodec.encodeResolve(
+            header,
+            ProtocolCodec.ResolveBody({
+                transferId: recoveryId,
+                targetSequence: lastImpairedSequence,
+                action: ProtocolCodec.RESOLVE_RECOVER,
+                configVersion: _configVersion()
+            })
+        );
+        _consumeOutbound(recoveryId, CycleKind.Recover, 0, 0, message);
+        emit RecoveryRequested(recoveryId, lastImpairedSequence, message);
     }
 
     function processRemoteReport(bytes calldata encoded) external {
@@ -292,6 +364,53 @@ contract RemoteAccounting is IRemoteAccounting {
         );
     }
 
+    /// @notice Applies the one settlement of a close or a recovery. Like
+    /// RecallSent it is a terminal notice, so its expiry does not void it; any
+    /// disagreement with the cycle it settles reverts instead.
+    function processTransportSettlement(bytes calldata encoded) external {
+        if (!authenticator.authenticate(encoded)) revert UnauthenticatedMessage();
+        (ProtocolCodec.Header memory header, ProtocolCodec.TransportSettlementBody memory body) =
+            ProtocolCodec.decodeTransportSettlement(encoded);
+        _requireInboundEnvelope(header);
+        if (body.configVersion != _configVersion()) {
+            revert WrongConfigVersion(_configVersion(), body.configVersion);
+        }
+        if (body.transferId != activeTransferId) {
+            revert WrongTransferId(activeTransferId, body.transferId);
+        }
+
+        uint256 impaired = _vault.impairedTransport();
+        uint256 credited = body.creditedAmount;
+        if (body.kind == ProtocolCodec.SETTLEMENT_CLOSED) {
+            if (activeCycleKind != CycleKind.Allocate || !closeRequested) {
+                revert NoPendingSettlement();
+            }
+            uint256 shortfall = uint256(body.claimAmount) - credited;
+            if (
+                body.claimAmount != activeAmount || body.impairedOutstanding != impaired + shortfall
+            ) {
+                revert SettlementMismatch();
+            }
+            uint64 sequence = activeSequence;
+            _clearCycle();
+            if (shortfall != 0) lastImpairedSequence = sequence;
+            _advanceInbound(encoded);
+            _vault.closeAllocation(body.claimAmount, credited);
+            emit AllocationClosed(
+                body.transferId, body.claimAmount, credited, body.impairedOutstanding
+            );
+        } else {
+            if (activeCycleKind != CycleKind.Recover) revert NoPendingSettlement();
+            if (body.claimAmount != impaired) revert SettlementMismatch();
+            _clearCycle();
+            _advanceInbound(encoded);
+            _vault.recoverImpairment(credited);
+            emit ImpairmentRecovered(
+                body.transferId, body.claimAmount, credited, body.impairedOutstanding
+            );
+        }
+    }
+
     function _requireAdmin() private view {
         if (msg.sender != _vault.admin()) revert Unauthorized(msg.sender);
     }
@@ -317,16 +436,18 @@ contract RemoteAccounting is IRemoteAccounting {
         bytes32 transferId,
         CycleKind kind,
         uint128 amount,
+        uint64 deadline,
         bytes memory message
     ) private {
         usedTransferIds[transferId] = true;
         activeCycleKind = kind;
         activeTransferId = transferId;
         activeAmount = amount;
-        activeSequence = _publishOutbound(
-            kind == CycleKind.Allocate ? ProtocolCodec.TYPE_ALLOCATE : ProtocolCodec.TYPE_RECALL,
-            message
-        );
+        activeDeadline = deadline;
+        uint8 messageType = kind == CycleKind.Allocate
+            ? ProtocolCodec.TYPE_ALLOCATE
+            : kind == CycleKind.Recall ? ProtocolCodec.TYPE_RECALL : ProtocolCodec.TYPE_RESOLVE;
+        activeSequence = _publishOutbound(messageType, message);
     }
 
     function _publishOutbound(uint8 messageType, bytes memory message)
@@ -347,6 +468,9 @@ contract RemoteAccounting is IRemoteAccounting {
         ProtocolCodec.Header memory header,
         ProtocolCodec.RemoteReportBody memory body
     ) private returns (ReportSkipReason) {
+        // The settlement is the only path for an allocation being closed, so
+        // no report may complete or price it first.
+        if (closeRequested) return ReportSkipReason.SettlementPending;
         if (header.expiresAt < uint64(block.timestamp)) {
             return ReportSkipReason.Expired;
         }
@@ -412,6 +536,8 @@ contract RemoteAccounting is IRemoteAccounting {
         activeTransferId = bytes32(0);
         activeAmount = 0;
         activeSequence = 0;
+        activeDeadline = 0;
+        closeRequested = false;
     }
 
     function _outboundHeader(uint64 observedAt, uint64 publishedAt, uint64 expiresAt)

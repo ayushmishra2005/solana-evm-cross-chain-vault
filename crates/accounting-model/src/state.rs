@@ -27,6 +27,7 @@ pub enum CycleKind {
     None,
     Allocate,
     Recall,
+    Recover,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,12 +249,19 @@ pub struct State {
     pub initial_asset_supply: AssetAmount,
     pub remote_principal_cap: AssetAmount,
     pub recognized_loss: AssetAmount,
+    /// Closed transfer shortfall not yet recovered. Outside NAV and never
+    /// recognized loss.
+    pub impaired_transport: AssetAmount,
+    /// Every shortfall ever impaired, recovered or not.
+    pub cumulative_impairment: AssetAmount,
     pub external_inflow: AssetAmount,
     pub pending_recall_id: TransferId,
     pub pending_recall_principal: AssetAmount,
     pub active_cycle: CycleKind,
     pub active_transfer_id: TransferId,
     pub active_amount: AssetAmount,
+    /// The active allocation is closing, so only its settlement may end it.
+    pub close_requested: bool,
     /// Cumulative remote loss acknowledged by reports and recall notices.
     pub inbound_cumulative_loss: AssetAmount,
     /// Accepted remote value and acknowledged loss when the active recall began.
@@ -321,12 +329,15 @@ impl State {
             initial_asset_supply: supply,
             remote_principal_cap: AssetAmount::ZERO,
             recognized_loss: AssetAmount::ZERO,
+            impaired_transport: AssetAmount::ZERO,
+            cumulative_impairment: AssetAmount::ZERO,
             external_inflow: AssetAmount::ZERO,
             pending_recall_id: TransferId::ZERO,
             pending_recall_principal: AssetAmount::ZERO,
             active_cycle: CycleKind::None,
             active_transfer_id: TransferId::ZERO,
             active_amount: AssetAmount::ZERO,
+            close_requested: false,
             inbound_cumulative_loss: AssetAmount::ZERO,
             recall_baseline_value: AssetAmount::ZERO,
             recall_baseline_loss: AssetAmount::ZERO,

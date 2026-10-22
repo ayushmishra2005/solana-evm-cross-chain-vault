@@ -18,6 +18,8 @@ contract CrossChainE2ETest is RemoteTestBase {
         hex"8888888888888888888888888888888888888888888888888888888888888888";
     bytes32 internal constant SECOND_ALLOCATE =
         hex"7979797979797979797979797979797979797979797979797979797979797979";
+    bytes32 internal constant RECOVERY_TID =
+        hex"9999999999999999999999999999999999999999999999999999999999999999";
 
     uint256 internal constant BACKING = 10e6;
     uint256 internal constant AMOUNT = 1e6;
@@ -35,6 +37,7 @@ contract CrossChainE2ETest is RemoteTestBase {
         uint64 laneSequence;
         uint64 outboundNext;
         uint256 inboundAsset;
+        uint256 impaired;
         uint256 lastEventId;
         bool transferOpen;
         bool frozen;
@@ -42,8 +45,10 @@ contract CrossChainE2ETest is RemoteTestBase {
         string lastError;
         bytes latestReport;
         bytes latestRecallSent;
+        bytes latestSettlement;
         string[] reports;
         string[] recallSents;
+        string[] settlements;
     }
 
     function _identities()
@@ -589,6 +594,125 @@ contract CrossChainE2ETest is RemoteTestBase {
         assertEq(header.sequence, 2);
     }
 
+    /// 0.4 of a 1.0 allocation arrives in time. The close after the deadline
+    /// impairs 0.6 on both chains; the late 0.6 is then recovered against the
+    /// pool, and no report ever counts the allocation twice.
+    function test_short_allocation_closes_then_late_custody_is_recovered() public {
+        uint256 origin = _start();
+        _allocateWithPartialArrival(origin);
+        _closeAfterTheDeadline(origin);
+        _recoverTheLateArrival(origin);
+    }
+
+    function _allocateWithPartialArrival(uint256 origin) internal {
+        bytes memory allocate = _outAllocate(ALLOCATE_TID, AMOUNT);
+        _scheduleControl(allocate, 1);
+        _scheduleAsset(ALLOCATE_TID, 400_000, 1);
+        _scheduleAsset(ALLOCATE_TID, 600_000, 50);
+        _advance(1);
+        _deliverReady();
+        _applyControl();
+        _applyAsset();
+        _attribute(ALLOCATE_TID);
+        _publishReport(1, 2);
+        _advance(2);
+        _deliverReady();
+        Leg memory arriving = _leg();
+        assertTrue(arriving.lastAccepted, arriving.lastError);
+        assertEq(arriving.principal, 400_000);
+        assertTrue(arriving.transferOpen);
+
+        (, ProtocolCodec.RemoteReportBody memory early) =
+            ProtocolCodec.decodeRemoteReport(arriving.latestReport);
+        assertEq(early.remotePrincipal, 0);
+        coordinator.processRemoteReport(arriving.latestReport);
+        assertEq(vault.outboundInTransit(), AMOUNT);
+        assertEq(vault.acceptedRemoteValue(), 0);
+        assertEq(_managed(), origin);
+    }
+
+    function _closeAfterTheDeadline(uint256 origin) internal {
+        vm.warp(uint256(coordinator.activeDeadline()) + 1);
+        _sync();
+        (uint64 observedAt, uint64 publishedAt, uint64 expiresAt,) = _times();
+        vm.prank(admin);
+        bytes memory close = coordinator.close(ALLOCATE_TID, observedAt, publishedAt, expiresAt);
+
+        // A report the leg publishes before it sees the close is skipped.
+        _publishReport(1, 3);
+        _advance(3);
+        _deliverReady();
+        bytes memory crossing = _leg().latestReport;
+        _expectSkipped(1, IRemoteAccounting.ReportSkipReason.SettlementPending);
+        coordinator.processRemoteReport(crossing);
+        assertEq(vault.outboundInTransit(), AMOUNT);
+
+        _scheduleControl(close, 4);
+        _advance(4);
+        _deliverReady();
+        _applyControl();
+        _deliverReady();
+        Leg memory closed = _leg();
+        assertTrue(closed.lastAccepted, closed.lastError);
+        assertFalse(closed.transferOpen);
+        assertEq(closed.principal, 400_000);
+        assertEq(closed.impaired, 600_000);
+        assertEq(closed.settlements.length, 1);
+
+        coordinator.processTransportSettlement(closed.latestSettlement);
+        assertEq(vault.outboundInTransit(), 0);
+        assertEq(vault.remotePrincipalCap(), 400_000);
+        assertEq(vault.acceptedRemoteValue(), 400_000);
+        assertEq(vault.impairedTransport(), closed.impaired);
+        assertEq(vault.recognizedLoss(), 0);
+        assertEq(_managed(), origin - 600_000);
+    }
+
+    function _recoverTheLateArrival(uint256 origin) internal {
+        _advance(50);
+        _deliverReady();
+        _applyAsset();
+        Leg memory late = _leg();
+        assertEq(late.custody, AMOUNT);
+        assertEq(late.principal, 400_000);
+        assertEq(late.impaired, 600_000);
+
+        (uint64 observedAt, uint64 publishedAt, uint64 expiresAt,) = _times();
+        vm.prank(admin);
+        bytes memory recovery =
+            coordinator.recover(RECOVERY_TID, observedAt, publishedAt, expiresAt);
+        _scheduleControl(recovery, 51);
+        _advance(51);
+        _deliverReady();
+        _applyControl();
+        _deliverReady();
+        Leg memory recovered = _leg();
+        assertTrue(recovered.lastAccepted, recovered.lastError);
+        assertEq(recovered.impaired, 0);
+        assertEq(recovered.principal, AMOUNT);
+        assertEq(recovered.unattributed, 0);
+        assertEq(recovered.settlements.length, 2);
+
+        coordinator.processTransportSettlement(recovered.latestSettlement);
+        assertEq(vault.impairedTransport(), recovered.impaired);
+        assertEq(vault.remotePrincipalCap(), AMOUNT);
+        assertEq(vault.acceptedRemoteValue(), AMOUNT);
+        assertEq(_managed(), origin);
+
+        _publishReport(1, 52);
+        _advance(52);
+        _deliverReady();
+        Leg memory settled = _leg();
+        (, ProtocolCodec.RemoteReportBody memory last) =
+            ProtocolCodec.decodeRemoteReport(settled.latestReport);
+        assertEq(last.remotePrincipal, AMOUNT);
+        coordinator.processRemoteReport(settled.latestReport);
+        assertEq(vault.acceptedRemoteValue(), AMOUNT);
+        assertEq(_managed(), origin);
+        assertEq(coordinator.inboundExpectedSequence(), 6);
+        assertEq(settled.outboundNext, 6);
+    }
+
     function _start() internal returns (uint256 origin) {
         _bootstrap(alice, BACKING);
         vm.warp(1_700_000_000);
@@ -779,6 +903,7 @@ contract CrossChainE2ETest is RemoteTestBase {
         view_.laneSequence = uint64(vm.parseJsonUint(json, ".lane_sequence"));
         view_.outboundNext = uint64(vm.parseJsonUint(json, ".outbound_next"));
         view_.inboundAsset = vm.parseJsonUint(json, ".inbound_asset");
+        view_.impaired = vm.parseJsonUint(json, ".impaired_outstanding");
         view_.lastEventId = vm.parseJsonUint(json, ".last_event_id");
         view_.transferOpen = vm.parseJsonBool(json, ".transfer_open");
         view_.frozen = vm.parseJsonBool(json, ".frozen");
@@ -786,8 +911,10 @@ contract CrossChainE2ETest is RemoteTestBase {
         view_.lastError = vm.parseJsonString(json, ".last_error");
         view_.latestReport = _bytesField(json, ".latest_report");
         view_.latestRecallSent = _bytesField(json, ".latest_recall_sent");
+        view_.latestSettlement = _bytesField(json, ".latest_settlement");
         view_.reports = vm.parseJsonStringArray(json, ".reports");
         view_.recallSents = vm.parseJsonStringArray(json, ".recall_sents");
+        view_.settlements = vm.parseJsonStringArray(json, ".settlements");
     }
 
     function _bytesField(string memory json, string memory key)

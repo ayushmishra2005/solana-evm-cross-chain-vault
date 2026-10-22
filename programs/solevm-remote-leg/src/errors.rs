@@ -200,4 +200,16 @@ pub enum RemoteLegError {
     InvalidOutboundMessage,
     #[msg("custody control changed during an adapter call")]
     CustodyControlChanged,
+    #[msg("resolve action belongs to another instruction")]
+    WrongResolveInstruction,
+    #[msg("transfer cannot be closed in its current state")]
+    TransferNotClosable,
+    #[msg("transport ledger account is not usable")]
+    InvalidTransportLedger,
+    #[msg("recovery does not match the outstanding impairment")]
+    RecoveryStateMismatch,
+    #[msg("transport ledger does not balance")]
+    TransportLedgerImbalance,
+    #[msg("the open allocation record is required")]
+    MissingActiveTransferRecord,
 }

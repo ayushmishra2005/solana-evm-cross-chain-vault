@@ -8,11 +8,11 @@ Users interact with a vault on EVM. The EVM side owns the canonical shares, user
 
 The Solana leg custodies only the assets allocated to it. It never issues vault shares and has no direct relationship with depositors. The canonical EVM vault remains the sole authority on share ownership and liabilities.
 
-Control messages (Allocate, Recall, ConfigUpdate) and asset transfers travel independently.
+Control messages (Allocate, Recall, ConfigUpdate, Resolve) and asset transfers travel independently.
 
 > A cross-chain message proves that a message arrived. It does not prove that the assets arrived.
 
-Reports (RemoteReport, RecallSent) flow back from Solana to the canonical side, carrying the remote leg's observed state for the hub to consume.
+Reports (RemoteReport, RecallSent, TransportSettlement) flow back from Solana to the canonical side, carrying the remote leg's observed state and settlements for the hub to consume.
 
 ## Why this project exists
 
@@ -21,8 +21,11 @@ Cross-chain vault protocols must maintain consistent accounting while messaging 
 - Allocation message arrives before assets
 - Assets arrive before the allocation message
 - Partial asset arrival
+- An allocation deadline that passes before all assets arrive
+- Assets that arrive after their allocation was closed
 - Duplicate or replayed delivery
 - Delayed or reordered delivery
+- Control messages that expire or cannot run when they arrive
 - Remote strategy loss
 - Recall with partial liquidity
 - Total-loss recall
@@ -35,13 +38,13 @@ The challenge is not cross-chain messaging itself—it is preserving correct acc
 ```mermaid
 flowchart LR
     U[User] --> E[EVM Vault]
-    E -->|Allocate / Recall / ConfigUpdate| T1[Message Transport]
+    E -->|Allocate / Recall / ConfigUpdate / Resolve| T1[Message Transport]
     T1 --> S[Solana Remote Leg]
     E -->|Asset transfer| A1[Asset Transport]
     A1 --> S
     S --> ST[Strategy Adapter]
     ST --> S
-    S -->|RemoteReport / RecallSent| T2[Message Transport]
+    S -->|RemoteReport / RecallSent / TransportSettlement| T2[Message Transport]
     T2 --> E
     S -->|Recalled assets| A2[Asset Transport]
     A2 --> E
@@ -67,7 +70,19 @@ A chain-independent deterministic reference model for deposits, redemptions, epo
 crates/protocol-types
 ```
 
-Fixed-width canonical message encoding with Keccak message identifiers and commitment chaining. Defines Allocate, Recall, ConfigUpdate, RemoteReport and RecallSent message types.
+Fixed-width canonical message encoding with Keccak message identifiers and commitment chaining. Every message is a 247-byte header followed by a fixed-size body. The Solidity codec produces the same bytes, identifiers and commitments.
+
+| Type | Message | Direction | Purpose |
+| --- | --- | --- | --- |
+| 1 | Allocate | EVM → Solana | Authorizes one allocation of a fixed amount |
+| 2 | Recall | EVM → Solana | Requests principal back |
+| 3 | RemoteReport | Solana → EVM | Observed remote state, for valuation and completion |
+| 4 | RecallSent | Solana → EVM | Principal resolved, assets sent and realized loss of a recall |
+| 5 | ConfigUpdate | EVM → Solana | Risk parameter change; the EVM coordinator does not originate it |
+| 6 | Resolve | EVM → Solana | Admits, closes or recovers against a named transfer |
+| 7 | TransportSettlement | Solana → EVM | The one settlement of a close or a recovery |
+
+A Resolve body (49 bytes) carries the transfer id, the sequence of the message it targets, an action (1 Admit, 2 Close, 3 Recover) and the config version. A TransportSettlement body (89 bytes) carries the transfer id, a kind (1 Closed, 2 Recovered), the claim, the credited amount, the impairment still outstanding after it, and the config version. Decoding rejects unknown actions and kinds, a zero claim, a credit above the claim, a close whose outstanding impairment is below its own shortfall, and a recovery whose outstanding impairment is not exactly the claim minus the credit.
 
 ### Cross-chain simulator
 
@@ -101,7 +116,7 @@ Generates deterministic scenarios from the Rust accounting model. The Foundry ha
 programs/solevm-remote-leg
 ```
 
-An Anchor-based program that custodies SPL Token assets allocated from the EVM vault. Accepts Allocate, Recall and ConfigUpdate on one inbound control lane with commitment chaining and replay protection. Tracks attributed custody, deployed strategy principal, recalls, realized loss, unattributed assets and outbound reporting state. Publishes RemoteReport and RecallSent on an ordered outbound lane.
+An Anchor-based program that custodies SPL Token assets allocated from the EVM vault. Accepts Allocate, Recall, ConfigUpdate and Resolve on one inbound control lane with commitment chaining and replay protection. Tracks attributed custody, deployed strategy principal, recalls, realized loss, unattributed assets, quarantined transfers, pooled transport impairment and outbound reporting state. Publishes RemoteReport, RecallSent and TransportSettlement on an ordered outbound lane.
 
 The included strategy adapter is a deterministic test harness, not a production yield strategy.
 
@@ -130,7 +145,7 @@ Assets become attributed principal only after both the message and the assets ar
 
 ### One inbound control lane
 
-Allocate, Recall and ConfigUpdate share the configured EVM→Solana control lane: one ordered sequence and one commitment chain. A consumed sequence cannot be reused by another message type.
+Allocate, Recall, ConfigUpdate and Resolve share the configured EVM→Solana control lane: one ordered sequence and one commitment chain. A consumed sequence cannot be reused by another message type. A Resolve always targets an earlier sequence on the same lane, so the leg has already accepted or quarantined its target when the Resolve arrives.
 
 ### Remote profit is principal-capped in schema v1
 
@@ -138,11 +153,57 @@ Accepted remote capital contributes to canonical value and is principal-capped u
 
 ### One unresolved remote transfer cycle
 
-The current implementation permits only one unresolved allocation or recall cycle at a time, simplifying accounting and state tracking.
+The current implementation permits only one unresolved allocation, recall or recovery cycle at a time, simplifying accounting and state tracking.
+
+### Blocked control messages are quarantined
+
+An authentic, in-order Allocate or Recall that cannot run is consumed with no financial effect and held as quarantined, so the control lane keeps moving and the obligation stays visible. An allocation is quarantined when it has expired, when the leg is frozen or when it would exceed the principal ceiling. A recall is quarantined when it has expired. A quarantined transfer remains the open cycle until a Resolve settles it: Admit runs it on its original terms, and a quarantined allocation can instead be closed, crediting nothing.
+
+### A timeout is not a loss
+
+An allocation whose deadline passes is not presumed lost, because its assets may still be in transit. After the deadline, the EVM administrator may ask the leg to close it with `RemoteAccounting.close`. The request itself moves no value. The leg ends the allocation at what custody explains and publishes a TransportSettlement in the same instruction. Only that settlement changes EVM accounting. The leg credits:
+
+- a pending allocation with the custody that already arrived for it, up to its outstanding amount
+- a quarantined allocation with nothing, because it was never admitted
+- an allocation that completed before the close, but whose completion the EVM had not yet applied, in full
+
+For a claim of `A` of which `a` was credited, the vault moves `A` out of outbound transit, adds `a` to the remote principal cap and to accepted remote value, and adds `A − a` to `impairedTransport`. NAV falls by `A − a` and `recognizedLoss` does not change. A full credit settles exactly like a completion. Until the settlement lands, the coordinator skips every report and refuses Admit, so no report can complete or price the closing allocation first. The settlement is the only path that ends a closing allocation.
+
+### Impairment stays outside NAV
+
+`impairedTransport` is closed shortfall that has not been recovered. It is excluded from NAV and kept apart from `recognizedLoss`: a transport shortfall is not a realized strategy loss and is never written off automatically. The leg keeps the same figure in a pooled transport ledger, where every closed claim is credited, still impaired or recovered, exactly once:
+
+```
+closed claims = closed credits + impairment outstanding + recovered
+```
+
+Every TransportSettlement carries the leg's outstanding impairment, and the coordinator reverts unless it matches its own figure, so the two chains cannot drift apart. An epoch price locked before a close is not changed by it.
+
+### Recovery is pooled
+
+Custody is one fungible token account, so an asset that arrives after its allocation closed cannot be traced back to that allocation. A recovery, started with `RemoteAccounting.recover`, therefore draws on the impaired pool rather than on a transfer. It requires that no cycle is open and that impairment is outstanding, and it uses its own fresh transfer id and transfer record, never a closed allocation's. It names the last allocation closed short, which binds it to the impairment state the EVM saw. The leg reconciles custody, then credits the smallest of:
+
+- unattributed custody
+- outstanding impairment
+- the principal ceiling minus attributed, deployed and recalled-custody principal
+
+The vault returns the credited amount to remote principal at par: `impairedTransport` falls by that amount, and the remote principal cap and accepted remote value rise by it. A recovery that finds nothing still settles, crediting zero, and ends its cycle.
 
 ### Freeze allows safe unwind
 
-Freezing the remote leg prevents new exposure while allowing an already accepted recall to continue withdrawing, sending and reporting. Freeze is terminal. Principal that was not under recall when the leg froze can still return home, but only with the emergency guardian's co-signature: a frozen leg accepts a recall, or attributes an allocation accepted before the freeze, only when the guardian co-signs. Deploys, new allocations and configuration changes stay blocked.
+Freezing the remote leg prevents new exposure while allowing an already accepted recall to continue withdrawing, sending and reporting. Freeze is terminal. Principal that was not under recall when the leg froze can still return home, but only with the emergency guardian's co-signature. Deploys and configuration changes stay blocked, and a new allocation is quarantined.
+
+### Guardian authority
+
+The emergency guardian holds no EVM authority and cannot start anything. Admit, Close and Recover originate only from the EVM administrator through the coordinator, and only the configured transport verifier can submit them on Solana. On a frozen leg, these additionally need the guardian's co-signature:
+
+- accepting a recall
+- attributing an allocation accepted before the freeze
+- admitting a quarantined transfer
+- closing an allocation
+- recovering impairment
+
+Without the co-signature they revert. A control message that reverts stays unconsumed, so the ordered control lane waits for the guardian. A frozen leg recovers through the same steps as an active one, each co-signed: close the short allocation, recover late custody into principal, then recall that principal home.
 
 ### Adapters never hold custody signing power
 
@@ -178,6 +239,36 @@ canonical Recall message
 → recalled assets arrive independently
 ```
 
+### Quarantine and admission
+
+```
+Allocate or Recall that cannot run arrives in order
+→ consumed and held as quarantined, with no financial effect
+→ EVM administrator sends Resolve (Admit) naming its sequence
+→ the transfer runs on its original terms
+```
+
+### Close
+
+```
+allocation deadline passes with assets missing
+→ EVM administrator sends Resolve (Close); no value moves
+→ EVM skips reports until the settlement
+→ Solana attributes custody that already arrived, then closes the allocation
+→ TransportSettlement (Closed) published in the same instruction
+→ EVM credits what arrived and records the rest as impairment
+```
+
+### Recovery
+
+```
+late assets arrive in Solana custody and stay unattributed
+→ EVM administrator sends Resolve (Recover) under a fresh transfer id
+→ Solana reconciles custody and credits it against the impaired pool, within the principal ceiling
+→ TransportSettlement (Recovered) published in the same instruction
+→ EVM returns the credited amount to remote principal at par
+```
+
 ### Reporting
 
 ```
@@ -189,7 +280,34 @@ Solana state observation
 → a report that can no longer price advances the lane and emits RemoteReportSkipped
 ```
 
-A report can no longer price once it has expired, when it names another epoch or an observation older than the cutoff while the epoch is at cutoff, or after the epoch's valuation is fixed, unless it only completes the open allocation without moving NAV. Integrity failures still revert. RecallSent never expires.
+A report can no longer price once it has expired, when it names another epoch or an observation older than the cutoff while the epoch is at cutoff, or after the epoch's valuation is fixed, unless it only completes the open allocation without moving NAV. While a close is pending, every report is skipped with `SettlementPending`. Integrity failures still revert. RecallSent and TransportSettlement never expire: each is the terminal notice of its cycle, and any disagreement with that cycle reverts instead.
+
+A report excludes custody already attributed to the open allocation, because the vault counts an allocation only when it settles, by completion or by close.
+
+## Deployment and relaying
+
+### Deployment order
+
+Resolve, TransportSettlement, the settlement instruction and the new account values are additive, but the two chains must adopt them in this order:
+
+1. **Solana program first.** A program without this change rejects Resolve and has no settlement instruction, so a coordinator that sent Close or Recover to it would halt the control lane. The upgrade is in place and existing accounts keep their size, so nothing is migrated. The transport ledger is created by the first close.
+2. **Relayer in the same window.** The upgraded program needs the account changes below, notably the new `publish_remote_report` slot. Switch the relayer when no allocation is open.
+3. **EVM vault and coordinator together.** Neither contract is upgradeable, the vault binds its coordinator once, and both gained state and entry points, so an existing EVM deployment cannot adopt Close and Recover in place. A Solana namespace accepts one source application for life, because ConfigUpdate changes only risk parameters. The new coordinator therefore needs a new namespace, which only the program's upgrade authority can initialize, with its emergency guardian and transport verifier.
+4. **Allocations last.** Open allocations only after the relayer routes all seven message types.
+
+The Solana upgrade is one-way. Once an account holds a value the previous program does not know, such as a quarantined, closed or recovery transfer record, a consumed Resolve or a settlement report record, the previous program cannot read it.
+
+### Relayer and operator account changes
+
+Compared with v0.1.0:
+
+- Relay the Resolve bytes emitted by the coordinator's `AdmissionRequested`, `CloseRequested` and `RecoveryRequested` events, as for `AllocationInitiated` and `RecallInitiated`.
+- Route a Resolve by its action: Admit to `process_resolve`, Close and Recover to `process_settlement`. Sent to the wrong instruction, it fails with `WrongResolveInstruction` and nothing is consumed.
+- `process_settlement` takes, in order: the transport verifier (signer and payer), remote config, risk config, strategy config, remote position, control lane, outbound lane, the transfer record of the named id, the transport ledger, the custody token account, the consumed-message record, the report record for the outbound lane's next sequence, the system program, and the optional emergency guardian. For a Close, the transfer record is the allocation's. For a Recover, it is the new record for the recovery id, created by the instruction. The ledger address derives from `["transport-ledger", remote_config]`.
+- `process_settlement` publishes the TransportSettlement in the same transaction and emits its bytes in `TransportSettlementPublished`. Deliver it to `RemoteAccounting.processTransportSettlement` in outbound-lane order, alongside RemoteReport (`processRemoteReport`) and RecallSent (`processRecallSent`).
+- `publish_remote_report` has a new last account, `active_transfer_record`. While an allocation is open it must be that allocation's transfer record, derived from `["transfer-record", remote_config, transfer_id]`. A missing or wrong record fails with `MissingActiveTransferRecord` or `InvalidTransferRecord`.
+- Optional accounts always occupy their slot: `active_transfer_record`, and `emergency_guardian` on `process_recall`, `attribute_allocation`, `process_resolve` and `process_settlement`. Pass the program id for an absent account. The program does not enable Anchor's `allow-missing-optionals`, so a request that drops the slot fails with `AccountNotEnoughKeys`.
+- `advance_replay_watermark`, signed by the administrator, now requires the remote position account.
 
 ## Testing
 
@@ -206,7 +324,7 @@ The repository uses multiple verification approaches:
 - Deterministic transport fault simulation
 - Deterministic cross-chain E2E scenarios
 
-The E2E suite exercises live EVM production contracts and live Solana remote-leg instructions with exact canonical payloads. Message and asset transport stay independent. Scenarios cover the healthy allocation and recall path plus delay, reorder, duplication, drop, partial loss, total loss and freeze during unwind.
+The E2E suite exercises live EVM production contracts and live Solana remote-leg instructions with exact canonical payloads. Message and asset transport stay independent. Scenarios cover the healthy allocation and recall path plus delay, reorder, duplication, drop, partial loss, total loss, freeze during unwind, and a short allocation that is closed after its deadline and whose late arrival is then recovered.
 
 All current test suites pass.
 
@@ -234,6 +352,14 @@ The test suites exercise properties including:
 - Failed publication does not consume an outbound sequence
 - Principal-capped remote reports cannot create schema-v1 unrealized profit
 - Financial buckets do not double-count value
+- A blocked control message is consumed and quarantined without financial effect
+- A timeout alone never changes NAV; only an authenticated TransportSettlement settles a closed allocation
+- A closing allocation settles exactly once: reports skip until its settlement, and each skipped report still advances the inbound lane once
+- Impairment stays outside NAV and apart from recognized loss
+- EVM and Solana impairment totals must agree on every settlement
+- Recovery credits only reconciled unattributed custody, within the impaired pool and the principal ceiling
+- A recovery and a closed allocation never share an identity
+- A frozen leg admits, closes or recovers only with the guardian's co-signature
 
 ## Repository structure
 
@@ -363,10 +489,21 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 - The EVM test environment uses a test authenticator rather than a real bridge authenticator
 - The system has not been audited
 - The repository is not presented as production-ready
-- One unresolved remote allocation or recall cycle is supported
+- One unresolved remote allocation, recall or recovery cycle is supported
 - Classic SPL Token is supported by the Solana leg, not Token-2022
-- Allocation and recall minimums and deadlines are encoded and structurally validated but advisory: the Solana leg completes an allocation only at its full authorized amount and enforces neither the recall minimum nor either deadline
-- An expired control message halts the Solana control lane, and a partially delivered or dropped allocation stays open. Recovering from either needs an explicit resolution message that is not yet designed
+- Allocation and recall minimums are encoded and structurally validated but advisory: an allocation completes only at its full authorized amount, and the leg does not enforce the recall minimum
+- Transfer deadlines are enforced only by the EVM coordinator, as the earliest time it may request a close. The Solana leg quarantines expired messages but enforces neither transfer deadline, and it trusts an authenticated Close
+- Impairment has no write-off path. It stays outside NAV until recovered; recognizing it as loss would need a new, explicitly authorized operation
+- Recovery is pooled and cannot attribute a late asset to a particular closed allocation
+- The Rust accounting model has no deadline; the differential harness moves time past the deadline only for the close call
+- The cross-chain E2E covers close and recovery on an active leg; the frozen-leg guardian path is covered by Solana instruction and interop tests
+
+### Unresolved release risks
+
+Both risks below are known and unresolved. Each must be fixed, or explicitly accepted, before a release that holds user funds.
+
+- **Stuck recall.** Close applies only to allocations, and a recall has no close or recovery path. If a recall never produces RecallSent, the coordinator's single cycle stays open and blocks every new allocation, recall and recovery. That happens when the recall stays quarantined (Admit refuses a recall that asks for more principal than the leg accepted), when a frozen leg's guardian does not co-sign, or when the leg cannot finish withdrawing, sending and reporting it. Separately, recalled assets lost in asset transport after RecallSent stay in inbound transit, and so in NAV, with no impairment path.
+- **Close-pending epoch liveness.** While a close is pending, the coordinator skips every report. If the epoch is at cutoff in that window, its remote valuation cannot lock, and `finalizeEpoch` reverts with `RemoteValuationRequired` until the settlement has landed and a fresh report for the epoch has arrived. The settlement needs the Close relayed to and processed by the leg, with the guardian's co-signature on a frozen leg, and the TransportSettlement relayed back. Nothing times out or falls back, so that epoch's deposits and redemptions wait on the round trip. Requesting a close early in an epoch narrows this window but does not remove it.
 
 ## License
 

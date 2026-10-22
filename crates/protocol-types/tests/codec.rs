@@ -10,7 +10,9 @@ use protocol_types::layout::{
     DESTINATION_APPLICATION_OFFSET, FLAGS_OFFSET, HEADER_LEN, MAGIC_OFFSET, MAX_MESSAGE_LEN,
     MESSAGE_TYPE_OFFSET, PROTOCOL_VERSION_OFFSET, RECALL_MESSAGE_LEN, RECALL_SENT_MESSAGE_LEN,
     REMOTE_REPORT_MESSAGE_LEN, RESOLVE_ACTION_OFFSET, RESOLVE_MESSAGE_LEN,
-    RESOLVE_TARGET_SEQUENCE_OFFSET, SCHEMA_VERSION_OFFSET, SOURCE_APPLICATION_OFFSET,
+    RESOLVE_TARGET_SEQUENCE_OFFSET, SCHEMA_VERSION_OFFSET, SETTLEMENT_CREDITED_AMOUNT_OFFSET,
+    SETTLEMENT_IMPAIRED_OUTSTANDING_OFFSET, SETTLEMENT_KIND_OFFSET, SOURCE_APPLICATION_OFFSET,
+    TRANSPORT_SETTLEMENT_MESSAGE_LEN,
 };
 use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, DecodeError, DeploymentId,
@@ -48,6 +50,11 @@ fn every_message_type_has_its_declared_encoded_length() {
         (MessageType::RecallSent, RECALL_SENT_MESSAGE_LEN, 375),
         (MessageType::ConfigUpdate, CONFIG_UPDATE_MESSAGE_LEN, 317),
         (MessageType::Resolve, RESOLVE_MESSAGE_LEN, 296),
+        (
+            MessageType::TransportSettlement,
+            TRANSPORT_SETTLEMENT_MESSAGE_LEN,
+            336,
+        ),
     ];
     for (kind, declared, literal) in expected {
         assert_eq!(declared, literal, "{kind:?}");
@@ -304,7 +311,7 @@ fn an_unsupported_schema_version_rejects() {
 
 #[test]
 fn an_unknown_message_type_rejects() {
-    for kind in [0u8, 7, u8::MAX] {
+    for kind in [0u8, 8, u8::MAX] {
         let bytes = patch(MessageType::Allocate, MESSAGE_TYPE_OFFSET, &[kind]);
         assert_eq!(
             decode_message(&bytes),
@@ -314,9 +321,9 @@ fn an_unknown_message_type_rejects() {
 }
 
 #[test]
-fn every_resolve_action_byte_except_admit_rejects() {
+fn every_undefined_resolve_action_byte_rejects() {
     let position = HEADER_LEN + RESOLVE_ACTION_OFFSET;
-    for action in (0..=u8::MAX).filter(|action| *action != 1) {
+    for action in (0..=u8::MAX).filter(|action| !(1..=3).contains(action)) {
         let bytes = resealed(&patch(MessageType::Resolve, position, &[action]));
         assert_eq!(
             decode_message(&bytes),
@@ -359,6 +366,83 @@ fn a_resolution_that_does_not_name_an_earlier_message_will_not_decode() {
             "target {target}"
         );
     }
+}
+
+#[test]
+fn every_defined_resolve_action_byte_decodes() {
+    let position = HEADER_LEN + RESOLVE_ACTION_OFFSET;
+    for action in 1u8..=3 {
+        let bytes = resealed(&patch(MessageType::Resolve, position, &[action]));
+        let decoded = decode_message(&bytes).unwrap();
+        assert!(
+            matches!(decoded.body, Body::Resolve(body) if body.action.to_u8() == action),
+            "action {action}"
+        );
+    }
+}
+
+#[test]
+fn every_undefined_settlement_kind_byte_rejects() {
+    let position = HEADER_LEN + SETTLEMENT_KIND_OFFSET;
+    for kind in (0..=u8::MAX).filter(|kind| !(1..=2).contains(kind)) {
+        let bytes = resealed(&patch(MessageType::TransportSettlement, position, &[kind]));
+        assert_eq!(
+            decode_message(&bytes),
+            Err(DecodeError::UnknownSettlementKind(kind))
+        );
+    }
+}
+
+#[test]
+fn a_settlement_crediting_more_than_its_claim_will_not_decode() {
+    let position = HEADER_LEN + SETTLEMENT_CREDITED_AMOUNT_OFFSET;
+    let bytes = resealed(&patch(
+        MessageType::TransportSettlement,
+        position,
+        &1_000_001u128.to_be_bytes(),
+    ));
+    assert_eq!(
+        decode_message(&bytes),
+        Err(DecodeError::Invalid(ValidationError::CreditAboveClaim))
+    );
+}
+
+#[test]
+fn a_close_carrying_less_impairment_than_its_shortfall_will_not_decode() {
+    let position = HEADER_LEN + SETTLEMENT_IMPAIRED_OUTSTANDING_OFFSET;
+    let bytes = resealed(&patch(
+        MessageType::TransportSettlement,
+        position,
+        &399_999u128.to_be_bytes(),
+    ));
+    assert_eq!(
+        decode_message(&bytes),
+        Err(DecodeError::Invalid(
+            ValidationError::ImpairmentBelowShortfall
+        ))
+    );
+}
+
+#[test]
+fn a_recovery_leaving_any_other_impairment_will_not_decode() {
+    let kind = HEADER_LEN + SETTLEMENT_KIND_OFFSET;
+    let impaired = HEADER_LEN + SETTLEMENT_IMPAIRED_OUTSTANDING_OFFSET;
+    for outstanding in [399_999u128, 400_001, 0] {
+        let mut bytes = patch(MessageType::TransportSettlement, kind, &[2]);
+        bytes
+            .get_mut(impaired..impaired + 16)
+            .unwrap()
+            .copy_from_slice(&outstanding.to_be_bytes());
+        assert_eq!(
+            decode_message(&resealed(&bytes)),
+            Err(DecodeError::Invalid(
+                ValidationError::RecoveryImpairmentMismatch
+            )),
+            "outstanding {outstanding}"
+        );
+    }
+    let bytes = resealed(&patch(MessageType::TransportSettlement, kind, &[2]));
+    assert!(decode_message(&bytes).is_ok());
 }
 
 #[test]

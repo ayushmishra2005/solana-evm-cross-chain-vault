@@ -10,16 +10,22 @@ use crate::layout;
 pub enum ResolveAction {
     /// Carries out a quarantined transfer now, on its original terms.
     Admit,
+    /// Ends an allocation after its deadline, crediting only what arrived.
+    Close,
+    /// Credits unattributed custody against outstanding transport impairment.
+    Recover,
 }
 
 impl ResolveAction {
     /// Every action, in discriminant order.
-    pub const ALL: [Self; 1] = [Self::Admit];
+    pub const ALL: [Self; 3] = [Self::Admit, Self::Close, Self::Recover];
 
     #[must_use]
     pub const fn to_u8(self) -> u8 {
         match self {
             Self::Admit => 1,
+            Self::Close => 2,
+            Self::Recover => 3,
         }
     }
 
@@ -27,6 +33,8 @@ impl ResolveAction {
     pub const fn from_u8(value: u8) -> Result<Self, DecodeError> {
         match value {
             1 => Ok(Self::Admit),
+            2 => Ok(Self::Close),
+            3 => Ok(Self::Recover),
             other => Err(DecodeError::UnknownResolveAction(other)),
         }
     }
@@ -160,10 +168,11 @@ mod tests {
     fn every_byte_outside_the_defined_actions_rejects() {
         for value in 0..=u8::MAX {
             let outcome = ResolveAction::from_u8(value);
-            if value == 1 {
-                assert_eq!(outcome, Ok(ResolveAction::Admit));
-            } else {
-                assert_eq!(outcome, Err(DecodeError::UnknownResolveAction(value)));
+            match value {
+                1 => assert_eq!(outcome, Ok(ResolveAction::Admit)),
+                2 => assert_eq!(outcome, Ok(ResolveAction::Close)),
+                3 => assert_eq!(outcome, Ok(ResolveAction::Recover)),
+                _ => assert_eq!(outcome, Err(DecodeError::UnknownResolveAction(value))),
             }
         }
     }
@@ -172,11 +181,11 @@ mod tests {
     fn an_unknown_action_byte_fails_decoding() {
         let mut bytes = encoded(&ResolveBody::sample());
         if let Some(action) = bytes.get_mut(layout::RESOLVE_ACTION_OFFSET) {
-            *action = 2;
+            *action = 4;
         }
         assert_eq!(
             ResolveBody::decode(&bytes),
-            Err(DecodeError::UnknownResolveAction(2))
+            Err(DecodeError::UnknownResolveAction(4))
         );
     }
 

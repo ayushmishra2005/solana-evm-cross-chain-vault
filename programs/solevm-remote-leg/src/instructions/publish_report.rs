@@ -12,9 +12,13 @@ use crate::instructions::publication::{self, RecordEntry, RecordSlots};
 use crate::message;
 use crate::outbound::{OUTBOUND_LANE_SEED, OutboundLane, ReportType};
 use crate::outbound_message::{self, OutboundContext, ReportFields};
+use crate::records;
 use crate::remote_state::{self, RemoteStateView};
 use crate::state::{REMOTE_CONFIG_SEED, RemoteConfig, STATE_VERSION};
-use crate::strategy::{REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig};
+use crate::strategy::{
+    REMOTE_POSITION_SEED, RemotePosition, STRATEGY_CONFIG_SEED, StrategyConfig,
+    TRANSFER_RECORD_SEED, TransferKind, TransferRecord,
+};
 
 #[derive(Accounts)]
 pub struct PublishRemoteReport<'info> {
@@ -73,6 +77,10 @@ pub struct PublishRemoteReport<'info> {
     pub report_record: UncheckedAccount<'info>,
 
     pub system_program: Program<'info, System>,
+
+    /// CHECK: bound to the position's open allocation, and required only
+    /// while one is open.
+    pub active_transfer_record: Option<UncheckedAccount<'info>>,
 }
 
 pub fn process_publish_remote_report(
@@ -94,8 +102,13 @@ pub fn process_publish_remote_report(
     custody::reconcile(position, custody_amount)?;
     custody::check_deployed(position, adapter_principal)?;
 
-    let remote_principal = remote_principal(position)?;
     let config = &ctx.accounts.remote_config;
+    let in_flight = in_flight_attribution(
+        position,
+        ctx.accounts.active_transfer_record.as_ref(),
+        &config.key(),
+    )?;
+    let remote_principal = remote_principal(position)?.saturating_sub(in_flight);
     let commitment = remote_state::commitment(&RemoteStateView {
         remote_config: &config.key(),
         config_version: config.config_version,
@@ -178,6 +191,44 @@ fn remote_principal(position: &RemotePosition) -> Result<u64> {
         .checked_add(position.deployed_principal)
         .and_then(|total| total.checked_add(position.recalled_custody))
         .ok_or_else(|| RemoteLegError::ArithmeticOverflow.into())
+}
+
+/// Attribution the open allocation already received but has not settled.
+///
+/// The vault counts an allocation only when it settles, by completion or by
+/// close, so a report that counted part of it earlier would count it twice.
+fn in_flight_attribution(
+    position: &RemotePosition,
+    record: Option<&UncheckedAccount>,
+    remote_config: &Pubkey,
+) -> Result<u64> {
+    if position.active_transfer_kind != TransferKind::Allocate {
+        return Ok(0);
+    }
+    let account = record.ok_or(RemoteLegError::MissingActiveTransferRecord)?;
+    let info = account.to_account_info();
+    let record: TransferRecord = records::load(&info, RemoteLegError::InvalidTransferRecord)?;
+    let address = Pubkey::create_program_address(
+        &[
+            TRANSFER_RECORD_SEED,
+            remote_config.as_ref(),
+            &position.active_transfer_id,
+            &[record.bump],
+        ],
+        &crate::ID,
+    )
+    .map_err(|_| RemoteLegError::InvalidTransferRecord)?;
+    require_keys_eq!(
+        account.key(),
+        address,
+        RemoteLegError::InvalidTransferRecord
+    );
+    require!(
+        record.transfer_kind == TransferKind::Allocate
+            && record.transfer_id == position.active_transfer_id,
+        RemoteLegError::InvalidTransferRecord
+    );
+    Ok(record.attributed_amount)
 }
 
 fn check_versions(ctx: &Context<PublishRemoteReport>) -> Result<()> {

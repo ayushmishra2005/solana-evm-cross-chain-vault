@@ -22,3 +22,43 @@ target
 
 # IDE
 .idea/
+
+# Environment files. Foundry loads .env automatically; commit only a template.
+.env
+.env.*
+!.env.example
+
+# Secrets and credentials
+*.pem
+*.key
+*.p12
+*.pfx
+*.secret
+secrets/
+.secrets/
+
+# Wallets and keypairs: Solana CLI wallets, program keypairs, EVM keystores
+*keypair*.json
+id.json
+wallet.json
+wallets/
+*.keystore
+keystore/
+keystores/
+UTC--*
+
+# Temporary logs, dumps and backups
+*.log
+logs/
+*.tmp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local validator and Anchor test ledgers
+test-ledger/
+.anchor/

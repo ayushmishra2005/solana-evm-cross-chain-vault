@@ -40,6 +40,10 @@ pub enum Rejection {
     ValuationAlreadyFixed,
     AllocateNotAllowed,
     InvalidAssetAttribution,
+    CloseAlreadyRequested,
+    NoPendingSettlement,
+    NothingToRecover,
+    SettlementMismatch,
 }
 
 impl Rejection {
@@ -82,6 +86,10 @@ impl Rejection {
             Self::ValuationAlreadyFixed => "remote valuation for this epoch is already fixed",
             Self::AllocateNotAllowed => "a new allocation is not allowed in this state",
             Self::InvalidAssetAttribution => "inbound assets cannot be attributed",
+            Self::CloseAlreadyRequested => "the active allocation is already closing",
+            Self::NoPendingSettlement => "no close or recovery awaits this settlement",
+            Self::NothingToRecover => "no impaired transport is outstanding",
+            Self::SettlementMismatch => "the settlement disagrees with the cycle it settles",
         }
     }
 }
@@ -99,7 +107,7 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
-    const ALL: [Rejection; 36] = [
+    const ALL: [Rejection; 40] = [
         Rejection::InvalidVaultState,
         Rejection::EpochNotOpen,
         Rejection::EpochAlreadyOpen,
@@ -136,6 +144,10 @@ mod tests {
         Rejection::ValuationAlreadyFixed,
         Rejection::AllocateNotAllowed,
         Rejection::InvalidAssetAttribution,
+        Rejection::CloseAlreadyRequested,
+        Rejection::NoPendingSettlement,
+        Rejection::NothingToRecover,
+        Rejection::SettlementMismatch,
     ];
 
     #[test]

@@ -410,13 +410,31 @@ fn a_resolution_bound_to_another_record_reverts() {
 fn a_resolution_with_an_unknown_action_reverts() {
     let mut fixture = quarantined_allocation();
     let mut bytes = fixture.resolve_bytes(ID, 1, 2);
-    patch_body(&mut bytes, layout::RESOLVE_ACTION_OFFSET, &[2]);
+    patch_body(&mut bytes, layout::RESOLVE_ACTION_OFFSET, &[4]);
 
     expect_error(
         fixture.resolve(ID, 2, bytes),
         RemoteLegError::InvalidMessage,
     );
     assert_eq!(fixture.control_lane().highest_consumed_sequence, 1);
+}
+
+/// A close or recovery must never be consumed as a no-op on the admission
+/// path, or the vault would wait for a settlement that never comes.
+#[test]
+fn a_close_or_recovery_on_the_admission_path_reverts_unconsumed() {
+    for action in [2u8, 3] {
+        let mut fixture = quarantined_allocation();
+        let mut bytes = fixture.resolve_bytes(ID, 1, 2);
+        patch_body(&mut bytes, layout::RESOLVE_ACTION_OFFSET, &[action]);
+
+        expect_error(
+            fixture.resolve(ID, 2, bytes),
+            RemoteLegError::WrongResolveInstruction,
+        );
+        assert_eq!(fixture.control_lane().highest_consumed_sequence, 1);
+        assert_eq!(fixture.transfer(&ID).status, TransferStatus::Quarantined);
+    }
 }
 
 #[test]

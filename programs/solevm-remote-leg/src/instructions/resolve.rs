@@ -116,6 +116,10 @@ pub fn handle_resolve(ctx: Context<ProcessResolve>, message_bytes: Vec<u8>) -> R
     let protocol_types::Body::Resolve(body) = message.body else {
         return Err(RemoteLegError::UnsupportedMessageType.into());
     };
+    require!(
+        body.action == ResolveAction::Admit,
+        RemoteLegError::WrongResolveInstruction
+    );
     require_eq!(
         body.config_version.get(),
         ctx.accounts.remote_config.config_version,
@@ -159,9 +163,7 @@ pub fn handle_resolve(ctx: Context<ProcessResolve>, message_bytes: Vec<u8>) -> R
     } else if !held {
         Admission::unchanged(ResolveOutcome::NotQuarantined)
     } else {
-        match body.action {
-            ResolveAction::Admit => admit(ctx.accounts)?,
-        }
+        admit(ctx.accounts)?
     };
 
     records::create_and_write(
@@ -246,7 +248,9 @@ fn admit(accounts: &mut ProcessResolve) -> Result<Admission> {
                 return Ok(Admission::unchanged(ResolveOutcome::InsufficientPrincipal));
             }
         }
-        TransferKind::None => return Err(RemoteLegError::InvalidTransferKind.into()),
+        TransferKind::None | TransferKind::Recover => {
+            return Err(RemoteLegError::InvalidTransferKind.into());
+        }
     }
 
     require!(

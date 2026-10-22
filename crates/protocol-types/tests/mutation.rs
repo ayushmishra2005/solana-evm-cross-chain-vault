@@ -189,6 +189,27 @@ const RESOLVE_REGIONS: &[Region] = &[
     region("config version", layout::RESOLVE_CONFIG_VERSION_OFFSET, 8),
 ];
 
+const TRANSPORT_SETTLEMENT_REGIONS: &[Region] = &[
+    region("transfer id", layout::SETTLEMENT_TRANSFER_ID_OFFSET, 32),
+    region("kind", layout::SETTLEMENT_KIND_OFFSET, 1),
+    region("claim amount", layout::SETTLEMENT_CLAIM_AMOUNT_OFFSET, 16),
+    region(
+        "credited amount",
+        layout::SETTLEMENT_CREDITED_AMOUNT_OFFSET,
+        16,
+    ),
+    region(
+        "impaired outstanding",
+        layout::SETTLEMENT_IMPAIRED_OUTSTANDING_OFFSET,
+        16,
+    ),
+    region(
+        "config version",
+        layout::SETTLEMENT_CONFIG_VERSION_OFFSET,
+        8,
+    ),
+];
+
 fn body_regions(kind: MessageType) -> &'static [Region] {
     match kind {
         MessageType::Allocate => ALLOCATE_REGIONS,
@@ -197,6 +218,7 @@ fn body_regions(kind: MessageType) -> &'static [Region] {
         MessageType::RecallSent => RECALL_SENT_REGIONS,
         MessageType::ConfigUpdate => CONFIG_UPDATE_REGIONS,
         MessageType::Resolve => RESOLVE_REGIONS,
+        MessageType::TransportSettlement => TRANSPORT_SETTLEMENT_REGIONS,
     }
 }
 
@@ -380,7 +402,7 @@ fn swapping_the_message_type_to_every_other_type_rejects_on_total_length() {
 fn every_unknown_message_type_byte_rejects() {
     let bytes = common::encoded(MessageType::Allocate);
     for value in 0..=u8::MAX {
-        if (1..=6).contains(&value) {
+        if (1..=7).contains(&value) {
             continue;
         }
         let mut edited = bytes.clone();

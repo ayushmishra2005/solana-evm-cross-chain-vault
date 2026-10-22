@@ -15,17 +15,19 @@ pub enum MessageType {
     RecallSent,
     ConfigUpdate,
     Resolve,
+    TransportSettlement,
 }
 
 impl MessageType {
     /// Every kind, in discriminant order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Allocate,
         Self::Recall,
         Self::RemoteReport,
         Self::RecallSent,
         Self::ConfigUpdate,
         Self::Resolve,
+        Self::TransportSettlement,
     ];
 
     #[must_use]
@@ -37,6 +39,7 @@ impl MessageType {
             Self::RecallSent => 4,
             Self::ConfigUpdate => 5,
             Self::Resolve => 6,
+            Self::TransportSettlement => 7,
         }
     }
 
@@ -49,6 +52,7 @@ impl MessageType {
             4 => Ok(Self::RecallSent),
             5 => Ok(Self::ConfigUpdate),
             6 => Ok(Self::Resolve),
+            7 => Ok(Self::TransportSettlement),
             other => Err(DecodeError::UnknownMessageType(other)),
         }
     }
@@ -63,6 +67,7 @@ impl MessageType {
             Self::RecallSent => layout::RECALL_SENT_BODY_LEN,
             Self::ConfigUpdate => layout::CONFIG_UPDATE_BODY_LEN,
             Self::Resolve => layout::RESOLVE_BODY_LEN,
+            Self::TransportSettlement => layout::TRANSPORT_SETTLEMENT_BODY_LEN,
         }
     }
 
@@ -76,6 +81,7 @@ impl MessageType {
             Self::RecallSent => layout::RECALL_SENT_MESSAGE_LEN,
             Self::ConfigUpdate => layout::CONFIG_UPDATE_MESSAGE_LEN,
             Self::Resolve => layout::RESOLVE_MESSAGE_LEN,
+            Self::TransportSettlement => layout::TRANSPORT_SETTLEMENT_MESSAGE_LEN,
         }
     }
 }
@@ -142,13 +148,14 @@ mod tests {
         assert_eq!(MessageType::RecallSent.to_u8(), 4);
         assert_eq!(MessageType::ConfigUpdate.to_u8(), 5);
         assert_eq!(MessageType::Resolve.to_u8(), 6);
+        assert_eq!(MessageType::TransportSettlement.to_u8(), 7);
     }
 
     #[test]
     fn every_value_outside_the_defined_set_rejects() {
         for value in 0..=u8::MAX {
             let outcome = MessageType::from_u8(value);
-            if (1..=6).contains(&value) {
+            if (1..=7).contains(&value) {
                 assert!(outcome.is_ok(), "{value} should be known");
             } else {
                 assert_eq!(outcome, Err(DecodeError::UnknownMessageType(value)));

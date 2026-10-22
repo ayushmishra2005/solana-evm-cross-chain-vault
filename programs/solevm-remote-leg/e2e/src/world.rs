@@ -1,8 +1,8 @@
 //! Live LiteSVM remote-leg plus independent xchain-sim transport.
 
-use protocol_types::{AssetAmount, Body, MessageType, TransferId};
+use protocol_types::{AssetAmount, Body, MessageType, ResolveAction, TransferId};
 use serde::Serialize;
-use solevm_remote_leg::{RecallSentPublished, RemoteReportPublished};
+use solevm_remote_leg::{RecallSentPublished, RemoteReportPublished, TransportSettlementPublished};
 use xchain_sim::{
     AssetRequest, ControlRequest, EndpointId, EventId, Fault, FaultAction, FaultId, FaultTarget,
     Simulator, Tick,
@@ -38,10 +38,13 @@ pub struct Observation {
     pub last_error: String,
     pub last_event_id: u64,
     pub inbound_asset: u128,
+    pub impaired_outstanding: u128,
     pub reports: Vec<String>,
     pub recall_sents: Vec<String>,
+    pub settlements: Vec<String>,
     pub latest_report: String,
     pub latest_recall_sent: String,
+    pub latest_settlement: String,
     pub trace: TraceLog,
 }
 
@@ -411,6 +414,28 @@ impl World {
                     .recall(body.transfer_id.to_bytes(), sequence, bytes.to_vec())
             }
             Body::ConfigUpdate(_) => self.fixture.config_update(sequence, bytes.to_vec()),
+            Body::Resolve(body) if body.action == ResolveAction::Admit => {
+                self.fixture
+                    .resolve(body.transfer_id.to_bytes(), sequence, bytes.to_vec())
+            }
+            Body::Resolve(body) => {
+                let result =
+                    self.fixture
+                        .settle(body.transfer_id.to_bytes(), sequence, bytes.to_vec());
+                if self.record_tx(
+                    result,
+                    "settle",
+                    transfer.as_ref(),
+                    &message_type,
+                    sequence,
+                    0,
+                ) {
+                    let event: TransportSettlementPublished = last_event(&self.fixture.last_logs());
+                    let at = self.sim.now().get();
+                    let _ = self.schedule_control(self.leg, self.hub, event.message_bytes, at);
+                }
+                return;
+            }
             _ => {
                 self.last_accepted = false;
                 self.last_error = format!("unexpected {message_type}");
@@ -615,11 +640,15 @@ impl World {
         let outbound = self.fixture.outbound_lane();
         let mut reports = Vec::new();
         let mut recall_sents = Vec::new();
+        let mut settlements = Vec::new();
         for item in self.sim.control_inbox(self.hub) {
             if let Ok(message) = protocol_types::decode_message(&item.bytes) {
                 match message.message_type() {
                     MessageType::RemoteReport => reports.push(hexutil::encode(&item.bytes)),
                     MessageType::RecallSent => recall_sents.push(hexutil::encode(&item.bytes)),
+                    MessageType::TransportSettlement => {
+                        settlements.push(hexutil::encode(&item.bytes));
+                    }
                     _ => {}
                 }
             }
@@ -651,10 +680,16 @@ impl World {
             last_error: self.last_error.clone(),
             last_event_id: self.last_event_id,
             inbound_asset,
+            impaired_outstanding: self
+                .fixture
+                .transport_ledger()
+                .map_or(0, |ledger| ledger.impaired_outstanding),
             latest_report: reports.last().cloned().unwrap_or_default(),
             latest_recall_sent: recall_sents.last().cloned().unwrap_or_default(),
+            latest_settlement: settlements.last().cloned().unwrap_or_default(),
             reports,
             recall_sents,
+            settlements,
             trace: self.trace.clone(),
         }
     }
@@ -677,6 +712,8 @@ fn transfer_of(message: Option<&protocol_types::Message>) -> Option<[u8; 32]> {
         Some(Body::Allocate(body)) => Some(body.transfer_id.to_bytes()),
         Some(Body::Recall(body)) => Some(body.transfer_id.to_bytes()),
         Some(Body::RecallSent(body)) => Some(body.transfer_id.to_bytes()),
+        Some(Body::Resolve(body)) => Some(body.transfer_id.to_bytes()),
+        Some(Body::TransportSettlement(body)) => Some(body.transfer_id.to_bytes()),
         _ => None,
     }
 }

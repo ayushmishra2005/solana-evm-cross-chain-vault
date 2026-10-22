@@ -27,11 +27,17 @@ sol! {
         uint256[4] actorShares;
         uint256[4] actorDepositAssets;
         uint256[4] actorRedeemShares;
+        AbiRemoteBuckets remote;
+    }
+
+    /// Buckets that only exist because of the remote leg.
+    struct AbiRemoteBuckets {
         uint256 unattributedInbound;
         uint256 outboundInTransit;
         uint256 acceptedRemoteValue;
         uint256 inboundInTransit;
         uint256 remotePrincipalCap;
+        uint256 impairedTransport;
     }
 
     /// One operation with the outcome the model produced.
@@ -124,11 +130,14 @@ impl From<&Snapshot> for AbiSnapshot {
             actorShares: words(&shot.actor_shares),
             actorDepositAssets: words(&shot.actor_deposit_assets),
             actorRedeemShares: words(&shot.actor_redeem_shares),
-            unattributedInbound: word(shot.unattributed_inbound),
-            outboundInTransit: word(shot.outbound_in_transit),
-            acceptedRemoteValue: word(shot.accepted_remote_value),
-            inboundInTransit: word(shot.inbound_in_transit),
-            remotePrincipalCap: word(shot.remote_principal_cap),
+            remote: AbiRemoteBuckets {
+                unattributedInbound: word(shot.unattributed_inbound),
+                outboundInTransit: word(shot.outbound_in_transit),
+                acceptedRemoteValue: word(shot.accepted_remote_value),
+                inboundInTransit: word(shot.inbound_in_transit),
+                remotePrincipalCap: word(shot.remote_principal_cap),
+                impairedTransport: word(shot.impaired_transport),
+            },
         }
     }
 }

@@ -53,10 +53,14 @@ pub enum ActionKind {
     ObserveInbound = 19,
     ApplyRemoteValuation = 20,
     LockRemoteValuation = 21,
+    RequestClose = 22,
+    SettleClose = 23,
+    BeginRecover = 24,
+    SettleRecover = 25,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 26] = [
         Self::RequestDeposit,
         Self::CancelDeposit,
         Self::RequestRedeem,
@@ -79,6 +83,10 @@ impl ActionKind {
         Self::ObserveInbound,
         Self::ApplyRemoteValuation,
         Self::LockRemoteValuation,
+        Self::RequestClose,
+        Self::SettleClose,
+        Self::BeginRecover,
+        Self::SettleRecover,
     ];
 
     #[must_use]
@@ -121,6 +129,10 @@ impl ActionKind {
             Self::ObserveInbound => "ObserveInbound",
             Self::ApplyRemoteValuation => "ApplyRemoteValuation",
             Self::LockRemoteValuation => "LockRemoteValuation",
+            Self::RequestClose => "RequestClose",
+            Self::SettleClose => "SettleClose",
+            Self::BeginRecover => "BeginRecover",
+            Self::SettleRecover => "SettleRecover",
         }
     }
 }
@@ -220,6 +232,22 @@ impl Action {
                 newly_realized_loss: AssetAmount::new(self.aux1),
             },
             ActionKind::LockRemoteValuation => Operation::LockRemoteValuation,
+            ActionKind::RequestClose => Operation::RequestClose {
+                actor: account,
+                transfer_id: transfer_id_from(self.aux0),
+            },
+            ActionKind::SettleClose => Operation::SettleClose {
+                transfer_id: transfer_id_from(self.aux0),
+                credited: AssetAmount::new(self.amount),
+            },
+            ActionKind::BeginRecover => Operation::BeginRecover {
+                actor: account,
+                transfer_id: transfer_id_from(self.aux0),
+            },
+            ActionKind::SettleRecover => Operation::SettleRecover {
+                transfer_id: transfer_id_from(self.aux0),
+                credited: AssetAmount::new(self.amount),
+            },
         }
     }
 }
@@ -253,6 +281,8 @@ mod tests {
         assert_eq!(ActionKind::RequestDeposit.raw(), 0);
         assert_eq!(ActionKind::AbortEpoch.raw(), 14);
         assert_eq!(ActionKind::LockRemoteValuation.raw(), 21);
+        assert_eq!(ActionKind::RequestClose.raw(), 22);
+        assert_eq!(ActionKind::SettleRecover.raw(), 25);
         for (index, kind) in ActionKind::ALL.iter().enumerate() {
             assert_eq!(usize::from(kind.raw()), index);
         }

@@ -12,7 +12,7 @@ use common::Pubkey;
 use solevm_remote_leg::{
     ConsumedMessage, MessageClass, OutboundLane, RecallSentMarker, RemoteConfig, RemotePosition,
     ReplayLane, ReportRecord, RiskConfig, StrategyConfig, TransferKind, TransferRecord,
-    TransferStatus,
+    TransferStatus, TransportLedger,
 };
 
 /// Position of every byte a field occupies inside the account data.
@@ -59,6 +59,12 @@ fn the_new_outbound_accounts_have_the_sizes_this_milestone_fixed() {
 }
 
 #[test]
+fn the_transport_ledger_has_the_size_this_milestone_fixed() {
+    assert_eq!(TransportLedger::INIT_SPACE, 98);
+    assert_eq!(TransportLedger::LEN, DISCRIMINATOR_LEN + 98);
+}
+
+#[test]
 fn every_account_stays_under_the_ten_kilobyte_ceiling() {
     for size in [
         RemoteConfig::LEN,
@@ -71,6 +77,7 @@ fn every_account_stays_under_the_ten_kilobyte_ceiling() {
         OutboundLane::LEN,
         ReportRecord::LEN,
         RecallSentMarker::LEN,
+        TransportLedger::LEN,
     ] {
         assert!(size <= 10_240, "account of {size} bytes is too large");
     }

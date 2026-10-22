@@ -33,6 +33,8 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
     event AllocationAccepted(uint256 amount, uint256 acceptedValue);
     event RecallRecorded(bytes32 indexed transferId, uint256 amount);
     event RecallSettled(uint256 principal, uint256 actual, uint256 loss);
+    event TransportClosed(uint256 claim, uint256 credited, uint256 impairedTransport);
+    event TransportRecovered(uint256 amount, uint256 impairedTransport);
     event InboundAssetsObserved(uint256 amount, uint256 total);
     event InboundAssetsAttributed(uint256 amount, uint256 inboundRemaining);
     event RemoteValuationApplied(uint256 reportedValue, uint256 acceptedValue);
@@ -81,6 +83,9 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
     uint256 public remotePrincipalCap;
     /// Cumulative loss recognized from RecallSent. Informational, not a bucket.
     uint256 public recognizedLoss;
+    /// Closed transfer shortfall not yet recovered. Outside NAV and never
+    /// written off as recognized loss.
+    uint256 public impairedTransport;
 
     /// Permanently bound remote-leg coordinator. Zero until bound once.
     address public remoteAccounting;
@@ -534,6 +539,31 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
         emit AllocationAccepted(amount, acceptedRemoteValue);
     }
 
+    /// @notice Ends an allocation that did not fully arrive. Only the credited
+    /// part becomes remote principal; the rest leaves NAV as impairment.
+    function closeAllocation(uint256 claim, uint256 credited) external {
+        _requireRemoteAccounting();
+        if (claim == 0) revert ZeroAmount();
+        if (credited > claim || outboundInTransit < claim) revert InvalidAssetAttribution();
+
+        outboundInTransit -= claim;
+        remotePrincipalCap += credited;
+        acceptedRemoteValue += credited;
+        impairedTransport += claim - credited;
+        emit TransportClosed(claim, credited, impairedTransport);
+    }
+
+    /// @notice Returns recovered impairment to remote principal at par.
+    function recoverImpairment(uint256 amount) external {
+        _requireRemoteAccounting();
+        if (amount > impairedTransport) revert InvalidAssetAttribution();
+
+        impairedTransport -= amount;
+        remotePrincipalCap += amount;
+        acceptedRemoteValue += amount;
+        emit TransportRecovered(amount, impairedTransport);
+    }
+
     function applyRemoteValuation(uint256 reportedValue) external {
         _requireRemoteAccounting();
         _setAcceptedRemoteValue(reportedValue);
@@ -771,9 +801,9 @@ contract SolEVMVault is ISolEVMVault, ERC20, ERC20Permit, ERC165, ReentrancyGuar
         return totalSupply() != 0 || pendingDepositEscrow != 0 || idleBacking != 0
             || claimReserve != 0 || unattributedBalance != 0 || unattributedInbound != 0
             || outboundInTransit != 0 || acceptedRemoteValue != 0 || inboundInTransit != 0
-            || remotePrincipalCap != 0 || recognizedLoss != 0 || pendingRecallPrincipal != 0
-            || epochDepositAssets != 0 || epochRedeemShares != 0 || currentEpochId != 0
-            || currentEpochPhase != EpochPhase.Open || lastCutoffAt != 0;
+            || remotePrincipalCap != 0 || recognizedLoss != 0 || impairedTransport != 0
+            || pendingRecallPrincipal != 0 || epochDepositAssets != 0 || epochRedeemShares != 0
+            || currentEpochId != 0 || currentEpochPhase != EpochPhase.Open || lastCutoffAt != 0;
     }
 
     function _requireRemoteAccounting() private view {

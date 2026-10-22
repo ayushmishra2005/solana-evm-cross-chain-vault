@@ -390,6 +390,7 @@ fn the_lane_keeps_one_order_whatever_the_publication_mix_is() {
             let next = match kind {
                 ReportType::RemoteReport => publish(&mut fixture, sequence).next_commitment,
                 ReportType::RecallSent => publish_notice(&mut fixture).next_commitment,
+                ReportType::TransportSettlement => panic!("these orders publish no settlement"),
             };
 
             let record = fixture.report_record(sequence);

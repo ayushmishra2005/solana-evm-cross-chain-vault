@@ -124,7 +124,11 @@ pub fn code_for(kind: ActionKind, rejection: Rejection) -> ResultCode {
         | Rejection::InvalidRecallSentAmounts
         | Rejection::RemoteValuationRequired
         | Rejection::ValuationAlreadyFixed
-        | Rejection::InvalidAssetAttribution => ResultCode::InvalidConfiguration,
+        | Rejection::InvalidAssetAttribution
+        | Rejection::CloseAlreadyRequested
+        | Rejection::NoPendingSettlement
+        | Rejection::NothingToRecover
+        | Rejection::SettlementMismatch => ResultCode::InvalidConfiguration,
         Rejection::InsufficientRemotePrincipal => ResultCode::InsufficientLiquidity,
         Rejection::AllocateNotAllowed => ResultCode::InvalidVaultState,
         _ => ResultCode::ArithmeticFailure,
@@ -136,7 +140,7 @@ mod tests {
     use super::*;
 
     /// Every rejection the model can produce, so a new variant breaks the build.
-    const ALL: [Rejection; 36] = [
+    const ALL: [Rejection; 40] = [
         Rejection::InvalidVaultState,
         Rejection::EpochNotOpen,
         Rejection::EpochAlreadyOpen,
@@ -173,6 +177,10 @@ mod tests {
         Rejection::ValuationAlreadyFixed,
         Rejection::AllocateNotAllowed,
         Rejection::InvalidAssetAttribution,
+        Rejection::CloseAlreadyRequested,
+        Rejection::NoPendingSettlement,
+        Rejection::NothingToRecover,
+        Rejection::SettlementMismatch,
     ];
 
     #[test]

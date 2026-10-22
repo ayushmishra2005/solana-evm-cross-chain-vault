@@ -27,6 +27,9 @@ pub enum TransferKind {
     None = 0,
     Allocate = 1,
     Recall = 2,
+    /// Credits unattributed custody against pooled transport impairment. It
+    /// settles in the instruction that creates it, so it is never open.
+    Recover = 3,
 }
 
 impl TransferKind {
@@ -42,6 +45,7 @@ impl TransferKind {
             Self::None => None,
             Self::Allocate => Some(MessageClass::Allocate),
             Self::Recall => Some(MessageClass::Recall),
+            Self::Recover => Some(MessageClass::Resolve),
         }
     }
 }
@@ -57,6 +61,9 @@ pub enum TransferStatus {
     /// Consumed in order but not allowed to run. Only an admitting resolution
     /// can move it on, and nothing financial happens until then.
     Quarantined = 3,
+    /// Ended after its deadline by an explicit close. Its one settlement is
+    /// the transport notice, never a report.
+    Closed = 4,
 }
 
 impl TransferStatus {
@@ -169,6 +176,13 @@ impl RemotePosition {
             .ok_or_else(|| RemoteLegError::ArithmeticOverflow.into())
     }
 
+    /// Principal the leg already holds or owes back, wherever it sits.
+    pub fn committed_principal(&self) -> Result<u64> {
+        self.accepted_principal()?
+            .checked_add(self.recalled_custody)
+            .ok_or_else(|| RemoteLegError::ArithmeticOverflow.into())
+    }
+
     /// Principal the vault has accepted on this chain.
     pub fn accepted_principal(&self) -> Result<u64> {
         self.attributed_principal
@@ -205,6 +219,23 @@ impl RemotePosition {
     pub fn holds_quarantined(&self, transfer_id: &[u8; 32], sequence: u64) -> bool {
         self.has_active_transfer()
             && self.active_transfer_status == TransferStatus::Quarantined
+            && self.active_transfer_id == *transfer_id
+            && self.active_transfer_sequence == sequence
+    }
+
+    /// Ends the open cycle without naming it as completed, because a closed
+    /// transfer settles through its transport notice.
+    pub fn close_transfer(&mut self) {
+        self.active_transfer_kind = TransferKind::None;
+        self.active_transfer_id = [0u8; 32];
+        self.active_transfer_sequence = 0;
+        self.active_transfer_status = TransferStatus::None;
+    }
+
+    /// True when the open cycle is the allocation with this identity.
+    #[must_use]
+    pub fn holds_allocation(&self, transfer_id: &[u8; 32], sequence: u64) -> bool {
+        self.active_transfer_kind == TransferKind::Allocate
             && self.active_transfer_id == *transfer_id
             && self.active_transfer_sequence == sequence
     }
@@ -323,6 +354,41 @@ impl TransferRecord {
             expected_source_balance: 0,
             created_at,
             completed_at: 0,
+        }
+    }
+
+    /// The record of one pooled recovery, settled as it is created.
+    ///
+    /// The sequence is the recovering resolution's own. The record proves the
+    /// recovery id was used once; it claims no earlier transfer's assets.
+    #[must_use]
+    pub fn new_recovery(
+        bump: u8,
+        transfer_id: [u8; 32],
+        message_sequence: u64,
+        credited_amount: u64,
+        created_at: i64,
+    ) -> Self {
+        Self {
+            state_version: crate::state::STATE_VERSION,
+            bump,
+            transfer_kind: TransferKind::Recover,
+            message_class: MessageClass::Resolve,
+            status: TransferStatus::Complete,
+            transfer_id,
+            message_sequence,
+            authorized_amount: credited_amount,
+            attributed_amount: credited_amount,
+            requested_recall_amount: 0,
+            minimum_amount: 0,
+            custody_principal_reserved: 0,
+            strategy_principal_resolved: 0,
+            assets_withdrawn: 0,
+            assets_sent: 0,
+            realized_loss: 0,
+            expected_source_balance: 0,
+            created_at,
+            completed_at: created_at,
         }
     }
 
@@ -601,6 +667,61 @@ mod tests {
             TransferKind::Recall.message_class(),
             Some(MessageClass::Recall)
         );
+        assert_eq!(
+            TransferKind::Recover.message_class(),
+            Some(MessageClass::Resolve)
+        );
+    }
+
+    #[test]
+    fn appended_discriminants_leave_every_earlier_value_alone() {
+        assert_eq!(TransferKind::Recover.to_u8(), 3);
+        assert_eq!(TransferStatus::Quarantined.to_u8(), 3);
+        assert_eq!(TransferStatus::Closed.to_u8(), 4);
+    }
+
+    #[test]
+    fn committed_principal_counts_attributed_deployed_and_recalled_custody() {
+        let position = sample_position();
+        assert_eq!(position.accepted_principal().expect("the sum fits"), 30);
+        assert_eq!(position.committed_principal().expect("the sum fits"), 35);
+    }
+
+    #[test]
+    fn committed_principal_above_the_type_maximum_rejects() {
+        let mut position = sample_position();
+        position.recalled_custody = u64::MAX;
+        assert_eq!(
+            position.committed_principal(),
+            Err(RemoteLegError::ArithmeticOverflow.into())
+        );
+    }
+
+    #[test]
+    fn closing_a_cycle_never_names_it_as_completed() {
+        let mut position = sample_position();
+        position.latest_completed_transfer_id = [0x0C; 32];
+        position.open_transfer(TransferKind::Allocate, [0x0A; 32], 4);
+        assert!(position.holds_allocation(&[0x0A; 32], 4));
+        assert!(!position.holds_allocation(&[0x0A; 32], 5));
+
+        position.close_transfer();
+        assert!(!position.has_active_transfer());
+        assert_eq!(position.active_transfer_status, TransferStatus::None);
+        assert_eq!(position.active_transfer_sequence, 0);
+        assert_eq!(position.latest_completed_transfer_id, [0x0C; 32]);
+    }
+
+    #[test]
+    fn a_recovery_record_is_complete_and_names_only_its_own_resolution() {
+        let record = TransferRecord::new_recovery(7, [0xD1; 32], 12, 300, 99);
+        assert_eq!(record.transfer_kind, TransferKind::Recover);
+        assert_eq!(record.message_class, MessageClass::Resolve);
+        assert_eq!(record.status, TransferStatus::Complete);
+        assert_eq!(record.message_sequence, 12);
+        assert_eq!(record.authorized_amount, 300);
+        assert_eq!(record.attributed_amount, 300);
+        assert_eq!(record.completed_at, 99);
     }
 
     #[test]

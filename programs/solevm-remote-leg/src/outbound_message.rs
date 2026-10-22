@@ -8,7 +8,7 @@ use protocol_types::{
     ApplicationId, AssetAmount, Body, ChainId, Commitment, ConfigVersion, DeploymentId,
     DestinationReference, EncodeError, EncodedMessage, EpochId, Flags, Header, LaneId, Message,
     PROTOCOL_VERSION, ProbeStatus, RecallSentBody, RemoteReportBody, SCHEMA_VERSION, Sequence,
-    Timestamp, TransferId, VaultId, layout,
+    SettlementKind, Timestamp, TransferId, TransportSettlementBody, VaultId, layout,
 };
 
 use crate::errors::RemoteLegError;
@@ -59,6 +59,16 @@ pub struct RecallSentFields {
     pub realized_loss: u64,
     pub destination_reference: [u8; 32],
     pub sent_timestamp: u64,
+    pub config_version: u64,
+}
+
+/// Values of one transport settlement, taken from the record and the ledger.
+pub struct TransportSettlementFields {
+    pub transfer_id: [u8; 32],
+    pub kind: SettlementKind,
+    pub claim_amount: u128,
+    pub credited_amount: u64,
+    pub impaired_outstanding: u128,
     pub config_version: u64,
 }
 
@@ -189,9 +199,35 @@ pub fn build_recall_sent(
     )
 }
 
+/// Builds one canonical TransportSettlement.
+pub fn build_transport_settlement(
+    context: &OutboundContext,
+    fields: &TransportSettlementFields,
+) -> Result<BuiltMessage> {
+    let body = TransportSettlementBody {
+        transfer_id: TransferId::new(fields.transfer_id),
+        kind: fields.kind,
+        claim_amount: AssetAmount::new(fields.claim_amount),
+        credited_amount: AssetAmount::new(u128::from(fields.credited_amount)),
+        impaired_outstanding: AssetAmount::new(fields.impaired_outstanding),
+        config_version: ConfigVersion::new(fields.config_version),
+    };
+
+    build(
+        context,
+        Body::TransportSettlement(body),
+        layout::TRANSPORT_SETTLEMENT_MESSAGE_LEN,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transport_settlement_stays_inside_the_transport_budget() {
+        const { assert!(layout::TRANSPORT_SETTLEMENT_MESSAGE_LEN <= MAX_REPORT_LEN) };
+    }
 
     #[test]
     fn a_remote_report_fits_the_transport_budget_exactly() {

@@ -26,7 +26,7 @@ use solevm_remote_leg::{
     MessageQuarantined, OutboundLane, QuarantineReason, REMOTE_POSITION_SEED, REPLAY_LANE_SEED,
     RISK_CONFIG_SEED, RecallSentMarker, RemoteConfig, RemoteLegError, RemotePosition, ReplayLane,
     ReportRecord, RiskConfig, STRATEGY_CONFIG_SEED, StrategyConfig, TRANSFER_RECORD_SEED,
-    TransferKind, TransferRecord, TransferStatus,
+    TransferKind, TransferRecord, TransferStatus, TransportLedger,
 };
 use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
@@ -1677,6 +1677,120 @@ impl Fixture {
         self.resolve_cosigned(transfer_id, sequence, bytes, cosigner)
     }
 
+    /// Encodes one close or recovery against the shared inbound control lane.
+    pub fn settlement_bytes(
+        &self,
+        transfer_id: [u8; 32],
+        target_sequence: u64,
+        sequence: u64,
+        action: protocol_types::ResolveAction,
+    ) -> Vec<u8> {
+        let lane = self.control_lane();
+        messages::MessageBuilder::resolve()
+            .sequence(sequence)
+            .previous_commitment(lane.message_commitment)
+            .resolve_body(|body| {
+                body.transfer_id = protocol_types::TransferId::new(transfer_id);
+                body.target_sequence = protocol_types::Sequence::new(target_sequence);
+                body.action = action;
+                body.config_version =
+                    protocol_types::ConfigVersion::new(self.config().config_version);
+            })
+            .encode()
+    }
+
+    pub fn transport_ledger_key(&self) -> Pubkey {
+        TransportLedger::address(&self.config).0
+    }
+
+    pub fn transport_ledger(&self) -> Option<TransportLedger> {
+        let account = self.svm.get_account(&self.transport_ledger_key())?;
+        if account.owner != solevm_remote_leg::ID {
+            return None;
+        }
+        Some(
+            TransportLedger::try_deserialize(&mut account.data.as_slice()).expect("ledger decodes"),
+        )
+    }
+
+    pub fn settlement_instruction(
+        &self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        bytes: Vec<u8>,
+        emergency_guardian: Option<Pubkey>,
+    ) -> Instruction {
+        let metas = solevm_remote_leg::accounts::ProcessSettlement {
+            transport_verifier: self.verifier.pubkey(),
+            remote_config: self.config,
+            risk_config: self.risk(),
+            strategy_config: self.strategy(),
+            remote_position: self.position_key(),
+            control_lane: self.control_lane_key(),
+            outbound_lane: self.outbound_lane_key(),
+            transfer_record: self.transfer_key(&transfer_id),
+            transport_ledger: self.transport_ledger_key(),
+            custody_token_account: self.custody,
+            consumed_message: self.asset_record_key(sequence),
+            report_record: self.report_record_key(self.outbound_lane().next_sequence),
+            system_program: anchor_lang::system_program::ID,
+            emergency_guardian,
+        }
+        .to_account_metas(None);
+
+        Instruction {
+            program_id: solevm_remote_leg::ID,
+            accounts: metas,
+            data: solevm_remote_leg::instruction::ProcessSettlement {
+                message_bytes: bytes,
+            }
+            .data(),
+        }
+    }
+
+    pub fn settle(&mut self, transfer_id: [u8; 32], sequence: u64, bytes: Vec<u8>) -> TxResult {
+        let instruction = self.settlement_instruction(transfer_id, sequence, bytes, None);
+        self.send_signed_by_verifier(instruction, self.verifier.pubkey())
+    }
+
+    pub fn settle_cosigned(
+        &mut self,
+        transfer_id: [u8; 32],
+        sequence: u64,
+        bytes: Vec<u8>,
+        cosigner: &Keypair,
+    ) -> TxResult {
+        let instruction =
+            self.settlement_instruction(transfer_id, sequence, bytes, Some(cosigner.pubkey()));
+        let payer = self.administrator.insecure_clone();
+        let verifier = self.verifier.insecure_clone();
+        self.send_cosigned(instruction, &payer, &[&verifier, cosigner])
+    }
+
+    /// Closes the allocation carried at `target_sequence` with the next sequence.
+    pub fn close_allocation(&mut self, transfer_id: [u8; 32], target_sequence: u64) -> TxResult {
+        let sequence = self.control_lane().highest_consumed_sequence + 1;
+        let bytes = self.settlement_bytes(
+            transfer_id,
+            target_sequence,
+            sequence,
+            protocol_types::ResolveAction::Close,
+        );
+        self.settle(transfer_id, sequence, bytes)
+    }
+
+    /// Recovers against the pool, bound to the last impaired allocation.
+    pub fn recover_impairment(&mut self, recovery_id: [u8; 32], target_sequence: u64) -> TxResult {
+        let sequence = self.control_lane().highest_consumed_sequence + 1;
+        let bytes = self.settlement_bytes(
+            recovery_id,
+            target_sequence,
+            sequence,
+            protocol_types::ResolveAction::Recover,
+        );
+        self.settle(recovery_id, sequence, bytes)
+    }
+
     /// Brings one full allocation all the way into attributed principal.
     pub fn fund_position(&mut self, transfer_id: [u8; 32], amount: u64) {
         self.accept_allocation(transfer_id, amount);
@@ -1711,7 +1825,16 @@ impl Fixture {
             adapter_state: self.adapter_state,
             report_record: self.report_record_key(sequence),
             system_program: anchor_lang::system_program::ID,
+            active_transfer_record: self.open_allocation_record(),
         }
+    }
+
+    /// The record a report must read while an allocation is open.
+    pub fn open_allocation_record(&self) -> Option<Pubkey> {
+        let account = self.svm.get_account(&self.position_key())?;
+        let position = RemotePosition::try_deserialize(&mut account.data.as_slice()).ok()?;
+        (position.active_transfer_kind == TransferKind::Allocate)
+            .then(|| self.transfer_key(&position.active_transfer_id))
     }
 
     pub fn initialize_outbound_state(&mut self) -> TxResult {
@@ -1786,6 +1909,7 @@ impl Fixture {
             adapter_state: accounts.adapter_state,
             report_record: accounts.report_record,
             system_program: accounts.system_program,
+            active_transfer_record: accounts.active_transfer_record,
         }
         .to_account_metas(None);
 
@@ -2057,6 +2181,7 @@ pub struct OutboundAccounts {
     pub adapter_state: Pubkey,
     pub report_record: Pubkey,
     pub system_program: Pubkey,
+    pub active_transfer_record: Option<Pubkey>,
 }
 
 /// Every account the recall notice instruction reads.

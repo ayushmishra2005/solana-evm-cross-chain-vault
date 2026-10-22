@@ -108,7 +108,8 @@ fn check_asset_conservation(state: &State) -> Result<(), Violation> {
         .outbound_in_transit
         .checked_add(state.buckets.inbound_in_transit)?
         .checked_add(state.remote_principal_cap)?
-        .checked_add(state.recognized_loss)?;
+        .checked_add(state.recognized_loss)?
+        .checked_add(state.impaired_transport)?;
     let accounted = held.checked_add(physical)?.checked_add(off_evm)?;
     let issued = state
         .initial_asset_supply
@@ -294,9 +295,12 @@ fn check_finalized_terms(state: &State) -> Result<(), Violation> {
 
 /// Settlement rounds in favour of the vault, so the price can only rise.
 /// A loss reported during a recall lowers the price before its notice
-/// recognizes it.
+/// recognizes it, and an impaired transfer lowers it without any loss.
 fn check_price_never_falls(state: &State) -> Result<(), Violation> {
-    if !state.recognized_loss.is_zero() || !state.inbound_cumulative_loss.is_zero() {
+    if !state.recognized_loss.is_zero()
+        || !state.inbound_cumulative_loss.is_zero()
+        || !state.cumulative_impairment.is_zero()
+    {
         return Ok(());
     }
     let mut earlier: Option<&EpochTerms> = None;

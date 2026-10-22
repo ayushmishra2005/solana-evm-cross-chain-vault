@@ -81,4 +81,24 @@ pub enum Operation {
         newly_realized_loss: AssetAmount,
     },
     LockRemoteValuation,
+    /// Asks the leg to end the active allocation by what arrived.
+    RequestClose {
+        actor: AccountId,
+        transfer_id: TransferId,
+    },
+    /// The leg's settlement of a close: `credited` of the allocation arrived.
+    SettleClose {
+        transfer_id: TransferId,
+        credited: AssetAmount,
+    },
+    /// Asks the leg to credit unattributed custody against the impairment.
+    BeginRecover {
+        actor: AccountId,
+        transfer_id: TransferId,
+    },
+    /// The leg's settlement of a recovery: `credited` of the impairment returned.
+    SettleRecover {
+        transfer_id: TransferId,
+        credited: AssetAmount,
+    },
 }

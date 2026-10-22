@@ -12,8 +12,9 @@ use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, BasisPoints, Body, ChainId, Commitment,
     ConfigUpdateBody, ConfigVersion, DeploymentId, DestinationReference, EpochId, Flags, Header,
     LaneId, Message, MessageType, PROTOCOL_VERSION, ProbeStatus, RecallBody, RecallSentBody,
-    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId,
-    VaultId, decode_message, encode_into, encode_message, next_commitment,
+    RemoteReportBody, ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, SettlementKind,
+    Timestamp, TransferId, TransportSettlementBody, VaultId, decode_message, encode_into,
+    encode_message, next_commitment,
 };
 
 /// Keeps sampled timestamps far from the integer limit.
@@ -262,14 +263,49 @@ fn config_update_strategy(published: u64) -> impl Strategy<Value = Body> {
 
 /// Targets always precede the resolution, so the header needs room below it.
 fn resolve_strategy(sequence: u64) -> impl Strategy<Value = Body> {
-    (non_zero_wide(), 1..sequence, 1u64..=u64::MAX).prop_map(|(transfer, target, version)| {
-        Body::Resolve(ResolveBody {
-            transfer_id: TransferId::new(transfer),
-            target_sequence: Sequence::new(target),
-            action: ResolveAction::Admit,
-            config_version: ConfigVersion::new(version),
+    (
+        non_zero_wide(),
+        1..sequence,
+        prop::sample::select(ResolveAction::ALL.to_vec()),
+        1u64..=u64::MAX,
+    )
+        .prop_map(|(transfer, target, action, version)| {
+            Body::Resolve(ResolveBody {
+                transfer_id: TransferId::new(transfer),
+                target_sequence: Sequence::new(target),
+                action,
+                config_version: ConfigVersion::new(version),
+            })
         })
-    })
+}
+
+/// A close may join earlier impairment. A recovery leaves exactly its remainder.
+fn transport_settlement_strategy() -> impl Strategy<Value = Body> {
+    (
+        non_zero_wide(),
+        any::<bool>(),
+        1u128..=u128::from(u64::MAX),
+        any::<u64>(),
+        0u128..=u128::from(u64::MAX),
+        1u64..=u64::MAX,
+    )
+        .prop_map(|(transfer, closed, claim, credit_seed, earlier, version)| {
+            let credited = u128::from(credit_seed) % (claim + 1);
+            let shortfall = claim - credited;
+            let (kind, impaired) = if closed {
+                (SettlementKind::Closed, shortfall + earlier)
+            } else {
+                (SettlementKind::Recovered, shortfall)
+            };
+            Body::TransportSettlement(TransportSettlementBody {
+                transfer_id: TransferId::new(transfer),
+                kind,
+                claim_amount: AssetAmount::new(claim),
+                credited_amount: AssetAmount::new(credited),
+                impaired_outstanding: AssetAmount::new(impaired),
+                config_version: ConfigVersion::new(version),
+            })
+        })
 }
 
 /// A resolution needs a sequence with at least one earlier message.
@@ -290,6 +326,7 @@ fn body_strategy(kind: MessageType, header: &Header) -> BoxedStrategy<Body> {
         MessageType::RecallSent => recall_sent_strategy(observed).boxed(),
         MessageType::ConfigUpdate => config_update_strategy(published).boxed(),
         MessageType::Resolve => resolve_strategy(header.sequence.get()).boxed(),
+        MessageType::TransportSettlement => transport_settlement_strategy().boxed(),
     }
 }
 
@@ -301,6 +338,7 @@ fn kind_strategy() -> impl Strategy<Value = MessageType> {
         Just(MessageType::RecallSent),
         Just(MessageType::ConfigUpdate),
         Just(MessageType::Resolve),
+        Just(MessageType::TransportSettlement),
     ]
 }
 
@@ -543,6 +581,15 @@ proptest! {
     fn every_resolve_message_round_trips(subject in message_of(MessageType::Resolve)) {
         let bytes = encode_message(&subject).unwrap();
         prop_assert_eq!(bytes.len(), 296);
+        prop_assert_eq!(decode_message(&bytes), Ok(subject));
+    }
+
+    #[test]
+    fn every_transport_settlement_message_round_trips(
+        subject in message_of(MessageType::TransportSettlement)
+    ) {
+        let bytes = encode_message(&subject).unwrap();
+        prop_assert_eq!(bytes.len(), 336);
         prop_assert_eq!(decode_message(&bytes), Ok(subject));
     }
 

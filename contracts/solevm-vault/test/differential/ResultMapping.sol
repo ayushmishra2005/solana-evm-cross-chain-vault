@@ -108,6 +108,21 @@ library ResultMapping {
         if (selector == RemoteAccounting.StaleValuation.selector) {
             return Code.INVALID_CONFIGURATION;
         }
+        if (selector == RemoteAccounting.CloseAlreadyRequested.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.NothingToRecover.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.NoPendingSettlement.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == RemoteAccounting.SettlementMismatch.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
+        if (selector == ProtocolCodec.CreditAboveClaim.selector) {
+            return Code.INVALID_CONFIGURATION;
+        }
         if (selector == ProtocolCodec.ZeroAmount.selector) return Code.ZERO_AMOUNT;
         return Code.UNKNOWN;
     }

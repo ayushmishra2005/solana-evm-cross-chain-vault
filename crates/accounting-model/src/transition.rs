@@ -64,6 +64,20 @@ pub fn apply(state: &State, operation: Operation) -> Result<State, Rejection> {
             apply_remote_valuation(&mut next, reported_value, newly_realized_loss)?;
         }
         Operation::LockRemoteValuation => lock_remote_valuation(&mut next)?,
+        Operation::RequestClose { actor, transfer_id } => {
+            request_close(&mut next, actor, transfer_id)?;
+        }
+        Operation::SettleClose {
+            transfer_id,
+            credited,
+        } => settle_close(&mut next, transfer_id, credited)?,
+        Operation::BeginRecover { actor, transfer_id } => {
+            begin_recover(&mut next, actor, transfer_id)?;
+        }
+        Operation::SettleRecover {
+            transfer_id,
+            credited,
+        } => settle_recover(&mut next, transfer_id, credited)?,
     }
     Ok(next)
 }
@@ -590,6 +604,7 @@ fn clear_cycle(state: &mut State) {
     state.active_cycle = CycleKind::None;
     state.active_transfer_id = TransferId::ZERO;
     state.active_amount = AssetAmount::ZERO;
+    state.close_requested = false;
 }
 
 fn set_accepted(state: &mut State, reported_value: AssetAmount) {
@@ -637,6 +652,10 @@ fn complete_allocation(
     transfer_id: TransferId,
     reported_value: AssetAmount,
 ) -> Result<(), Rejection> {
+    // Only the settlement may end a closing allocation; the report is skipped.
+    if state.close_requested {
+        return Ok(());
+    }
     if state.active_cycle != CycleKind::Allocate {
         return Err(Rejection::NoActiveTransfer);
     }
@@ -778,6 +797,11 @@ fn apply_remote_valuation(
     let cumulative_loss = state
         .inbound_cumulative_loss
         .checked_add(newly_realized_loss)?;
+    // A skipped report still moves the acknowledged loss, never the value.
+    if state.close_requested {
+        state.inbound_cumulative_loss = cumulative_loss;
+        return Ok(());
+    }
     let value = if state.active_cycle == CycleKind::Recall {
         value_during_recall(state, cumulative_loss)
     } else {
@@ -799,6 +823,10 @@ fn value_during_recall(state: &State, cumulative_loss: AssetAmount) -> AssetAmou
 }
 
 fn lock_remote_valuation(state: &mut State) -> Result<(), Rejection> {
+    // The report that would lock is skipped until the close settles.
+    if state.close_requested {
+        return Ok(());
+    }
     let epoch = state.epoch.ok_or(Rejection::EpochNotOpen)?;
     if epoch.phase != EpochPhase::CutOff {
         return Err(Rejection::EpochNotCutOff);
@@ -809,5 +837,94 @@ fn lock_remote_valuation(state: &mut State) -> Result<(), Rejection> {
     let _ = state
         .epoch_valuation_locked
         .insert(epoch.id, state.managed_backing());
+    Ok(())
+}
+
+fn credit_remote(state: &mut State, credited: AssetAmount) -> Result<(), Rejection> {
+    state.remote_principal_cap = state.remote_principal_cap.checked_add(credited)?;
+    state.buckets.accepted_remote_value =
+        state.buckets.accepted_remote_value.checked_add(credited)?;
+    Ok(())
+}
+
+/// Moves nothing: a timeout alone proves no loss.
+fn request_close(
+    state: &mut State,
+    actor: AccountId,
+    transfer_id: TransferId,
+) -> Result<(), Rejection> {
+    require_admin(state, actor)?;
+    if state.active_cycle != CycleKind::Allocate || state.active_transfer_id != transfer_id {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if state.close_requested {
+        return Err(Rejection::CloseAlreadyRequested);
+    }
+    state.close_requested = true;
+    Ok(())
+}
+
+/// Only what arrived becomes principal; the shortfall leaves NAV as
+/// impairment and is not recognized loss.
+fn settle_close(
+    state: &mut State,
+    transfer_id: TransferId,
+    credited: AssetAmount,
+) -> Result<(), Rejection> {
+    if state.active_transfer_id != transfer_id {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if state.active_cycle != CycleKind::Allocate || !state.close_requested {
+        return Err(Rejection::NoPendingSettlement);
+    }
+    let claim = state.active_amount;
+    if credited > claim {
+        return Err(Rejection::SettlementMismatch);
+    }
+    let shortfall = claim.checked_sub(credited)?;
+    state.buckets.outbound_in_transit = state.buckets.outbound_in_transit.checked_sub(claim)?;
+    credit_remote(state, credited)?;
+    state.impaired_transport = state.impaired_transport.checked_add(shortfall)?;
+    state.cumulative_impairment = state.cumulative_impairment.checked_add(shortfall)?;
+    clear_cycle(state);
+    Ok(())
+}
+
+fn begin_recover(
+    state: &mut State,
+    actor: AccountId,
+    transfer_id: TransferId,
+) -> Result<(), Rejection> {
+    require_admin(state, actor)?;
+    require_no_cycle(state)?;
+    require_fresh_transfer(state, transfer_id)?;
+    if state.impaired_transport.is_zero() {
+        return Err(Rejection::NothingToRecover);
+    }
+    let _ = state.used_transfer_ids.insert(transfer_id);
+    state.active_cycle = CycleKind::Recover;
+    state.active_transfer_id = transfer_id;
+    state.active_amount = AssetAmount::ZERO;
+    Ok(())
+}
+
+/// Recovered impairment returns to principal at par.
+fn settle_recover(
+    state: &mut State,
+    transfer_id: TransferId,
+    credited: AssetAmount,
+) -> Result<(), Rejection> {
+    if state.active_transfer_id != transfer_id {
+        return Err(Rejection::NoActiveTransfer);
+    }
+    if state.active_cycle != CycleKind::Recover {
+        return Err(Rejection::NoPendingSettlement);
+    }
+    if credited > state.impaired_transport {
+        return Err(Rejection::SettlementMismatch);
+    }
+    state.impaired_transport = state.impaired_transport.checked_sub(credited)?;
+    credit_remote(state, credited)?;
+    clear_cycle(state);
     Ok(())
 }

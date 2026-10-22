@@ -25,11 +25,17 @@ struct Snapshot {
     uint256[4] actorShares;
     uint256[4] actorDepositAssets;
     uint256[4] actorRedeemShares;
+    RemoteBuckets remote;
+}
+
+/// Buckets that only exist because of the remote leg.
+struct RemoteBuckets {
     uint256 unattributedInbound;
     uint256 outboundInTransit;
     uint256 acceptedRemoteValue;
     uint256 inboundInTransit;
     uint256 remotePrincipalCap;
+    uint256 impairedTransport;
 }
 
 /// One operation with the outcome the model produced.
@@ -111,6 +117,10 @@ library Op {
     uint8 internal constant OBSERVE_INBOUND = 19;
     uint8 internal constant APPLY_REMOTE_VALUATION = 20;
     uint8 internal constant LOCK_REMOTE_VALUATION = 21;
+    uint8 internal constant REQUEST_CLOSE = 22;
+    uint8 internal constant SETTLE_CLOSE = 23;
+    uint8 internal constant BEGIN_RECOVER = 24;
+    uint8 internal constant SETTLE_RECOVER = 25;
 
     function name(uint8 kind) internal pure returns (string memory) {
         if (kind == REQUEST_DEPOSIT) return "RequestDeposit";
@@ -135,6 +145,10 @@ library Op {
         if (kind == OBSERVE_INBOUND) return "ObserveInbound";
         if (kind == APPLY_REMOTE_VALUATION) return "ApplyRemoteValuation";
         if (kind == LOCK_REMOTE_VALUATION) return "LockRemoteValuation";
+        if (kind == REQUEST_CLOSE) return "RequestClose";
+        if (kind == SETTLE_CLOSE) return "SettleClose";
+        if (kind == BEGIN_RECOVER) return "BeginRecover";
+        if (kind == SETTLE_RECOVER) return "SettleRecover";
         return "Unknown";
     }
 }

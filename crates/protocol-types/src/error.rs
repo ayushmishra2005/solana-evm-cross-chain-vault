@@ -55,6 +55,7 @@ pub enum AmountField {
     PrincipalSent,
     ActualAmountSent,
     MaxReportAge,
+    ClaimAmount,
 }
 
 impl AmountField {
@@ -68,6 +69,7 @@ impl AmountField {
             Self::PrincipalSent => "principal sent",
             Self::ActualAmountSent => "actual amount sent",
             Self::MaxReportAge => "max report age",
+            Self::ClaimAmount => "claim amount",
         }
     }
 }
@@ -93,6 +95,9 @@ pub enum ValidationError {
     BasisPointsOutOfRange,
     ConfigVersionNotIncreasing,
     TargetNotBeforeResolution,
+    CreditAboveClaim,
+    ImpairmentBelowShortfall,
+    RecoveryImpairmentMismatch,
 }
 
 impl fmt::Display for ValidationError {
@@ -146,6 +151,13 @@ impl fmt::Display for ValidationError {
             }
             Self::TargetNotBeforeResolution => {
                 formatter.write_str("the resolved message does not precede the resolution")
+            }
+            Self::CreditAboveClaim => formatter.write_str("credited amount exceeds the claim"),
+            Self::ImpairmentBelowShortfall => {
+                formatter.write_str("outstanding impairment is below the shortfall")
+            }
+            Self::RecoveryImpairmentMismatch => {
+                formatter.write_str("impairment left after recovery is not the uncredited claim")
             }
         }
     }
@@ -203,6 +215,7 @@ pub enum DecodeError {
     UnknownMessageType(u8),
     InvalidProbeStatus(u8),
     UnknownResolveAction(u8),
+    UnknownSettlementKind(u8),
     BodyHashMismatch,
     LengthOverflow,
     Invalid(ValidationError),
@@ -245,6 +258,9 @@ impl fmt::Display for DecodeError {
             Self::UnknownResolveAction(found) => {
                 write!(formatter, "resolve action {found} is not known")
             }
+            Self::UnknownSettlementKind(found) => {
+                write!(formatter, "settlement kind {found} is not known")
+            }
             Self::BodyHashMismatch => formatter.write_str("body hash does not match the body"),
             Self::LengthOverflow => formatter.write_str("declared length does not fit in memory"),
             Self::Invalid(reason) => reason.fmt(formatter),
@@ -278,7 +294,7 @@ mod tests {
         IdentifierField::TargetSequence,
     ];
 
-    const AMOUNTS: [AmountField; 7] = [
+    const AMOUNTS: [AmountField; 8] = [
         AmountField::Amount,
         AmountField::MinimumDestinationAmount,
         AmountField::RequestedAmount,
@@ -286,9 +302,10 @@ mod tests {
         AmountField::PrincipalSent,
         AmountField::ActualAmountSent,
         AmountField::MaxReportAge,
+        AmountField::ClaimAmount,
     ];
 
-    const VALIDATIONS: [ValidationError; 17] = [
+    const VALIDATIONS: [ValidationError; 20] = [
         ValidationError::ZeroIdentifier(IdentifierField::Vault),
         ValidationError::ZeroAmount(AmountField::Amount),
         ValidationError::ReservedFlagsSet,
@@ -306,9 +323,12 @@ mod tests {
         ValidationError::BasisPointsOutOfRange,
         ValidationError::ConfigVersionNotIncreasing,
         ValidationError::TargetNotBeforeResolution,
+        ValidationError::CreditAboveClaim,
+        ValidationError::ImpairmentBelowShortfall,
+        ValidationError::RecoveryImpairmentMismatch,
     ];
 
-    const DECODES: [DecodeError; 11] = [
+    const DECODES: [DecodeError; 12] = [
         DecodeError::Truncated {
             needed: 247,
             found: 8,
@@ -322,7 +342,8 @@ mod tests {
         DecodeError::UnsupportedSchemaVersion(3),
         DecodeError::UnknownMessageType(9),
         DecodeError::InvalidProbeStatus(7),
-        DecodeError::UnknownResolveAction(2),
+        DecodeError::UnknownResolveAction(4),
+        DecodeError::UnknownSettlementKind(3),
         DecodeError::BodyHashMismatch,
         DecodeError::LengthOverflow,
         DecodeError::Invalid(ValidationError::ReservedFlagsSet),
