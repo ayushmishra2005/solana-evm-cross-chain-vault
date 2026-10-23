@@ -1,0 +1,45 @@
+[package]
+name = "solevm-devnet"
+version = "0.1.0"
+description = "Drives the deployed remote leg on devnet and records RPC-verifiable evidence"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/ayushmishra2005/solana-evm-cross-chain-vault"
+publish = false
+
+# Its own workspace keeps the network client out of the program lockfile.
+[workspace]
+
+[dependencies]
+anchor-lang = "=1.2.1"
+anchor-spl = { version = "=1.2.1", default-features = false, features = ["solana-v3", "token"] }
+base64 = "0.22"
+protocol-types = { path = "../../../crates/protocol-types", features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+solana-hash = "4"
+solana-instruction = "=3.5.1"
+solana-keypair = "=3.1.2"
+solana-signer = "=3.0.1"
+solana-system-interface = { version = "=2.0.0", features = ["bincode"] }
+solana-transaction = { version = "=4.3.0", features = ["wincode"] }
+solevm-remote-leg = { path = "..", features = ["no-entrypoint"] }
+solevm-test-strategy = { path = "../test-strategy", features = ["no-entrypoint"] }
+spl-associated-token-account-interface = "=2.0.0"
+ureq = { version = "3", features = ["json"] }
+wincode = "0.6"
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(solevm_devnet)'] }
+
+[lints.clippy]
+unwrap_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+arithmetic_side_effects = "deny"
+float_arithmetic = "deny"

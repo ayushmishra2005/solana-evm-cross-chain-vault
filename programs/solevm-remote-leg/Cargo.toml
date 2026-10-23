@@ -6,7 +6,8 @@ members = ["test-strategy", "e2e"]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
 # The program macro reads this target when it builds for the chain.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+# `solevm_devnet` selects the disposable devnet program ids; see scripts/devnet.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))', 'cfg(solevm_devnet)'] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"
@@ -23,7 +24,7 @@ description = "Solana strategy leg controlled by the canonical EVM vault"
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
-repository = "https://github.com/ayushkumarmishra/solana-evm-cross-chain-vault"
+repository = "https://github.com/ayushmishra2005/solana-evm-cross-chain-vault"
 
 [lib]
 crate-type = ["cdylib", "lib"]

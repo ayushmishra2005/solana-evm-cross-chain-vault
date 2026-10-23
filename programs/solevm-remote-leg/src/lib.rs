@@ -52,7 +52,12 @@ pub use strategy::{
 };
 pub use transport::{TRANSPORT_LEDGER_SEED, TransportLedger};
 
+// The devnet id is a cfg, not a feature, so `--all-features` builds keep the
+// production id.
+#[cfg(not(solevm_devnet))]
 declare_id!("4sLaaRdiY74cvqVCXLjW2wPncy2ArQkTRauNTdphKByo");
+#[cfg(solevm_devnet)]
+declare_id!("27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE");
 
 #[program]
 pub mod solevm_remote_leg {

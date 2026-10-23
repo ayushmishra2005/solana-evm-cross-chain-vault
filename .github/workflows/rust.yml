@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_BUILD_SBF_VERSION: 4.4.0
@@ -17,7 +20,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
     - name: Format
       run: cargo fmt --all --check
     - name: Lint
@@ -33,7 +38,9 @@ jobs:
         working-directory: programs/solevm-remote-leg
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
     - name: Install cargo-build-sbf
       run: cargo install cargo-build-sbf --version "$CARGO_BUILD_SBF_VERSION" --locked
     - name: Build SBPFv0 programs
@@ -49,7 +56,16 @@ jobs:
       run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Run tests
       run: cargo test --locked --workspace --all-features
-    - uses: actions/upload-artifact@v4
+    - name: Devnet driver
+      working-directory: programs/solevm-remote-leg/devnet
+      run: |
+        cargo fmt --check
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo test --locked
+    - name: Devnet scripts
+      working-directory: scripts/devnet
+      run: shellcheck -x -P SCRIPTDIR -s bash *.sh
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: sbf-v0
         path: programs/solevm-remote-leg/target/deploy/*.so
@@ -63,7 +79,9 @@ jobs:
         working-directory: programs/solevm-remote-leg
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
     - name: Install cargo-build-sbf
       run: cargo install cargo-build-sbf --version "$CARGO_BUILD_SBF_VERSION" --locked
     - name: Build SBPFv3 programs
@@ -88,18 +106,20 @@ jobs:
         working-directory: contracts/solevm-vault
 
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/download-artifact@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         name: sbf-v0
         path: programs/solevm-remote-leg/target/deploy
-    - uses: foundry-rs/foundry-toolchain@v1
+    - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       with:
         version: v1.8.6
     - name: Install Solidity dependencies
       run: |
-        forge install foundry-rs/forge-std@v1.16.2 --no-git --shallow
-        forge install OpenZeppelin/openzeppelin-contracts@v5.7.0 --no-git --shallow
+        forge install foundry-rs/forge-std@bf647bd6046f2f7da30d0c2bf435e5c76a780c1b --no-git --shallow # v1.16.2
+        forge install OpenZeppelin/openzeppelin-contracts@cab19933c33c2ad1d4c7a84864a3601dddfd16f3 --no-git --shallow # v5.7.0
     - name: Format
       run: forge fmt --check
     - name: Build

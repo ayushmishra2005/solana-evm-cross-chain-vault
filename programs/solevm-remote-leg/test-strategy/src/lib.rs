@@ -8,7 +8,12 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
+// The devnet id is a cfg, not a feature, so `--all-features` builds keep the
+// production id.
+#[cfg(not(solevm_devnet))]
 declare_id!("GbFoY2KE6WAWHApg8na1Db8jtnR5cbaeCpA5TGA9UmcZ");
+#[cfg(solevm_devnet)]
+declare_id!("8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8");
 
 /// Seed prefix of the adapter state account.
 pub const ADAPTER_STATE_SEED: &[u8] = b"adapter-state";

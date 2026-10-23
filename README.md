@@ -2,6 +2,53 @@
 
 A Solana–EVM cross-chain asynchronous vault protocol with canonical accounting on EVM and a remote strategy execution leg on Solana.
 
+## Solana Devnet — Verified Deployment and Test Evidence
+
+The Solana remote leg and its test strategy adapter are deployed on Solana devnet under disposable devnet program ids. On 23 October 2026 they were driven through 29 transactions:
+
+- setup and an authenticated allocation;
+- custody reconciliation and reporting;
+- a close after a partial arrival, then a recovery;
+- a guardian-only close on a frozen leg;
+- six attacks that must fail.
+
+All 29 transactions had the expected outcome and all 96 state checks passed. Both programs and every transaction were then re-verified from the devnet RPC at finalized commitment. The record is [`docs/devnet-evidence.json`](docs/devnet-evidence.json), and [`docs/devnet-verification.md`](docs/devnet-verification.md) has the per-transaction tables, accounts and provenance.
+
+| Program | Devnet program id | Upgrade authority | On-chain SHA-256, equal to the local build |
+|---|---|---|---|
+| Remote leg | [`27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE`](https://explorer.solana.com/address/27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE?cluster=devnet) | `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn` (disposable) | `0de7a35acbcb41c33f71af50d0efce4803da1a297a21650876ddd1bc45df6dc3` ([leg deploy](https://explorer.solana.com/tx/2bMZd9YcTUWEAZduVMN9kfFP6MJkePzKwFwkCw6RfLSvkLqCeF6jnweKHfprS4sXSbxw2Tt7BfnW3VzDpJwcSsFw?cluster=devnet)) |
+| Test strategy adapter | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) | `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn` (disposable) | `02a978e2e299cb089edcd8d24396e9b9579cf01d34d2b5ba58d54a3eadbd39fb` ([adapter deploy](https://explorer.solana.com/tx/45T1NfhkxHBW7K3wRWUKqfkFehqPPjLW9hbkjsbHh9pMqEfBghTrKCbj2hKvq8h4ZLgn8FaAGK6zUD8uTJaaaftH?cluster=devnet)) |
+
+| | Verified on devnet | Transactions | Result |
+|---|---|---|---|
+| 1 | Deployment | [leg deploy](https://explorer.solana.com/tx/2bMZd9YcTUWEAZduVMN9kfFP6MJkePzKwFwkCw6RfLSvkLqCeF6jnweKHfprS4sXSbxw2Tt7BfnW3VzDpJwcSsFw?cluster=devnet), [adapter deploy](https://explorer.solana.com/tx/45T1NfhkxHBW7K3wRWUKqfkFehqPPjLW9hbkjsbHh9pMqEfBghTrKCbj2hKvq8h4ZLgn8FaAGK6zUD8uTJaaaftH?cluster=devnet) | Owned by the upgradeable loader and executable, with the disposable deployer as upgrade authority. Program data equals the local build |
+| 2 | Namespace initialization | [N01](https://explorer.solana.com/tx/2eGaV8dVdMEEwwV8iBCRakxpsPJdvErUhRfP9MN21mxxTrejsgq1qJ6oG5ppLCUr46c37F4vH2Mu7jqqLZNx4b8U?cluster=devnet), [S04](https://explorer.solana.com/tx/59w7yZ3CLk8TfMC6EGEsBFMAPjwLc8J6X91p9szaFkhgW8jazbtjr6SWqFtdzfKXkSDk9mpx9ZL79DAx5ZVn9LSa?cluster=devnet) | A co-signer that is not the upgrade authority gets `Unauthorized` (6000) and nothing is created. The upgrade authority's claim binds the roles, mint, custody and escrow |
+| 3 | Strategy, custody and reporting state | [S03](https://explorer.solana.com/tx/4Xq641F5no3GGpuz5ZPCv9GMHwRG2SR3pg9UCkdqbnsL6v1fcvWcm6FxZrDPQfeyhpYrobGiEAdvcSFaULt5anrF?cluster=devnet), [S05](https://explorer.solana.com/tx/4wLHNUHPgpSVAdC6tBu3XSaMKg6qie92hXv59oCWEGC3ncZexme2G629F8M9PxVNA4CB121VgSUxN2sDSCMDPU2R?cluster=devnet), [S06](https://explorer.solana.com/tx/2qMmKXdTm2mKgVwG8mE6cRKpBFiZpTjxjctYpDqJgoPtZHUT8UZB5QRTCzt4zeHF4jV6rtpP7vvutujeBvJ4MzX2?cluster=devnet), [S07](https://explorer.solana.com/tx/4qPjTooDBGWHgLtmvn5XZYthRQ74r5p1X67vbaiwwZbFjUFjZrCEHcFKfPxnKju9q1R79cHqgy6CYizdBSnmQJbw?cluster=devnet), [S08](https://explorer.solana.com/tx/2m1sXoA8Yt7nJzrPTKR7GL6fjyP5pXyXkGf2V7hqxEvK4AXZdrjQticX68JduDU7r9X3LVvX4Mc3ath7k4Kp2J5e?cluster=devnet) | Custody is owned by the custody-authority PDA, with no delegate or close authority. The control lane, outbound lane and position start empty |
+| 4 | Authenticated allocation | [T01](https://explorer.solana.com/tx/4m9hRAYLk7RB4NJit6VbV2zE7Zgr9f6WmzYE8Bn3tRUZ31cpAvzMZRhUTFyG2PRk6X8nFL5f7jfc7BtRm13Pixrp?cluster=devnet) | Accepted at sequence 1. The control-lane commitment is `keccak(domain, previous, message id)`, and a consumed-message record is created |
+| 5 | SPL transfer to custody, reconcile, attribute | [T02](https://explorer.solana.com/tx/4jk4ZEyJwiRthsf1aW1W4eDKnDX5NGNbX1fTsJ8FuhJMFvJWr28wu7t9mqNPqeDsFuirBaXzNo68amMg9NESoF53?cluster=devnet), [T03](https://explorer.solana.com/tx/5MAxm8U4UyWEBK6Hh6onWBALJaEHmtCHY8DefedbH6CiCBqcTeaN9XUGSYCv1xmpHNp4mYAfUamG3R5hWL9gfhpT?cluster=devnet), [T04](https://explorer.solana.com/tx/3gR8vAAgoPiuxncByXg5hi37PDfWYGbtPDhQy4ZsVhjbsb4NzkWNq1QtnHjd5fdibdGSQ2a4vfrvXxhEhnRorC47?cluster=devnet) | 1,000,000 arrives, is classified unattributed, then attributed. Custody = attributed + recalled + unattributed |
+| 6 | RemoteReport sequence and commitment | [T05](https://explorer.solana.com/tx/55WAavp2G9vTvfuwP8x2RPDFE9hGKSzzRyVDxb8z63Q6FqvTgB4ooG6LJy2b6uEUy8g884fntP3h6cyzfvaivvbm?cluster=devnet), [T12](https://explorer.solana.com/tx/3bbSXaZ9kT7mU4qMNGS9U1HKfATetBG9UyAuBH3y9xJkmTpDDvTwfnBgFFUnTgyzX3ZZ8k8DVaXrpwHU3CGGLzgi?cluster=devnet) | Outbound sequences 1 and 4. The bytes re-encode to the message id, and the lane commitment chains |
+| 7 | Close after a partial arrival | [T07](https://explorer.solana.com/tx/WSuhtDK527YTtdo7gg9rrzSN2EWzu5HuQap37uzcgrR2BK76WU3iiLgpBKdtKDzb7stLzUWeBZhQYRyf42UYzct?cluster=devnet), [T08](https://explorer.solana.com/tx/5CFAjdvn5PQ23ttSpBebtfVcj84hUUiBYwH8dPfbi4jaUmXoTVys4q5rmzWRaSsont6ffnfkD5NuXCkz8qtzW9ie?cluster=devnet), [T09](https://explorer.solana.com/tx/4mPisxQFGQHNV14FDXf4drJRuYVurBvmZhykZ1FZzJ2Ppz8WpAjpQ6aoiQVPJSJ9B7s8r1BGgZcMVFxqB1YUMcq7?cluster=devnet) | 600,000 of 1,000,000 arrived: 600,000 credited and 400,000 impaired. A TransportSettlement is published in the same instruction |
+| 8 | Late delivery, then Recover | [T10](https://explorer.solana.com/tx/2qik3Q6FHUKHgMwaiCbGfyq2Knxu3GjSLHJ8uuNkHWDkxAtTUHipz13CFjeQn4kw371QKT23CgrLAEqRzSPMAfGf?cluster=devnet), [T11](https://explorer.solana.com/tx/5FUavUZ3VN8nMDLfkCwSHRtmNjqfsggdWJ9EMr2nHHxqQafHZ3KSByHfrav8ZoPk8rVwMafX2qH1H8sPwKM3n2Mx?cluster=devnet) | Impairment falls from 400,000 to 100,000. Claim 1,000,000 = 600,000 + 100,000 + 300,000, and B keeps its 600,000, so nothing is counted twice |
+| 9 | Replay and forged authentication | [N02](https://explorer.solana.com/tx/5gJpbLY5uiu1UwiHSTgm2fDopcrQDqYQxGjHwprtzS55ktpZafkyKycgw1mdEAenPHGHrW7SUyGWUfV15QLsU4WQ?cluster=devnet), [N03](https://explorer.solana.com/tx/2gqYVrX2h5vp5GYNZiZpNYeBQjBSsYjtpWBAwst8mydwcrdQUQRSrQ64rdvDLFcv2uQDG9zqpZSpr2ubV6xBJuNE?cluster=devnet), [N04](https://explorer.solana.com/tx/3o8qmnFQkr9N47hrse6p4eVBhcB3fre5GYmPrC8p5XXEL3D23bktDENsAhZ5Fz16k3rP7AqEsgAk6UsCjhrSg9tE?cluster=devnet) | `InvalidSequence` (6036), `Unauthorized` (6000) and `InvalidSequence` (6036). Every tracked account and token balance is unchanged |
+| 10 | Frozen leg and guardian path | [T14](https://explorer.solana.com/tx/3DKEykqCkRdHqfhutz1hBKq9wbHuSXTgMrpYPJsB866K2N4vjW1qMJRHomX3TTgwp3FSgw1VZTo4gZqDv1y7n397?cluster=devnet), [N05](https://explorer.solana.com/tx/2byt7oNyStnrGADRgMGC2VCKjwGdyztau4B3g1kB3EeKbPsXQ4DfgVomwhtPzwbsCQpTg8aLWN1jBrGpUHxaPiyt?cluster=devnet), [N06](https://explorer.solana.com/tx/2j3JknyAWwXvwnbh95T9yXWdu9xbZYvxVr7WvvqGmRM23jUne7x2sgzDEyFPyYCqxJrTBpAc5Qfx8fRMQ8t9zq4F?cluster=devnet), [T15](https://explorer.solana.com/tx/61ihddDFPKbMDyrdY2RnP9ZWu2pEQTBUyZTRYJa7nAUnSKF2aNbXTWUo1mNoK1YtQwwyG968fLEE4L5hEB2Xwy25?cluster=devnet) | The leg is frozen. A close without the guardian gets `Frozen` (6002) and an attacker co-signer gets `Unauthorized` (6000). The guardian co-signed close settles |
+
+The final transport ledger holds closed claims of 1,500,000 = credit 600,000 + impaired 600,000 + recovered 300,000. Custody holds 1,900,000, all of it attributed.
+
+**Source and build.** The run used commit [`7f38ba9`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/7f38ba90b38aa136a38f88612f677ffde4eee608) plus this branch's uncommitted hardening changes. `scripts/devnet/run.sh` recorded that working tree as git tree `b3aaf0ee47347dc4467ce7187eeebdae051dc0bc`, and the build inputs are hashed under [provenance](docs/devnet-verification.md#source-and-build-provenance). `scripts/devnet/build.sh` built the binaries with `cargo-build-sbf` 4.4.0, platform-tools v1.58, SBPFv0 and `--cfg solevm_devnet`. The build IDs are the SHA-256 digests above. Bit-for-bit reproduction on another machine is not claimed.
+
+**Reproduce.**
+
+```bash
+scripts/devnet/verify.sh docs/devnet-evidence.json   # re-checks the run against devnet; no keys or SOL needed
+solana program show 27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE --url devnet
+```
+
+To deploy and run your own instance, see [Devnet instance](docs/operations.md#devnet-instance).
+
+**Live versus local.** Only the deployments and the 29 transactions above ran on devnet; the test suites under [Testing](#testing) run locally and in CI. No real bridge is involved. Disposable keys stand in for the authenticated bridge receiver and for the bridge's token delivery. The EVM hub is a fixed simulated identifier, and the EVM vault was not deployed. The token is a valueless 6-decimal test token, not Circle USDC.
+
+**No external audit has been performed.** This deployment, the [internal security review](docs/security-review.md) and the test suites are not a substitute for one.
+
 ## What this project does
 
 Users interact with a vault on EVM. The EVM side owns the canonical shares, user liabilities, epochs, NAV, claims and remote-leg accounting. Capital may be allocated from the vault to a remote strategy leg on Solana.
@@ -286,6 +333,8 @@ A report excludes custody already attributed to the open allocation, because the
 
 ## Deployment and relaying
 
+The [operations runbook](docs/operations.md) covers build, fresh deployment, upgrades, what cannot be rolled back, the emergency procedure and relayer retries.
+
 ### Deployment order
 
 Resolve, TransportSettlement, the settlement instruction and the new account values are additive, but the two chains must adopt them in this order:
@@ -372,8 +421,12 @@ The test suites exercise properties including:
 │   └── evm-differential/
 ├── contracts/
 │   └── solevm-vault/
-└── programs/
-    └── solevm-remote-leg/
+├── programs/
+│   └── solevm-remote-leg/
+│       └── devnet/          # devnet scenario driver and evidence verifier
+├── scripts/
+│   └── devnet/              # build, deploy, run and verify on Solana devnet
+└── docs/                    # operations runbook, internal security review
 ```
 
 ## Running the project
@@ -480,6 +533,22 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --stats
 cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 ```
 
+### Solana devnet
+
+`scripts/devnet/` builds the leg and the test adapter under disposable devnet program ids, deploys them, and runs `programs/solevm-remote-leg/devnet`. That driver sends every setup, accounting and negative-test transaction to the cluster and checks the resulting account state. It records each transaction, then re-verifies every one from the RPC at finalized commitment. The scripts check the cluster's genesis hash, refuse mainnet-beta and testnet, and keep keys outside the repository. They need the Solana CLI and `cargo-build-sbf` 4.4.0.
+
+```bash
+scripts/devnet/keygen.sh      # disposable keys in ~/.config/solevm-devnet/keys; prints public keys only
+scripts/devnet/build.sh       # devnet binaries in programs/solevm-remote-leg/target/deploy-devnet
+scripts/devnet/localnet.sh    # optional free rehearsal on solana-test-validator
+scripts/devnet/fund.sh        # what the deployer holds and needs
+scripts/devnet/deploy.sh
+scripts/devnet/run.sh run-1   # one fresh namespace per label
+scripts/devnet/verify.sh <evidence.json>   # re-check a recorded run; needs no keys
+```
+
+To run your own instance, see [Devnet instance](docs/operations.md#devnet-instance). The published run, with a link to every transaction, is under [Solana Devnet — Verified Deployment and Test Evidence](#solana-devnet--verified-deployment-and-test-evidence).
+
 ## Scope and limitations
 
 - No real bridge is integrated; cross-chain transport is deterministic simulation
@@ -487,7 +556,7 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 - No production Solana yield strategy is included
 - No keeper or indexer is required for the current test architecture
 - The EVM test environment uses a test authenticator rather than a real bridge authenticator
-- The system has not been audited
+- No external audit has been performed. The internal review in [docs/security-review.md](docs/security-review.md) is not an audit, and passing tests are not a substitute for one
 - The repository is not presented as production-ready
 - One unresolved remote allocation, recall or recovery cycle is supported
 - Classic SPL Token is supported by the Solana leg, not Token-2022
@@ -503,7 +572,11 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 Both risks below are known and unresolved. Each must be fixed, or explicitly accepted, before a release that holds user funds.
 
 - **Stuck recall.** Close applies only to allocations, and a recall has no close or recovery path. If a recall never produces RecallSent, the coordinator's single cycle stays open and blocks every new allocation, recall and recovery. That happens when the recall stays quarantined (Admit refuses a recall that asks for more principal than the leg accepted), when a frozen leg's guardian does not co-sign, or when the leg cannot finish withdrawing, sending and reporting it. Separately, recalled assets lost in asset transport after RecallSent stay in inbound transit, and so in NAV, with no impairment path.
+  - *Recommended solution:* give recalls the deadline-then-close path that allocations already have. After a recall deadline, the EVM administrator may close the recall. The leg settles the close like an allocation close: guardian co-signed on a frozen leg, ending its cycle with a TransportSettlement. The vault keeps what has arrived and moves the unreturned rest of the recall, whether still pending or in inbound transit, from NAV into `impairedTransport`.
+  - *Decision required:* the recall deadline, who may authorize the close, and how a late arrival is credited back. Closing a recall recognizes possible loss, so this is a financial-finality policy only the owner can set.
 - **Close-pending epoch liveness.** While a close is pending, the coordinator skips every report. If the epoch is at cutoff in that window, its remote valuation cannot lock, and `finalizeEpoch` reverts with `RemoteValuationRequired` until the settlement has landed and a fresh report for the epoch has arrived. The settlement needs the Close relayed to and processed by the leg, with the guardian's co-signature on a frozen leg, and the TransportSettlement relayed back. Nothing times out or falls back, so that epoch's deposits and redemptions wait on the round trip. Requesting a close early in an epoch narrows this window but does not remove it.
+  - *Recommended solution:* let an epoch that reaches cutoff while a close is pending lock its valuation without a fresh report. It would use the last accepted remote value, and price the closing allocation's whole claim as if impaired: `managedBacking()` less the claim held in `outboundInTransit`. The epoch can then finalize. When the TransportSettlement lands, it credits what arrived to later epochs, as a recovery does.
+  - *Decision required:* redeemers in that epoch would bear the closing allocation conservatively, and later holders would receive whatever arrived. This valuation policy needs the owner's acceptance.
 
 ## License
 

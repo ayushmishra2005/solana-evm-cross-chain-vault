@@ -5,7 +5,7 @@ description = "Deterministic Solana–EVM end-to-end transport and remote-leg dr
 edition = "2024"
 rust-version = "1.89"
 license = "Apache-2.0"
-repository = "https://github.com/ayushkumarmishra/solana-evm-cross-chain-vault"
+repository = "https://github.com/ayushmishra2005/solana-evm-cross-chain-vault"
 publish = false
 
 [dependencies]
