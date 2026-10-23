@@ -60,9 +60,9 @@ fn markdown(evidence: &Evidence) -> Res<String> {
 
     writeln!(
         out,
-        "| Program | Program id | Upgrade authority | On-chain sha256 = local build | Deploy transaction |"
+        "| Program | Program id | On-chain sha256 = local build | Deploy transaction |"
     )?;
-    writeln!(out, "|---|---|---|---|---|")?;
+    writeln!(out, "|---|---|---|---|")?;
     for program in &evidence.programs {
         let deploy = program.deploy_signature.as_ref().map_or_else(
             || String::from("not recorded"),
@@ -77,11 +77,10 @@ fn markdown(evidence: &Evidence) -> Res<String> {
         );
         writeln!(
             out,
-            "| `{}` | [`{}`]({}) | `{}` | `{}` ({}) | {} |",
+            "| `{}` | [`{}`]({}) | `{}` ({}) | {} |",
             program.name,
             program.program_id,
             program.explorer_url,
-            program.upgrade_authority,
             program.onchain_sha256,
             if program.onchain_sha256 == program.local_sha256 {
                 "match"
@@ -111,17 +110,6 @@ fn markdown(evidence: &Evidence) -> Res<String> {
             step.block_time_utc,
             short(&step.signature),
             step.explorer_url
-        )?;
-    }
-    writeln!(out)?;
-
-    writeln!(out, "| Account | Address |")?;
-    writeln!(out, "|---|---|")?;
-    for (role, address) in &evidence.accounts {
-        writeln!(
-            out,
-            "| {role} | [`{address}`]({}) |",
-            address_url(evidence, address)
         )?;
     }
     Ok(out)

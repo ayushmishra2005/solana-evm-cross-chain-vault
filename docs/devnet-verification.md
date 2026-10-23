@@ -19,6 +19,8 @@ This needs only a Rust toolchain: no keys and no SOL. It confirms that the RPC s
 
 RPC nodes do not serve past account state, so `verify` cannot recheck before and after states. The driver checked those against live state during the run. It read every tracked account before and after each transaction, at a context slot no older than the previous transaction, and evaluated the 96 checks recorded in the evidence. After each rejection, it required every tracked account and token balance to be byte-for-byte unchanged. The snapshots are in each step's `before` and `after`.
 
+The published record leaves out the wallet addresses of the disposable signers. The one exception is each program's upgrade authority, which `verify` compares with the chain. As on any Solana transaction, the signers remain visible in the transactions themselves.
+
 ## What the run shows
 
 Amounts are base units of the 6-decimal test token.
@@ -48,10 +50,10 @@ The most expensive transaction was T09's close, at 80,707 compute units. The 29 
 
 ## Programs
 
-| Program | Program id | Upgrade authority | On-chain sha256 = local build | Deploy transaction |
-|---|---|---|---|---|
-| `solevm_remote_leg` | [`27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE`](https://explorer.solana.com/address/27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE?cluster=devnet) | `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn` | `0de7a35acbcb41c33f71af50d0efce4803da1a297a21650876ddd1bc45df6dc3` (match) | [2bMZd9Yc…pJwcSsFw](https://explorer.solana.com/tx/2bMZd9YcTUWEAZduVMN9kfFP6MJkePzKwFwkCw6RfLSvkLqCeF6jnweKHfprS4sXSbxw2Tt7BfnW3VzDpJwcSsFw?cluster=devnet) slot 514214756 |
-| `solevm_test_strategy` | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) | `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn` | `02a978e2e299cb089edcd8d24396e9b9579cf01d34d2b5ba58d54a3eadbd39fb` (match) | [45T1Nfhk…TJaaaftH](https://explorer.solana.com/tx/45T1NfhkxHBW7K3wRWUKqfkFehqPPjLW9hbkjsbHh9pMqEfBghTrKCbj2hKvq8h4ZLgn8FaAGK6zUD8uTJaaaftH?cluster=devnet) slot 514214836 |
+| Program | Program id | On-chain sha256 = local build | Deploy transaction |
+|---|---|---|---|
+| `solevm_remote_leg` | [`27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE`](https://explorer.solana.com/address/27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE?cluster=devnet) | `0de7a35acbcb41c33f71af50d0efce4803da1a297a21650876ddd1bc45df6dc3` (match) | [2bMZd9Yc…pJwcSsFw](https://explorer.solana.com/tx/2bMZd9YcTUWEAZduVMN9kfFP6MJkePzKwFwkCw6RfLSvkLqCeF6jnweKHfprS4sXSbxw2Tt7BfnW3VzDpJwcSsFw?cluster=devnet) slot 514214756 |
+| `solevm_test_strategy` | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) | `02a978e2e299cb089edcd8d24396e9b9579cf01d34d2b5ba58d54a3eadbd39fb` (match) | [45T1Nfhk…TJaaaftH](https://explorer.solana.com/tx/45T1NfhkxHBW7K3wRWUKqfkFehqPPjLW9hbkjsbHh9pMqEfBghTrKCbj2hKvq8h4ZLgn8FaAGK6zUD8uTJaaaftH?cluster=devnet) slot 514214836 |
 
 ## Transactions
 
@@ -89,41 +91,11 @@ S steps set up state, T steps exercise the protocol, and N steps are attacks tha
 | N06 | Close of C on the frozen leg co-signed by an attacker posing as the guardian | `process_settlement` | rejected: Unauthorized (6000) | rejected: Unauthorized (6000) | 514215212 | 2026-10-23T10:24:40Z | [2j3JknyA…Q8t9zq4F](https://explorer.solana.com/tx/2j3JknyAWwXvwnbh95T9yXWdu9xbZYvxVr7WvvqGmRM23jUne7x2sgzDEyFPyYCqxJrTBpAc5Qfx8fRMQ8t9zq4F?cluster=devnet) |
 | T15 | Guardian co-signed Close of C on the frozen leg (nothing arrived) | `process_settlement` | success | success | 514215224 | 2026-10-23T10:24:43Z | [61ihddDF…EB2Xwy25](https://explorer.solana.com/tx/61ihddDFPKbMDyrdY2RnP9ZWu2pEQTBUyZTRYJa7nAUnSKF2aNbXTWUo1mNoK1YtQwwyG968fLEE4L5hEB2Xwy25?cluster=devnet) |
 
-## Accounts
-
-| Account | Address |
-|---|---|
-| adapter_authority | [`DHaaEdsbKPWzZHMkj9PSnXdmT8i4VKkynUv5LFzDtAwF`](https://explorer.solana.com/address/DHaaEdsbKPWzZHMkj9PSnXdmT8i4VKkynUv5LFzDtAwF?cluster=devnet) |
-| adapter_program | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) |
-| adapter_state | [`5cqvdTtJzFPAn3V26yKbb3cXhC8Et6QymgtGQcSJ5bFn`](https://explorer.solana.com/address/5cqvdTtJzFPAn3V26yKbb3cXhC8Et6QymgtGQcSJ5bFn?cluster=devnet) |
-| adapter_token_vault | [`8TgPm1JAgz5iD89kHQVaYpXVSHyZ52VCGzEW2HSgCMNZ`](https://explorer.solana.com/address/8TgPm1JAgz5iD89kHQVaYpXVSHyZ52VCGzEW2HSgCMNZ?cluster=devnet) |
-| administrator | [`3zZX8Htbp53jNKQhxpRWc1iXwunbG2gEf56k2oRxwtQe`](https://explorer.solana.com/address/3zZX8Htbp53jNKQhxpRWc1iXwunbG2gEf56k2oRxwtQe?cluster=devnet) |
-| asset_transport_and_mint_authority | [`EaNo3dqXeisLdmoGYP55ZTt5RckPqzXbjHhdJzXcqXVS`](https://explorer.solana.com/address/EaNo3dqXeisLdmoGYP55ZTt5RckPqzXbjHhdJzXcqXVS?cluster=devnet) |
-| attacker | [`42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF`](https://explorer.solana.com/address/42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF?cluster=devnet) |
-| control_lane | [`M61HBHNRLdGFD6FzPTnPUBWkK2EEbRGwGAQL7o1MmNZ`](https://explorer.solana.com/address/M61HBHNRLdGFD6FzPTnPUBWkK2EEbRGwGAQL7o1MmNZ?cluster=devnet) |
-| custody_authority | [`Cy22uNhb9Hq1iVxZaJaCqQWLnnHNbSXb3Cfo5mrJX3Vd`](https://explorer.solana.com/address/Cy22uNhb9Hq1iVxZaJaCqQWLnnHNbSXb3Cfo5mrJX3Vd?cluster=devnet) |
-| custody_token_account | [`95psCiQEp5k4t4JYu5dzND4UmkkMGASUqvUHzrBzDKNm`](https://explorer.solana.com/address/95psCiQEp5k4t4JYu5dzND4UmkkMGASUqvUHzrBzDKNm?cluster=devnet) |
-| deployer_and_upgrade_authority | [`HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn`](https://explorer.solana.com/address/HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn?cluster=devnet) |
-| emergency_guardian | [`2YGmGXMBEyCQdUBPp8vQhnhV92nqDk8pqu87pxxyV8dG`](https://explorer.solana.com/address/2YGmGXMBEyCQdUBPp8vQhnhV92nqDk8pqu87pxxyV8dG?cluster=devnet) |
-| escrow_owner | [`9JiCerLYqr5mmn3gSRJUvRFN3c8yd7yKJ2CzwQEqei3N`](https://explorer.solana.com/address/9JiCerLYqr5mmn3gSRJUvRFN3c8yd7yKJ2CzwQEqei3N?cluster=devnet) |
-| leg_program | [`27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE`](https://explorer.solana.com/address/27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE?cluster=devnet) |
-| leg_program_data | [`Cd3dgtjrTrSc6ENPFg32Q2NcquBAsNefGgzKDdZ6mAQG`](https://explorer.solana.com/address/Cd3dgtjrTrSc6ENPFg32Q2NcquBAsNefGgzKDdZ6mAQG?cluster=devnet) |
-| outbound_escrow | [`J1ZD58hKk9izi51t1Gvk7qahwPiaurn3DA4cXTm98KWg`](https://explorer.solana.com/address/J1ZD58hKk9izi51t1Gvk7qahwPiaurn3DA4cXTm98KWg?cluster=devnet) |
-| outbound_lane | [`AUXYxeLVvCkuhfdBf3JL5goePap24BVTyayRNTyt7zt5`](https://explorer.solana.com/address/AUXYxeLVvCkuhfdBf3JL5goePap24BVTyayRNTyt7zt5?cluster=devnet) |
-| remote_config | [`BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi`](https://explorer.solana.com/address/BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi?cluster=devnet) |
-| remote_position | [`BsuhT2CfvvHv249CPNNkvW7MvwvtufEyJNGKs4WFWpqS`](https://explorer.solana.com/address/BsuhT2CfvvHv249CPNNkvW7MvwvtufEyJNGKs4WFWpqS?cluster=devnet) |
-| risk_config | [`4FcrsLuzsTWs8pSN16HLwD4HxWYSTqo3VwUfZ7ty34LJ`](https://explorer.solana.com/address/4FcrsLuzsTWs8pSN16HLwD4HxWYSTqo3VwUfZ7ty34LJ?cluster=devnet) |
-| strategy_config | [`7DQMzGz61CABzuKwfRwWKz9FB1n9NMQVJTKvhJ7sUcjE`](https://explorer.solana.com/address/7DQMzGz61CABzuKwfRwWKz9FB1n9NMQVJTKvhJ7sUcjE?cluster=devnet) |
-| test_mint | [`GUa5b32cMgdjUQWTNAjuedQbzakgRPzXiWuDkCqxaQAD`](https://explorer.solana.com/address/GUa5b32cMgdjUQWTNAjuedQbzakgRPzXiWuDkCqxaQAD?cluster=devnet) |
-| transport_ledger | [`GQiiXgcmJN3gZQ6Jw5KJNTpTiFDLzowABq9Qs1J6P8Hg`](https://explorer.solana.com/address/GQiiXgcmJN3gZQ6Jw5KJNTpTiFDLzowABq9Qs1J6P8Hg?cluster=devnet) |
-| transport_source_token_account | [`CkJ14MBZuvvL1zwayvRTuxPnM2fTtkjiChsedNL5tqNh`](https://explorer.solana.com/address/CkJ14MBZuvvL1zwayvRTuxPnM2fTtkjiChsedNL5tqNh?cluster=devnet) |
-| transport_verifier | [`EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc`](https://explorer.solana.com/address/EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc?cluster=devnet) |
-
 ## Source and build provenance
 
-The run used commit [`7f38ba9`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/7f38ba90b38aa136a38f88612f677ffde4eee608) plus this branch's hardening changes, which were not yet committed. `scripts/devnet/run.sh` recorded the working tree, through a temporary index, as git tree `b3aaf0ee47347dc4467ce7187eeebdae051dc0bc`.
+The run used commit [`7f38ba9`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/7f38ba90b38aa136a38f88612f677ffde4eee608) plus the hardening changes, which were not yet committed at the time. `scripts/devnet/run.sh` recorded the working tree, through a temporary index, as git tree `b3aaf0ee47347dc4467ce7187eeebdae051dc0bc`.
 
-Since the run, only documentation and the driver's report renderer have changed. The build inputs below are unchanged. Once these changes are committed, compare each hash with `git rev-parse <commit>:<path>`.
+Those changes were merged into `main` as commit [`1aebf3f`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/1aebf3f7a4f7d2a84756a94f574c394075dba585), which has the same build inputs as the run: each hash below equals `git rev-parse 1aebf3f:<path>`. Since the run, only documentation and the devnet driver's reporting have changed.
 
 | Build input | Git object at run time |
 |---|---|

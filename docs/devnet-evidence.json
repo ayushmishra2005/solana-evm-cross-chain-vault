@@ -53,7 +53,6 @@
   "mint": {
     "address": "GUa5b32cMgdjUQWTNAjuedQbzakgRPzXiWuDkCqxaQAD",
     "decimals": 6,
-    "mint_authority": "EaNo3dqXeisLdmoGYP55ZTt5RckPqzXbjHhdJzXcqXVS",
     "label": "SolEVM devnet test token: 6 decimals, no value, not USDC"
   },
   "accounts": {
@@ -61,15 +60,9 @@
     "adapter_program": "8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8",
     "adapter_state": "5cqvdTtJzFPAn3V26yKbb3cXhC8Et6QymgtGQcSJ5bFn",
     "adapter_token_vault": "8TgPm1JAgz5iD89kHQVaYpXVSHyZ52VCGzEW2HSgCMNZ",
-    "administrator": "3zZX8Htbp53jNKQhxpRWc1iXwunbG2gEf56k2oRxwtQe",
-    "asset_transport_and_mint_authority": "EaNo3dqXeisLdmoGYP55ZTt5RckPqzXbjHhdJzXcqXVS",
-    "attacker": "42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF",
     "control_lane": "M61HBHNRLdGFD6FzPTnPUBWkK2EEbRGwGAQL7o1MmNZ",
     "custody_authority": "Cy22uNhb9Hq1iVxZaJaCqQWLnnHNbSXb3Cfo5mrJX3Vd",
     "custody_token_account": "95psCiQEp5k4t4JYu5dzND4UmkkMGASUqvUHzrBzDKNm",
-    "deployer_and_upgrade_authority": "HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn",
-    "emergency_guardian": "2YGmGXMBEyCQdUBPp8vQhnhV92nqDk8pqu87pxxyV8dG",
-    "escrow_owner": "9JiCerLYqr5mmn3gSRJUvRFN3c8yd7yKJ2CzwQEqei3N",
     "leg_program": "27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE",
     "leg_program_data": "Cd3dgtjrTrSc6ENPFg32Q2NcquBAsNefGgzKDdZ6mAQG",
     "outbound_escrow": "J1ZD58hKk9izi51t1Gvk7qahwPiaurn3DA4cXTm98KWg",
@@ -80,8 +73,7 @@
     "strategy_config": "7DQMzGz61CABzuKwfRwWKz9FB1n9NMQVJTKvhJ7sUcjE",
     "test_mint": "GUa5b32cMgdjUQWTNAjuedQbzakgRPzXiWuDkCqxaQAD",
     "transport_ledger": "GQiiXgcmJN3gZQ6Jw5KJNTpTiFDLzowABq9Qs1J6P8Hg",
-    "transport_source_token_account": "CkJ14MBZuvvL1zwayvRTuxPnM2fTtkjiChsedNL5tqNh",
-    "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+    "transport_source_token_account": "CkJ14MBZuvvL1zwayvRTuxPnM2fTtkjiChsedNL5tqNh"
   },
   "steps": [
     {
@@ -99,10 +91,7 @@
       "compute_units": 300,
       "fee_lamports": 5000,
       "explorer_url": "https://explorer.solana.com/tx/52VEnSaS8pJRqR8vLTZ5ynqPsFS8TkChbjM3zZsp3GkZ45QfMVHH1GrKjh4NjSWY2BQP3zArarqXqjW5JAFksxH?cluster=devnet",
-      "accounts": {
-        "administrator": "3zZX8Htbp53jNKQhxpRWc1iXwunbG2gEf56k2oRxwtQe",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
-      },
+      "accounts": {},
       "before": {
         "context_slot": 514214939,
         "control_lane": null,
@@ -161,7 +150,6 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/4nHJn17TSTompLC594aHqbn1ddmqL7pt9xxieadic1raRxjUDJbPUkppV5C3p9C41VEy5BhPv8Zqb3A3tmxXJjHK?cluster=devnet",
       "accounts": {
-        "mint_authority": "EaNo3dqXeisLdmoGYP55ZTt5RckPqzXbjHhdJzXcqXVS",
         "test_mint": "GUa5b32cMgdjUQWTNAjuedQbzakgRPzXiWuDkCqxaQAD"
       },
       "before": {
@@ -298,7 +286,6 @@
       "fee_lamports": 15000,
       "explorer_url": "https://explorer.solana.com/tx/2eGaV8dVdMEEwwV8iBCRakxpsPJdvErUhRfP9MN21mxxTrejsgq1qJ6oG5ppLCUr46c37F4vH2Mu7jqqLZNx4b8U?cluster=devnet",
       "accounts": {
-        "claimed_upgrade_authority": "42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF",
         "remote_config": "BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi"
       },
       "before": {
@@ -367,10 +354,8 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/59w7yZ3CLk8TfMC6EGEsBFMAPjwLc8J6X91p9szaFkhgW8jazbtjr6SWqFtdzfKXkSDk9mpx9ZL79DAx5ZVn9LSa?cluster=devnet",
       "accounts": {
-        "administrator": "3zZX8Htbp53jNKQhxpRWc1iXwunbG2gEf56k2oRxwtQe",
         "program_data": "Cd3dgtjrTrSc6ENPFg32Q2NcquBAsNefGgzKDdZ6mAQG",
-        "remote_config": "BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi",
-        "upgrade_authority": "HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn"
+        "remote_config": "BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi"
       },
       "before": {
         "context_slot": 514214972,
@@ -747,8 +732,7 @@
       "explorer_url": "https://explorer.solana.com/tx/4m9hRAYLk7RB4NJit6VbV2zE7Zgr9f6WmzYE8Bn3tRUZ31cpAvzMZRhUTFyG2PRk6X8nFL5f7jfc7BtRm13Pixrp?cluster=devnet",
       "accounts": {
         "consumed_message": "3w8K4YJWfeHAeo1tSRsWsfY56Q8PmNGbRoK3VRzUmL3b",
-        "transfer_record": "8wdf3yKwR3yMzUgrybW8GFYywBXmHiNacpCDZFXxMwqg",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "transfer_record": "8wdf3yKwR3yMzUgrybW8GFYywBXmHiNacpCDZFXxMwqg"
       },
       "before": {
         "context_slot": 514215021,
@@ -870,8 +854,7 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/5gJpbLY5uiu1UwiHSTgm2fDopcrQDqYQxGjHwprtzS55ktpZafkyKycgw1mdEAenPHGHrW7SUyGWUfV15QLsU4WQ?cluster=devnet",
       "accounts": {
-        "consumed_message": "3w8K4YJWfeHAeo1tSRsWsfY56Q8PmNGbRoK3VRzUmL3b",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "consumed_message": "3w8K4YJWfeHAeo1tSRsWsfY56Q8PmNGbRoK3VRzUmL3b"
       },
       "before": {
         "context_slot": 514215031,
@@ -976,9 +959,7 @@
       "compute_units": 9658,
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/2gqYVrX2h5vp5GYNZiZpNYeBQjBSsYjtpWBAwst8mydwcrdQUQRSrQ64rdvDLFcv2uQDG9zqpZSpr2ubV6xBJuNE?cluster=devnet",
-      "accounts": {
-        "forged_transport_verifier": "42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF"
-      },
+      "accounts": {},
       "before": {
         "context_slot": 514215039,
         "control_lane": {
@@ -1551,8 +1532,7 @@
       "explorer_url": "https://explorer.solana.com/tx/5jV5WMQS6mbxtMbZ1TBZJJ8Jeb8vbGE29GQwSqnwGNx2hNLfcYJbU3wKMConHg7Am4UUyXakevVMxXNTFuC59wcW?cluster=devnet",
       "accounts": {
         "consumed_message": "3yY7L3fD3GLDAEdX2tafA4Ch2BfFFQpjxc4VCaUEvSuR",
-        "transfer_record": "TM6xs925QoBUjuGgBKt2CWhPYaJD5fLaGk9Z5pPE6tL",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "transfer_record": "TM6xs925QoBUjuGgBKt2CWhPYaJD5fLaGk9Z5pPE6tL"
       },
       "before": {
         "context_slot": 514215084,
@@ -1928,8 +1908,7 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/4mPisxQFGQHNV14FDXf4drJRuYVurBvmZhykZ1FZzJ2Ppz8WpAjpQ6aoiQVPJSJ9B7s8r1BGgZcMVFxqB1YUMcq7?cluster=devnet",
       "accounts": {
-        "transport_ledger": "GQiiXgcmJN3gZQ6Jw5KJNTpTiFDLzowABq9Qs1J6P8Hg",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "transport_ledger": "GQiiXgcmJN3gZQ6Jw5KJNTpTiFDLzowABq9Qs1J6P8Hg"
       },
       "before": {
         "context_slot": 514215123,
@@ -2221,8 +2200,7 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/5FUavUZ3VN8nMDLfkCwSHRtmNjqfsggdWJ9EMr2nHHxqQafHZ3KSByHfrav8ZoPk8rVwMafX2qH1H8sPwKM3n2Mx?cluster=devnet",
       "accounts": {
-        "recovery_record": "4yde3Jx6aFt56h9ix717JvaazKuzwgNtpTrPmxYDoR3F",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "recovery_record": "4yde3Jx6aFt56h9ix717JvaazKuzwgNtpTrPmxYDoR3F"
       },
       "before": {
         "context_slot": 514215140,
@@ -2708,8 +2686,7 @@
       "explorer_url": "https://explorer.solana.com/tx/sYtzPaNM9qZpQUmcZ1KNzH8GqkJDX9UDNqnekNX7cZTuieFW4wEq4qL5bWhvzvLkhuWSbWAxb5W8xdz21WzWaMZ?cluster=devnet",
       "accounts": {
         "consumed_message": "BmAJMuWffDjVduykddtBF73MFTx8i56bSDqJvUjoYkp6",
-        "transfer_record": "HyDpNuMjnfvFLrhza18T9cxHuoozbxJ63Gr4mtnsX8zs",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
+        "transfer_record": "HyDpNuMjnfvFLrhza18T9cxHuoozbxJ63Gr4mtnsX8zs"
       },
       "before": {
         "context_slot": 514215171,
@@ -2879,7 +2856,6 @@
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/3DKEykqCkRdHqfhutz1hBKq9wbHuSXTgMrpYPJsB866K2N4vjW1qMJRHomX3TTgwp3FSgw1VZTo4gZqDv1y7n397?cluster=devnet",
       "accounts": {
-        "emergency_guardian": "2YGmGXMBEyCQdUBPp8vQhnhV92nqDk8pqu87pxxyV8dG",
         "remote_config": "BNcFskRtpkHrTbSzAzxbhTCVLjyViewdwrQZeA2MAZYi"
       },
       "before": {
@@ -3037,9 +3013,7 @@
       "compute_units": 36747,
       "fee_lamports": 10000,
       "explorer_url": "https://explorer.solana.com/tx/2byt7oNyStnrGADRgMGC2VCKjwGdyztau4B3g1kB3EeKbPsXQ4DfgVomwhtPzwbsCQpTg8aLWN1jBrGpUHxaPiyt?cluster=devnet",
-      "accounts": {
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
-      },
+      "accounts": {},
       "before": {
         "context_slot": 514215197,
         "control_lane": {
@@ -3195,9 +3169,7 @@
       "compute_units": 20099,
       "fee_lamports": 15000,
       "explorer_url": "https://explorer.solana.com/tx/2j3JknyAWwXvwnbh95T9yXWdu9xbZYvxVr7WvvqGmRM23jUne7x2sgzDEyFPyYCqxJrTBpAc5Qfx8fRMQ8t9zq4F?cluster=devnet",
-      "accounts": {
-        "forged_emergency_guardian": "42gNuf3ptMR23YAgU32QsHiSgjWaV6U93cNVcL3fiUfF"
-      },
+      "accounts": {},
       "before": {
         "context_slot": 514215208,
         "control_lane": {
@@ -3353,10 +3325,7 @@
       "compute_units": 69612,
       "fee_lamports": 15000,
       "explorer_url": "https://explorer.solana.com/tx/61ihddDFPKbMDyrdY2RnP9ZWu2pEQTBUyZTRYJa7nAUnSKF2aNbXTWUo1mNoK1YtQwwyG968fLEE4L5hEB2Xwy25?cluster=devnet",
-      "accounts": {
-        "emergency_guardian": "2YGmGXMBEyCQdUBPp8vQhnhV92nqDk8pqu87pxxyV8dG",
-        "transport_verifier": "EuPBJxWd3qLodxd3MZknJYEMCsWSaK7J6sxeNN5ScSEc"
-      },
+      "accounts": {},
       "before": {
         "context_slot": 514215216,
         "control_lane": {

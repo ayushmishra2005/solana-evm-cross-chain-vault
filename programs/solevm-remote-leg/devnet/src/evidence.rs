@@ -74,6 +74,8 @@ pub(crate) struct Program {
 pub(crate) struct Mint {
     pub address: String,
     pub decimals: u8,
+    /// Absent from the published evidence, which leaves out signer wallets.
+    #[serde(default)]
     pub mint_authority: String,
     pub label: String,
 }
