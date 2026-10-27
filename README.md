@@ -129,6 +129,14 @@ programs/solevm-remote-leg/e2e
 
 Deterministic scenarios that connect the live EVM vault, independent message and asset transport, the live Solana remote leg, the strategy adapter, RemoteReport / RecallSent and EVM cross-chain accounting. Foundry runs the Solidity contracts; LiteSVM runs the Solana program; xchain-sim schedules the two transports; protocol-types supplies the canonical encoding. Orchestration crosses process boundaries through a deterministic FFI harness.
 
+### ES256 authorization verifier
+
+```
+programs/es256-authorization-verifier
+```
+
+A separate Solana program, developed independently of the vault and not part of its custody or settlement flows. It verifies ES256-signed authorization claims with the native secp256r1 program. A claim is accepted only if it is signed by an administrator-registered key and matches an administrator-approved mandate. A permanent receipt per nonce prevents replay within a configuration. It enforces one fixed JWT profile and issuer. It is deployed on devnet, where an authorization and its rejected replay have been exercised: see its [README](programs/es256-authorization-verifier/README.md) and [devnet results](programs/es256-authorization-verifier/devnet/README.md).
+
 ## Key design decisions
 
 ### EVM owns canonical accounting
@@ -402,7 +410,7 @@ SBF_OUT_DIR=$PWD/target/deploy-v3 HOSTILE_SBF_OUT_DIR=$PWD/target/deploy-hostile
   cargo test --locked --workspace --all-features
 ```
 
-A standalone example, independent of the vault, verifies ES256-signed authorization verdicts with the native secp256r1 precompile: see [`examples/es256-authorization-verifier`](examples/es256-authorization-verifier/README.md).
+The ES256 authorization verifier is a separate workspace with its own build and tests: see [`programs/es256-authorization-verifier`](programs/es256-authorization-verifier/README.md).
 
 ### Cross-chain E2E
 

@@ -5,13 +5,14 @@ A standalone Solana program that consumes an ES256-signed authorization verdict,
 It is an independent demonstration of the verification technique. It is not an escrow or payment system, it moves no tokens, and it is not an official Saifuro integration. The verdict format follows Saifuro's published examples so the profile has a concrete, documented shape.
 
 ```
-examples/es256-authorization-verifier
+programs/es256-authorization-verifier
 ├── src/                         on-chain program (Anchor 1.2.1)
 │   ├── precompile.rs            finds and pins the native verification
 │   ├── jwt.rs                   strict compact-JWS / JSON profile parser
 │   ├── instructions/            admin and consume instructions
 │   └── state.rs                 accounts, seeds, bounds
 ├── adapter/                     host-side helpers (JWK compression, low-S, instruction builder)
+├── devnet/                      devnet runner and verified deployment
 ├── test-programs/cpi-forwarder/ test-only program used to attack CPI and program identity
 └── tests/                       LiteSVM suites against the compiled SBF binary
 ```
@@ -134,14 +135,14 @@ Time and window boundaries:
 Prerequisites:
 - `cargo-build-sbf` 4.4.0 (`cargo install cargo-build-sbf --version 4.4.0 --locked`), run with `--tools-version v1.58`; it fetches platform-tools v1.58 on first use. An older Solana CLI install may put a different `cargo-build-sbf` first on `PATH`, so check that `cargo-build-sbf --version` reports 4.4.0.
 - Rust 1.89 or newer (the crate's `rust-version`); validated with Rust 1.98.1.
-- Dependencies are pinned by this example's own `Cargo.lock`.
+- Dependencies are pinned by this program's own `Cargo.lock`.
 
 Build both programs, then run the suites against the built binary.
 - One `cargo test` run covers one architecture. `SBF_OUT_DIR` chooses the build directory: it defaults to `target/deploy`, and when set it is the only place the harness looks, with no fallback.
 - `ES256_EXPECTED_SBPF_ARCH` (`v0` or `v3`) makes the harness assert the loaded ELF is that architecture. Without it, the harness only checks that the binary is v0 or v3.
 
 ```bash
-cd examples/es256-authorization-verifier
+cd programs/es256-authorization-verifier
 cargo-build-sbf --tools-version v1.58 --arch v0
 cargo-build-sbf --tools-version v1.58 --arch v0 \
   --manifest-path test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy
@@ -197,7 +198,7 @@ LiteSVM executes transactions one at a time. The competing-submission test shows
 - No automatic JWKS synchronization, and no protection against a compromised administrator.
 - No replay protection across clusters, deployments or configs.
 - Not production payment authorization and not escrow settlement. Nothing moves funds.
-- Only legacy transactions are tested. Versioned transactions and address lookup tables are not covered, and the example makes no claim about them.
+- Only legacy transactions are tested. Versioned transactions and address lookup tables are not covered, and the program makes no claim about them.
 
 ## References
 
