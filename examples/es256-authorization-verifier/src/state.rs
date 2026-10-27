@@ -43,8 +43,8 @@ impl Environment {
         }
     }
 
-    /// Sandbox and production share an issuer and claim shape; only the kid
-    /// prefix tells them apart.
+    /// Sandbox and production tokens share an issuer and claim shape; the
+    /// kid prefix is the only signed field that tells them apart.
     pub fn accepts_kid(self, kid: &[u8]) -> bool {
         let sandbox = kid.starts_with(SANDBOX_KID_PREFIX);
         match self {
@@ -70,7 +70,7 @@ pub struct TrustedKey {
     #[max_len(MAX_KID_LEN)]
     pub kid: String,
     pub public_key: [u8; COMPRESSED_PUBLIC_KEY_LEN],
-    /// Earliest accepted `iat`.
+    /// Earliest accepted `iat` and cluster time.
     pub not_before: i64,
     /// Latest accepted `exp`.
     pub not_after: i64,

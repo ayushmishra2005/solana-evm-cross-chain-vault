@@ -17,6 +17,8 @@ use common::*;
 use es256_authorization_verifier::VerifierError;
 use es256_authorization_verifier::precompile::MAX_SIGNING_INPUT_LEN;
 use solana_compute_budget_interface::ComputeBudgetInstruction;
+use solana_instruction::error::InstructionError;
+use solana_precompile_error::PrecompileError;
 
 /// Legacy transaction packet limit.
 const PACKET_DATA_SIZE: usize = 1_232;
@@ -187,13 +189,14 @@ fn rejected_verdicts_are_bounded_too() {
         &measure(&mut fixture, &one_byte_ix, false),
     );
 
-    let cases: [(&str, VerdictClaims); 3] = [
+    let cases: [(&str, VerdictClaims, (u8, u32)); 3] = [
         (
             "parser rejection (exponent amount)",
             VerdictClaims {
                 amount: "3.4e2".into(),
                 ..VerdictClaims::default()
             },
+            (1, u32::from(VerifierError::InvalidNumber)),
         ),
         (
             "last check rejection (category)",
@@ -201,10 +204,15 @@ fn rejected_verdicts_are_bounded_too() {
                 category: "travel".into(),
                 ..VerdictClaims::default()
             },
+            (1, u32::from(VerifierError::CategoryMismatch)),
         ),
-        ("native rejection (high S)", VerdictClaims::default()),
+        (
+            "native rejection (high S)",
+            VerdictClaims::default(),
+            (0, PrecompileError::InvalidSignature as u32),
+        ),
     ];
-    for (name, claims) in cases {
+    for (name, claims, (index, code)) in cases {
         let mut verdict = fixture.sign(&claims);
         if name.starts_with("native") {
             verdict.signature = es256_jws_adapter::high_s_twin(&verdict.signature).unwrap();
@@ -213,6 +221,11 @@ fn rejected_verdicts_are_bounded_too() {
             verdict.precompile(),
             fixture.consume_instruction(verdict.nonce_hash()),
         ];
+        assert_eq!(
+            instruction_error(fixture.send_as_consumer(&instructions)),
+            (index, InstructionError::Custom(code)),
+            "{name}"
+        );
         let measurement = measure(&mut fixture, &instructions, false);
         assert!(measurement.compute_units <= DEFAULT_INSTRUCTION_COMPUTE_UNITS);
         report(name, &measurement);
