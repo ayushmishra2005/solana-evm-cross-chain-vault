@@ -176,4 +176,42 @@ mod tests {
             assert!(parse_precompile_data(&data).is_err(), "byte {index}");
         }
     }
+
+    #[test]
+    fn rejects_every_change_to_the_header() {
+        let canonical = instruction_data(b"a.b");
+        for index in 0..PUBLIC_KEY_OFFSET {
+            for value in 0..=255u8 {
+                let mut data = canonical.clone();
+                data[index] = value;
+                assert_eq!(
+                    parse_precompile_data(&data).is_ok(),
+                    value == canonical[index],
+                    "byte {index} = {value:#04x}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_truncation_fails_without_panicking() {
+        let data = instruction_data(b"a.b");
+        for length in 0..data.len() {
+            assert!(parse_precompile_data(&data[..length]).is_err(), "{length}");
+        }
+    }
+
+    #[test]
+    fn signing_input_length_bounds_are_inclusive() {
+        assert!(parse_precompile_data(&instruction_data(&[b'a'; MAX_SIGNING_INPUT_LEN])).is_ok());
+        let mut oversized = canonical_header(513).to_vec();
+        oversized.extend_from_slice(&[0x02; COMPRESSED_PUBLIC_KEY_LEN]);
+        oversized.extend_from_slice(&[0x11; SIGNATURE_LEN]);
+        oversized.extend_from_slice(&[b'a'; 513]);
+        assert!(parse_precompile_data(&oversized).is_err());
+        let mut empty = canonical_header(0).to_vec();
+        empty.extend_from_slice(&[0x02; COMPRESSED_PUBLIC_KEY_LEN]);
+        empty.extend_from_slice(&[0x11; SIGNATURE_LEN]);
+        assert!(parse_precompile_data(&empty).is_err());
+    }
 }

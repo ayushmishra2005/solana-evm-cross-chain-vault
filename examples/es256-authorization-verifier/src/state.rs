@@ -129,6 +129,20 @@ pub fn mandate_hash(mandate_id: &[u8]) -> [u8; 32] {
     domain_hash(MANDATE_DOMAIN, mandate_id)
 }
 
+/// The trusted-key address seed for `kid`. Anchor derives the address
+/// before the handler runs, and a seed over 32 bytes aborts derivation.
+/// Longer kids all map to the empty seed, which no valid kid can occupy, so
+/// they reach the handler and are rejected there instead of colliding with
+/// a registered prefix.
+pub fn kid_seed(kid: &str) -> &[u8] {
+    let bytes = kid.as_bytes();
+    if bytes.len() > MAX_KID_LEN {
+        &[]
+    } else {
+        bytes
+    }
+}
+
 /// Printable ASCII without quote or backslash: the only string bytes the
 /// token parser accepts, so registered values can always be matched.
 pub fn is_profile_text(value: &[u8], max_len: usize) -> bool {

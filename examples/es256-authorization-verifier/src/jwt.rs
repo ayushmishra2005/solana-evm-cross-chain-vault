@@ -411,7 +411,11 @@ impl<'a> Cursor<'a> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::indexing_slicing)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects
+    )]
 
     use super::*;
 
@@ -483,5 +487,216 @@ mod tests {
         assert!(decode_base64url(b"QQ==").is_err());
         assert!(decode_base64url(b"Q").is_err());
         assert!(decode_base64url(b"Q+8").is_err());
+    }
+
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+    fn encode(bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        for chunk in bytes.chunks(3) {
+            let mut word = [0u8; 3];
+            word[..chunk.len()].copy_from_slice(chunk);
+            let value = u32::from_be_bytes([0, word[0], word[1], word[2]]);
+            let symbols = [18, 12, 6, 0].map(|shift| ALPHABET[((value >> shift) & 63) as usize]);
+            output.extend_from_slice(&symbols[..chunk.len() + 1]);
+        }
+        output
+    }
+
+    /// Whatever decodes re-encodes to exactly the input, so no byte string
+    /// has two accepted spellings. A final symbol carries 2 data bits after
+    /// one byte and 4 after two, so exactly 4 or 16 symbols may end a group.
+    #[test]
+    fn every_accepted_encoding_is_the_canonical_one() {
+        for first in 0..=255u8 {
+            let single = encode(&[first]);
+            assert_eq!(decode_base64url(&single).unwrap(), [first]);
+            let mut accepted = 0;
+            for symbol in ALPHABET {
+                let mut candidate = single.clone();
+                candidate[1] = *symbol;
+                if let Ok(decoded) = decode_base64url(&candidate) {
+                    assert_eq!(encode(&decoded), candidate);
+                    accepted += 1;
+                }
+            }
+            assert_eq!(accepted, 4);
+            for second in [0u8, 1, 0x7f, 0x80, 0xfe, 0xff, first] {
+                let pair = encode(&[first, second]);
+                assert_eq!(decode_base64url(&pair).unwrap(), [first, second]);
+                let mut accepted = 0;
+                for symbol in ALPHABET {
+                    let mut candidate = pair.clone();
+                    candidate[2] = *symbol;
+                    if let Ok(decoded) = decode_base64url(&candidate) {
+                        assert_eq!(encode(&decoded), candidate);
+                        accepted += 1;
+                    }
+                }
+                assert_eq!(accepted, 16);
+            }
+        }
+    }
+
+    #[test]
+    fn base64url_rejects_every_byte_outside_the_alphabet() {
+        for byte in 0..=255u8 {
+            let input = [b'Q', b'Q', byte, b'A'];
+            assert_eq!(
+                decode_base64url(&input).is_ok(),
+                ALPHABET.contains(&byte),
+                "{byte:#04x}"
+            );
+        }
+    }
+
+    /// Duplicate checks that need more room than one 512-byte signing
+    /// input allows on-chain.
+    #[test]
+    fn rejects_a_complete_duplicate_request_object() {
+        let request = r#""request":{"agent":"agt_procurement_01","amount":340,"currency":"USD","recipient":"vendor:acme_saas","category":"saas"}"#;
+        let duplicated = String::from_utf8(CLAIMS.to_vec()).unwrap().replace(
+            request,
+            &format!(
+                r#"{},{}"#,
+                request.replace("vendor:acme_saas", "vendor:attacker"),
+                request
+            ),
+        );
+        assert_eq!(
+            code(parse_claims(duplicated.as_bytes()).unwrap_err()),
+            code(VerifierError::DuplicateField)
+        );
+    }
+
+    #[test]
+    fn rejects_every_duplicated_claim() {
+        let text = String::from_utf8(CLAIMS.to_vec()).unwrap();
+        for field in [
+            r#""iss":"https://verdicts.saifuro.com""#,
+            r#""jti":"dec_5b2e""#,
+            r#""iat":1788424980"#,
+            r#""exp":1788425280"#,
+            r#""verdict":"allow""#,
+            r#""mandate":"mnd_7f3a""#,
+            r#""policy_version":"pol_2026-08-12.1""#,
+            r#""nonce":"n_9d02c6e4""#,
+            r#""agent":"agt_procurement_01""#,
+            r#""amount":340"#,
+            r#""currency":"USD""#,
+            r#""recipient":"vendor:acme_saas""#,
+            r#""category":"saas""#,
+        ] {
+            let duplicated = text.replacen(field, &format!("{field},{field}"), 1);
+            assert_eq!(
+                code(parse_claims(duplicated.as_bytes()).unwrap_err()),
+                code(VerifierError::DuplicateField),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn field_bounds_are_inclusive() {
+        let text = String::from_utf8(CLAIMS.to_vec()).unwrap();
+        let with_recipient = |length: usize| text.replace("vendor:acme_saas", &"r".repeat(length));
+        assert!(parse_claims(with_recipient(MAX_RECIPIENT_LEN).as_bytes()).is_ok());
+        assert_eq!(
+            code(parse_claims(with_recipient(MAX_RECIPIENT_LEN + 1).as_bytes()).unwrap_err()),
+            code(VerifierError::InvalidFieldLength)
+        );
+        let header = |length: usize| format!(r#"{{"alg":"ES256","kid":"{}"}}"#, "k".repeat(length));
+        assert!(parse_header(header(MAX_KID_LEN).as_bytes()).is_ok());
+        assert_eq!(
+            code(parse_header(header(MAX_KID_LEN + 1).as_bytes()).unwrap_err()),
+            code(VerifierError::InvalidFieldLength)
+        );
+    }
+
+    #[test]
+    fn digit_accumulation_is_checked() {
+        assert_eq!(parse_digits(b"18446744073709551615").unwrap(), u64::MAX);
+        for overflow in [
+            &b"18446744073709551616"[..],
+            b"99999999999999999999",
+            b"100000000000000000000",
+        ] {
+            assert_eq!(
+                code(parse_digits(overflow).unwrap_err()),
+                code(VerifierError::InvalidNumber)
+            );
+        }
+        assert!(parse_digits(b"").is_err());
+        assert!(parse_digits(b"1 ").is_err());
+        assert_eq!(parse_timestamp(b"253402300799").unwrap(), MAX_TIMESTAMP);
+        assert!(parse_timestamp(b"999999999999").is_err());
+    }
+
+    #[test]
+    fn only_json_whitespace_separates_tokens() {
+        let text = String::from_utf8(CLAIMS.to_vec()).unwrap();
+        let spaced = format!(
+            " \t\r\n{}\n",
+            text.replace(",\"", " ,\t\"").replace("\":", "\" :\n")
+        );
+        assert!(parse_claims(spaced.as_bytes()).is_ok());
+        for separator in ['\u{0b}', '\u{0c}', '\u{a0}'] {
+            let invalid = text.replacen(",\"jti\"", &format!(",{separator}\"jti\""), 1);
+            assert!(parse_claims(invalid.as_bytes()).is_err(), "{separator:?}");
+        }
+        assert_eq!(
+            code(parse_claims(b"{}").unwrap_err()),
+            code(VerifierError::MissingField)
+        );
+        assert_eq!(
+            code(parse_claims(b"").unwrap_err()),
+            code(VerifierError::MalformedJson)
+        );
+    }
+
+    /// Every single-byte substitution and every truncation of a valid
+    /// header and payload returns a result; none panics. Any mutation that
+    /// still parses must leave the parse deterministic.
+    #[test]
+    fn no_single_byte_mutation_or_truncation_panics() {
+        let header = br#"{"alg":"ES256","typ":"JWT","kid":"verdict-2026-09"}"#;
+        for document in [CLAIMS, &header[..]] {
+            for position in 0..document.len() {
+                let mut mutated = document.to_vec();
+                for byte in 0..=255u8 {
+                    mutated[position] = byte;
+                    let claims = parse_claims(&mutated).map_err(code);
+                    assert_eq!(claims, parse_claims(&mutated).map_err(code));
+                    let _ = parse_header(&mutated);
+                }
+            }
+            for length in 0..document.len() {
+                assert!(parse_claims(&document[..length]).is_err());
+                assert!(parse_header(&document[..length]).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn signing_input_needs_exactly_two_nonempty_segments() {
+        for input in [
+            &b""[..],
+            b".",
+            b"e30",
+            b"e30.",
+            b".e30",
+            b"e30..e30",
+            b"e30.e30.",
+            b"e30.e30.e30",
+        ] {
+            assert_eq!(
+                code(decode_signing_input(input).unwrap_err()),
+                code(VerifierError::MalformedSigningInput),
+                "{input:?}"
+            );
+        }
+        let decoded = decode_signing_input(b"e30.e30").unwrap();
+        assert_eq!(decoded.header_json, b"{}");
+        assert_eq!(decoded.payload_json, b"{}");
     }
 }

@@ -33,6 +33,8 @@ const CURRENT_INSTRUCTION: u16 = u16::MAX;
 pub enum AdapterError {
     InvalidBase64Url,
     InvalidCompactJws,
+    UnsupportedKeyType,
+    UnsupportedCurve,
     InvalidCoordinate,
     PointNotOnCurve,
     ScalarOutOfRange,
@@ -81,6 +83,24 @@ pub fn split_compact_jws(token: &str) -> AdapterResult<(Vec<u8>, [u8; SIGNATURE_
     let signature = <[u8; SIGNATURE_LEN]>::try_from(base64url_decode(signature)?)
         .map_err(|_| AdapterError::InvalidCompactJws)?;
     Ok((signing_input.as_bytes().to_vec(), signature))
+}
+
+/// Converts a JWK into the 33-byte key an administrator registers. Only
+/// `kty` `EC` on `crv` `P-256` is accepted; any other key type or curve
+/// would never verify under the secp256r1 precompile.
+pub fn compress_p256_jwk(
+    kty: &str,
+    crv: &str,
+    x: &str,
+    y: &str,
+) -> AdapterResult<[u8; COMPRESSED_PUBLIC_KEY_LEN]> {
+    if kty != "EC" {
+        return Err(AdapterError::UnsupportedKeyType);
+    }
+    if crv != "P-256" {
+        return Err(AdapterError::UnsupportedCurve);
+    }
+    compress_jwk_public_key(x, y)
 }
 
 /// Converts a P-256 JWK's `x` and `y` into a 33-byte compressed SEC1 point,
@@ -290,6 +310,122 @@ mod tests {
                 normalize_signature(&signature),
                 Err(AdapterError::ScalarOutOfRange)
             );
+        }
+    }
+
+    #[test]
+    fn normalization_preserves_leading_zero_scalars() {
+        let mut low = [0u8; SIGNATURE_LEN];
+        low[1..FIELD_SIZE].fill(0x22);
+        low[FIELD_SIZE + 2..].fill(0x01);
+        assert_eq!(normalize_signature(&low).unwrap(), low);
+
+        // s = n - 1 normalizes to 1, which must stay a 32-byte field.
+        let mut high = [0u8; SIGNATURE_LEN];
+        high[..FIELD_SIZE].fill(0x33);
+        high[FIELD_SIZE..].copy_from_slice(&SECP256R1_ORDER);
+        high[SIGNATURE_LEN - 1] -= 1;
+        let normalized = normalize_signature(&high).unwrap();
+        assert_eq!(normalized[..FIELD_SIZE], high[..FIELD_SIZE]);
+        let mut one = [0u8; FIELD_SIZE];
+        one[FIELD_SIZE - 1] = 1;
+        assert_eq!(normalized[FIELD_SIZE..], one);
+    }
+
+    #[test]
+    fn normalization_boundaries() {
+        let mut half = [0x44; SIGNATURE_LEN];
+        half[FIELD_SIZE..].copy_from_slice(&SECP256R1_HALF_ORDER);
+        assert_eq!(normalize_signature(&half).unwrap(), half, "n/2 is low");
+
+        let mut above_half = half;
+        above_half[SIGNATURE_LEN - 1] += 1;
+        assert!(!is_low_s(&above_half).unwrap());
+        let normalized = normalize_signature(&above_half).unwrap();
+        assert!(is_low_s(&normalized).unwrap());
+
+        let mut zero_s = [0x44; SIGNATURE_LEN];
+        zero_s[FIELD_SIZE..].fill(0);
+        let mut r_order = [0x44; SIGNATURE_LEN];
+        r_order[..FIELD_SIZE].copy_from_slice(&SECP256R1_ORDER);
+        for signature in [zero_s, r_order] {
+            assert_eq!(
+                normalize_signature(&signature),
+                Err(AdapterError::ScalarOutOfRange)
+            );
+        }
+    }
+
+    const SAIFURO_X: &str = "0sSLihPTUCksZoUJR3Eh22UcZhhOu8-nEqSa_98rE_I";
+    const SAIFURO_Y: &str = "eXSPgBZzeT1E6HtkD8tlg8yujO37jKQhH3SDd99Xx68";
+
+    #[test]
+    fn jwk_must_be_an_ec_p256_point() {
+        assert!(compress_p256_jwk("EC", "P-256", SAIFURO_X, SAIFURO_Y).is_ok());
+        assert_eq!(
+            compress_p256_jwk("RSA", "P-256", SAIFURO_X, SAIFURO_Y),
+            Err(AdapterError::UnsupportedKeyType)
+        );
+        assert_eq!(
+            compress_p256_jwk("OKP", "Ed25519", SAIFURO_X, SAIFURO_Y),
+            Err(AdapterError::UnsupportedKeyType)
+        );
+        for curve in ["P-384", "P-521", "secp256k1", "p-256"] {
+            assert_eq!(
+                compress_p256_jwk("EC", curve, SAIFURO_X, SAIFURO_Y),
+                Err(AdapterError::UnsupportedCurve),
+                "{curve}"
+            );
+        }
+
+        // A P-384 key's 48-byte coordinates.
+        let wide = base64url_encode(&[0x11; 48]);
+        assert_eq!(
+            compress_p256_jwk("EC", "P-256", &wide, &wide),
+            Err(AdapterError::InvalidCoordinate)
+        );
+        let short = base64url_encode(&[0x11; 31]);
+        assert_eq!(
+            compress_p256_jwk("EC", "P-256", &short, SAIFURO_Y),
+            Err(AdapterError::InvalidCoordinate)
+        );
+        // The secp256k1 generator, mislabelled as P-256.
+        let k1_x = base64url_encode(&[
+            0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE, 0x87,
+            0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81, 0x5B,
+            0x16, 0xF8, 0x17, 0x98,
+        ]);
+        let k1_y = base64url_encode(&[
+            0x48, 0x3A, 0xDA, 0x77, 0x26, 0xA3, 0xC4, 0x65, 0x5D, 0xA4, 0xFB, 0xFC, 0x0E, 0x11,
+            0x08, 0xA8, 0xFD, 0x17, 0xB4, 0x48, 0xA6, 0x85, 0x54, 0x19, 0x9C, 0x47, 0xD0, 0x8F,
+            0xFB, 0x10, 0xD4, 0xB8,
+        ]);
+        assert_eq!(
+            compress_p256_jwk("EC", "P-256", &k1_x, &k1_y),
+            Err(AdapterError::PointNotOnCurve)
+        );
+        assert_eq!(
+            compress_p256_jwk("EC", "P-256", &format!("{SAIFURO_X}="), SAIFURO_Y),
+            Err(AdapterError::InvalidBase64Url)
+        );
+    }
+
+    #[test]
+    fn compact_jws_splitting_is_strict() {
+        let signer = SyntheticSigner::generate().unwrap();
+        let token = signer.compact_jws(br#"{"alg":"ES256"}"#, b"{}").unwrap();
+        let (input, signature) = split_compact_jws(&token).unwrap();
+        assert_eq!(input, signing_input(br#"{"alg":"ES256"}"#, b"{}"));
+        assert!(is_low_s(&signature).unwrap());
+
+        let der_length = base64url_encode(&[0x30; 70]);
+        for malformed in [
+            "e30.e30".to_owned(),
+            format!("e30.e30.e30.{}", base64url_encode(&signature)),
+            format!("e30.e30.{der_length}"),
+            format!("e30.e30.{}=", base64url_encode(&signature)),
+        ] {
+            assert!(split_compact_jws(&malformed).is_err(), "{malformed}");
         }
     }
 

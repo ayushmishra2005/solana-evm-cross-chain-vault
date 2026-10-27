@@ -12,7 +12,7 @@
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_lang::solana_program::clock::Clock;
-use anchor_lang::solana_program::instruction::Instruction;
+use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas};
 use es256_authorization_verifier::{
     CONFIG_SEED, ConsumedAuthorization, Environment, InitializeConfigParams, MANDATE_SEED,
@@ -38,8 +38,29 @@ pub const RECIPIENT: &str = "vendor:acme_saas";
 pub const POLICY_VERSION: &str = "pol_2026-08-12.1";
 pub const AGENT: &str = "agt_procurement_01";
 pub const CATEGORY: &str = "saas";
+pub const NONCE: &str = "n_9d02c6e4";
 pub const KEY_NOT_BEFORE: i64 = NOW - 86_400;
 pub const KEY_NOT_AFTER: i64 = NOW + 86_400;
+
+/// Address the test-only CPI forwarder is loaded at.
+pub const FORWARDER_ID: Pubkey = Pubkey::new_from_array([0xF0; 32]);
+
+/// `SystemError::AccountAlreadyInUse`, returned when `init` finds the
+/// account already allocated.
+pub const ACCOUNT_ALREADY_IN_USE: u32 = 0;
+/// `SystemError::ResultWithNegativeLamports`, returned by an overdrawn
+/// transfer.
+pub const RESULT_WITH_NEGATIVE_LAMPORTS: u32 = 1;
+
+/// Account positions in `consume_authorization`.
+pub mod consume_account {
+    pub const CONSUMER: usize = 0;
+    pub const CONFIG: usize = 1;
+    pub const TRUSTED_KEY: usize = 2;
+    pub const MANDATE: usize = 3;
+    pub const RECEIPT: usize = 4;
+    pub const INSTRUCTIONS_SYSVAR: usize = 5;
+}
 
 pub type TxResult = Result<TransactionMetadata, Box<FailedTransactionMetadata>>;
 
@@ -74,7 +95,7 @@ impl Default for VerdictClaims {
             verdict: "allow".into(),
             mandate: MANDATE_ID.into(),
             policy_version: POLICY_VERSION.into(),
-            nonce: "n_9d02c6e4".into(),
+            nonce: NONCE.into(),
             agent: AGENT.into(),
             amount: "340".into(),
             currency: CURRENCY.into(),
@@ -85,6 +106,15 @@ impl Default for VerdictClaims {
 }
 
 impl VerdictClaims {
+    /// Claims issued at `iat` with the standard 300-second lifetime.
+    pub fn issued_at(iat: i64) -> Self {
+        Self {
+            iat,
+            exp: iat + 300,
+            ..Self::default()
+        }
+    }
+
     pub fn header_json(&self) -> String {
         format!(r#"{{"alg":"ES256","typ":"JWT","kid":"{}"}}"#, self.kid)
     }
@@ -111,6 +141,13 @@ impl VerdictClaims {
             self.category,
         )
     }
+
+    pub fn signing_input(&self) -> Vec<u8> {
+        es256_jws_adapter::signing_input(
+            self.header_json().as_bytes(),
+            self.payload_json().as_bytes(),
+        )
+    }
 }
 
 /// A signed verdict and the precompile key it is presented with.
@@ -124,25 +161,92 @@ pub struct SignedVerdict {
 
 impl SignedVerdict {
     pub fn sign(signer: &SyntheticSigner, claims: &VerdictClaims) -> Self {
-        let signing_input = es256_jws_adapter::signing_input(
-            claims.header_json().as_bytes(),
-            claims.payload_json().as_bytes(),
-        );
+        Self::sign_input(signer, claims.signing_input(), &claims.nonce)
+    }
+
+    /// Signs arbitrary bytes as if they were a signing input. `nonce` only
+    /// selects the receipt address the consume instruction names.
+    pub fn sign_input(signer: &SyntheticSigner, signing_input: Vec<u8>, nonce: &str) -> Self {
         let signature = normalize_signature(&signer.sign(&signing_input).unwrap()).unwrap();
         Self {
             signing_input,
             signature,
             public_key: signer.public_key().unwrap(),
-            nonce: claims.nonce.clone(),
+            nonce: nonce.into(),
         }
     }
 
+    /// The canonical precompile instruction. The adapter refuses messages
+    /// over the verifier's limit, so oversized attack inputs are built by
+    /// hand in the same layout.
     pub fn precompile(&self) -> Instruction {
+        if self.signing_input.len() > es256_jws_adapter::MAX_SIGNING_INPUT_LEN {
+            let mut body = self.public_key.to_vec();
+            body.extend_from_slice(&self.signature);
+            body.extend_from_slice(&self.signing_input);
+            return raw_precompile(1, 0, &[Offsets::canonical(self.signing_input.len())], &body);
+        }
         secp256r1_instruction(&self.public_key, &self.signature, &self.signing_input).unwrap()
     }
 
     pub fn nonce_hash(&self) -> [u8; 32] {
         nonce_hash(self.nonce.as_bytes())
+    }
+}
+
+/// The seven little-endian offsets of one native signature entry.
+#[derive(Clone, Copy, Debug)]
+pub struct Offsets {
+    pub signature_offset: u16,
+    pub signature_instruction: u16,
+    pub public_key_offset: u16,
+    pub public_key_instruction: u16,
+    pub message_offset: u16,
+    pub message_len: u16,
+    pub message_instruction: u16,
+}
+
+impl Offsets {
+    /// The layout the verifier accepts for a message of `message_len` bytes.
+    pub fn canonical(message_len: usize) -> Self {
+        Self {
+            signature_offset: 49,
+            signature_instruction: u16::MAX,
+            public_key_offset: 16,
+            public_key_instruction: u16::MAX,
+            message_offset: 113,
+            message_len: u16::try_from(message_len).unwrap(),
+            message_instruction: u16::MAX,
+        }
+    }
+
+    fn bytes(self) -> Vec<u8> {
+        [
+            self.signature_offset,
+            self.signature_instruction,
+            self.public_key_offset,
+            self.public_key_instruction,
+            self.message_offset,
+            self.message_len,
+            self.message_instruction,
+        ]
+        .iter()
+        .flat_map(|field| field.to_le_bytes())
+        .collect()
+    }
+}
+
+/// A secp256r1 instruction with a hand-built header, for layout attacks.
+pub fn raw_precompile(count: u8, padding: u8, entries: &[Offsets], body: &[u8]) -> Instruction {
+    let mut data = vec![count, padding];
+    for entry in entries {
+        data.extend(entry.bytes());
+    }
+    data.extend_from_slice(body);
+    Instruction {
+        program_id: solana_sdk_ids::secp256r1_program::ID,
+        accounts: Vec::new(),
+        data,
     }
 }
 
@@ -192,8 +296,11 @@ impl Fixture {
     /// config exists.
     pub fn deployed() -> Self {
         let mut svm = LiteSVM::new();
-        svm.add_program(es256_authorization_verifier::ID, &program_bytes())
-            .expect("program loads");
+        svm.add_program(
+            es256_authorization_verifier::ID,
+            &built_program("es256_authorization_verifier"),
+        )
+        .expect("program loads");
         let mut clock = svm.get_sysvar::<Clock>();
         clock.unix_timestamp = NOW;
         svm.set_sysvar(&clock);
@@ -230,11 +337,30 @@ impl Fixture {
         }
     }
 
+    /// Loads the test-only CPI forwarder at [`FORWARDER_ID`].
+    pub fn add_cpi_forwarder(&mut self) {
+        self.svm
+            .add_program(FORWARDER_ID, &built_program("es256_cpi_forwarder"))
+            .expect("forwarder loads");
+    }
+
+    pub fn set_clock(&mut self, unix_timestamp: i64) {
+        let mut clock = self.svm.get_sysvar::<Clock>();
+        clock.unix_timestamp = unix_timestamp;
+        self.svm.set_sysvar(&clock);
+    }
+
     /// Sends one transaction with a fresh blockhash, so a repeat is a new
     /// transaction rather than a history duplicate.
     pub fn send(&mut self, instructions: &[Instruction], signers: &[&Keypair]) -> TxResult {
         let transaction = self.transaction(instructions, signers);
         self.svm.send_transaction(transaction).map_err(Box::new)
+    }
+
+    /// Sends `instructions` paid and signed by the configured consumer.
+    pub fn send_as_consumer(&mut self, instructions: &[Instruction]) -> TxResult {
+        let consumer = self.consumer.insecure_clone();
+        self.send(instructions, &[&consumer])
     }
 
     pub fn transaction(
@@ -252,25 +378,40 @@ impl Fixture {
     }
 
     pub fn initialize_config(&mut self, authority: &Keypair, environment: Environment) -> TxResult {
+        let params = InitializeConfigParams {
+            environment,
+            administrator: self.administrator.pubkey(),
+            consumer: self.consumer.pubkey(),
+        };
+        self.initialize_config_with(authority, program_data_address(), params)
+    }
+
+    pub fn initialize_config_with(
+        &mut self,
+        authority: &Keypair,
+        program_data: Pubkey,
+        params: InitializeConfigParams,
+    ) -> TxResult {
         let instruction = Instruction {
             program_id: es256_authorization_verifier::ID,
             accounts: es256_authorization_verifier::accounts::InitializeConfig {
                 upgrade_authority: authority.pubkey(),
-                program_data: program_data_address(),
-                config: config_address(environment),
+                program_data,
+                config: config_address(params.environment),
                 system_program: anchor_lang::system_program::ID,
             }
             .to_account_metas(None),
-            data: es256_authorization_verifier::instruction::InitializeConfig {
-                params: InitializeConfigParams {
-                    environment,
-                    administrator: self.administrator.pubkey(),
-                    consumer: self.consumer.pubkey(),
-                },
-            }
-            .data(),
+            data: es256_authorization_verifier::instruction::InitializeConfig { params }.data(),
         };
         self.send(&[instruction], &[authority])
+    }
+
+    /// Initializes a second config for `environment` and makes it current.
+    pub fn switch_to_new_config(&mut self, environment: Environment) {
+        let deployer = self.deployer.insecure_clone();
+        self.initialize_config(&deployer, environment)
+            .expect("config initializes");
+        self.config = config_address(environment);
     }
 
     pub fn register_key(
@@ -278,44 +419,70 @@ impl Fixture {
         kid: &str,
         public_key: [u8; 33],
     ) -> Result<Pubkey, Box<FailedTransactionMetadata>> {
-        let trusted_key = trusted_key_address(self.config, kid);
-        let instruction = Instruction {
-            program_id: es256_authorization_verifier::ID,
-            accounts: es256_authorization_verifier::accounts::RegisterTrustedKey {
-                administrator: self.administrator.pubkey(),
-                config: self.config,
-                trusted_key,
-                system_program: anchor_lang::system_program::ID,
-            }
-            .to_account_metas(None),
-            data: es256_authorization_verifier::instruction::RegisterTrustedKey {
-                params: RegisterTrustedKeyParams {
-                    kid: kid.into(),
-                    public_key,
-                    not_before: KEY_NOT_BEFORE,
-                    not_after: KEY_NOT_AFTER,
-                },
-            }
-            .data(),
+        self.register_key_with(kid, public_key, KEY_NOT_BEFORE, KEY_NOT_AFTER)
+    }
+
+    pub fn register_key_with(
+        &mut self,
+        kid: &str,
+        public_key: [u8; 33],
+        not_before: i64,
+        not_after: i64,
+    ) -> Result<Pubkey, Box<FailedTransactionMetadata>> {
+        let params = RegisterTrustedKeyParams {
+            kid: kid.into(),
+            public_key,
+            not_before,
+            not_after,
         };
+        let trusted_key = trusted_key_address(self.config, kid);
+        let instruction =
+            self.register_key_instruction(self.administrator.pubkey(), trusted_key, params);
         let administrator = self.administrator.insecure_clone();
         self.send(&[instruction], &[&administrator])?;
         Ok(trusted_key)
     }
 
+    pub fn register_key_instruction(
+        &self,
+        administrator: Pubkey,
+        trusted_key: Pubkey,
+        params: RegisterTrustedKeyParams,
+    ) -> Instruction {
+        Instruction {
+            program_id: es256_authorization_verifier::ID,
+            accounts: es256_authorization_verifier::accounts::RegisterTrustedKey {
+                administrator,
+                config: self.config,
+                trusted_key,
+                system_program: anchor_lang::system_program::ID,
+            }
+            .to_account_metas(None),
+            data: es256_authorization_verifier::instruction::RegisterTrustedKey { params }.data(),
+        }
+    }
+
     pub fn revoke_key(&mut self, trusted_key: Pubkey) -> TxResult {
-        let instruction = Instruction {
+        let instruction = self.revoke_key_instruction(self.administrator.pubkey(), trusted_key);
+        let administrator = self.administrator.insecure_clone();
+        self.send(&[instruction], &[&administrator])
+    }
+
+    pub fn revoke_key_instruction(
+        &self,
+        administrator: Pubkey,
+        trusted_key: Pubkey,
+    ) -> Instruction {
+        Instruction {
             program_id: es256_authorization_verifier::ID,
             accounts: es256_authorization_verifier::accounts::RevokeTrustedKey {
-                administrator: self.administrator.pubkey(),
+                administrator,
                 config: self.config,
                 trusted_key,
             }
             .to_account_metas(None),
             data: es256_authorization_verifier::instruction::RevokeTrustedKey {}.data(),
-        };
-        let administrator = self.administrator.insecure_clone();
-        self.send(&[instruction], &[&administrator])
+        }
     }
 
     pub fn register_mandate(
@@ -323,20 +490,51 @@ impl Fixture {
         params: RegisterMandateParams,
     ) -> Result<Pubkey, Box<FailedTransactionMetadata>> {
         let mandate = mandate_address(self.config, &params.mandate_hash);
-        let instruction = Instruction {
+        let instruction = self.register_mandate_instruction(self.administrator.pubkey(), params);
+        let administrator = self.administrator.insecure_clone();
+        self.send(&[instruction], &[&administrator])?;
+        Ok(mandate)
+    }
+
+    pub fn register_mandate_instruction(
+        &self,
+        administrator: Pubkey,
+        params: RegisterMandateParams,
+    ) -> Instruction {
+        Instruction {
             program_id: es256_authorization_verifier::ID,
             accounts: es256_authorization_verifier::accounts::RegisterMandate {
-                administrator: self.administrator.pubkey(),
+                administrator,
                 config: self.config,
-                mandate,
+                mandate: mandate_address(self.config, &params.mandate_hash),
                 system_program: anchor_lang::system_program::ID,
             }
             .to_account_metas(None),
             data: es256_authorization_verifier::instruction::RegisterMandate { params }.data(),
-        };
+        }
+    }
+
+    pub fn revoke_mandate(&mut self, mandate: Pubkey) -> TxResult {
+        let instruction = self.revoke_mandate_instruction(self.administrator.pubkey(), mandate);
         let administrator = self.administrator.insecure_clone();
-        self.send(&[instruction], &[&administrator])?;
-        Ok(mandate)
+        self.send(&[instruction], &[&administrator])
+    }
+
+    pub fn revoke_mandate_instruction(
+        &self,
+        administrator: Pubkey,
+        mandate: Pubkey,
+    ) -> Instruction {
+        Instruction {
+            program_id: es256_authorization_verifier::ID,
+            accounts: es256_authorization_verifier::accounts::RevokeMandate {
+                administrator,
+                config: self.config,
+                mandate,
+            }
+            .to_account_metas(None),
+            data: es256_authorization_verifier::instruction::RevokeMandate {}.data(),
+        }
     }
 
     pub fn consume_instruction(&self, nonce_hash: [u8; 32]) -> Instruction {
@@ -363,20 +561,43 @@ impl Fixture {
             verdict.precompile(),
             self.consume_instruction(verdict.nonce_hash()),
         ];
-        let consumer = self.consumer.insecure_clone();
-        self.send(&instructions, &[&consumer])
+        self.send_as_consumer(&instructions)
+    }
+
+    /// `consume_instruction` relayed through the CPI forwarder.
+    pub fn forwarded_consume_instruction(&self, nonce_hash: [u8; 32]) -> Instruction {
+        let consume = self.consume_instruction(nonce_hash);
+        let mut accounts = vec![AccountMeta::new_readonly(
+            es256_authorization_verifier::ID,
+            false,
+        )];
+        accounts.extend(consume.accounts);
+        Instruction {
+            program_id: FORWARDER_ID,
+            accounts,
+            data: consume.data,
+        }
     }
 
     pub fn sign(&self, claims: &VerdictClaims) -> SignedVerdict {
         SignedVerdict::sign(&self.signer, claims)
     }
 
+    /// The trusted key's signature over arbitrary bytes.
+    pub fn sign_input(&self, signing_input: Vec<u8>) -> SignedVerdict {
+        SignedVerdict::sign_input(&self.signer, signing_input, NONCE)
+    }
+
+    /// The trusted key's signature over a raw header and payload.
+    pub fn sign_json(&self, header_json: &str, payload_json: &str) -> SignedVerdict {
+        self.sign_input(es256_jws_adapter::signing_input(
+            header_json.as_bytes(),
+            payload_json.as_bytes(),
+        ))
+    }
+
     pub fn receipt_address(&self, nonce_hash: &[u8; 32]) -> Pubkey {
-        Pubkey::find_program_address(
-            &[RECEIPT_SEED, self.config.as_ref(), nonce_hash],
-            &es256_authorization_verifier::ID,
-        )
-        .0
+        receipt_address(self.config, nonce_hash)
     }
 
     pub fn receipt(&self, nonce_hash: &[u8; 32]) -> Option<ConsumedAuthorization> {
@@ -385,6 +606,27 @@ impl Fixture {
             return None;
         }
         Some(ConsumedAuthorization::try_deserialize(&mut account.data.as_slice()).unwrap())
+    }
+
+    /// No account, not even an empty one, exists at the receipt address.
+    pub fn assert_no_receipt(&self, nonce_hash: &[u8; 32]) {
+        let account = self.svm.get_account(&self.receipt_address(nonce_hash));
+        assert!(
+            account.is_none_or(|account| account.lamports == 0 && account.data.is_empty()),
+            "a rejected attempt left a receipt account"
+        );
+    }
+
+    pub fn assert_no_account(&self, address: &Pubkey) {
+        let account = self.svm.get_account(address);
+        assert!(
+            account.is_none_or(|account| account.lamports == 0 && account.data.is_empty()),
+            "an account exists at {address}"
+        );
+    }
+
+    pub fn balance(&self, address: &Pubkey) -> u64 {
+        self.svm.get_balance(address).unwrap_or(0)
     }
 }
 
@@ -404,9 +646,27 @@ pub fn trusted_key_address(config: Pubkey, kid: &str) -> Pubkey {
     .0
 }
 
+/// The one address every kid longer than a seed derives; no valid kid can
+/// ever occupy it.
+pub fn over_long_key_id_address(config: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[TRUSTED_KEY_SEED, config.as_ref(), &[]],
+        &es256_authorization_verifier::ID,
+    )
+    .0
+}
+
 pub fn mandate_address(config: Pubkey, mandate_hash: &[u8; 32]) -> Pubkey {
     Pubkey::find_program_address(
         &[MANDATE_SEED, config.as_ref(), mandate_hash],
+        &es256_authorization_verifier::ID,
+    )
+    .0
+}
+
+pub fn receipt_address(config: Pubkey, nonce_hash: &[u8; 32]) -> Pubkey {
+    Pubkey::find_program_address(
+        &[RECEIPT_SEED, config.as_ref(), nonce_hash],
         &es256_authorization_verifier::ID,
     )
     .0
@@ -421,7 +681,7 @@ pub fn program_data_address() -> Pubkey {
 }
 
 /// The loader's program-data header: variant, slot, then the authority.
-fn program_data(upgrade_authority: Option<Pubkey>) -> Vec<u8> {
+pub fn program_data(upgrade_authority: Option<Pubkey>) -> Vec<u8> {
     let mut data = 3u32.to_le_bytes().to_vec();
     data.extend_from_slice(&0u64.to_le_bytes());
     match upgrade_authority {
@@ -434,25 +694,19 @@ fn program_data(upgrade_authority: Option<Pubkey>) -> Vec<u8> {
     data
 }
 
-/// Reads the program built by `cargo build-sbf`.
-fn program_bytes() -> Vec<u8> {
-    let mut paths = Vec::new();
-    if let Ok(directory) = std::env::var("SBF_OUT_DIR") {
-        paths.push(format!("{directory}/es256_authorization_verifier.so"));
-    }
-    paths.push(format!(
-        "{}/target/deploy/es256_authorization_verifier.so",
-        env!("CARGO_MANIFEST_DIR")
-    ));
-    for path in &paths {
-        if let Ok(bytes) = std::fs::read(path) {
-            return bytes;
-        }
-    }
-    panic!(
-        "missing es256_authorization_verifier.so, looked in {}; run cargo-build-sbf first",
-        paths.join(", ")
-    );
+/// The directory the built programs are read from: `SBF_OUT_DIR` when set,
+/// with no fallback, so a run against one architecture can never silently
+/// load the other.
+pub fn sbf_out_dir() -> String {
+    std::env::var("SBF_OUT_DIR")
+        .unwrap_or_else(|_| format!("{}/target/deploy", env!("CARGO_MANIFEST_DIR")))
+}
+
+/// Reads a program built by `cargo-build-sbf`.
+pub fn built_program(name: &str) -> Vec<u8> {
+    let path = format!("{}/{name}.so", sbf_out_dir());
+    std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("cannot read {path}: {error}; run cargo-build-sbf first"))
 }
 
 /// The failing instruction and its error.
@@ -472,6 +726,16 @@ pub fn assert_verifier_error(result: TxResult, index: u8, expected: VerifierErro
         instruction_error(result),
         (index, InstructionError::Custom(u32::from(expected))),
         "expected verifier error {expected:?}"
+    );
+}
+
+/// Anchor's account validation rejected instruction `index`.
+pub fn assert_anchor_error(result: TxResult, index: u8, expected: anchor_lang::error::ErrorCode) {
+    let name = format!("{expected:?}");
+    assert_eq!(
+        instruction_error(result),
+        (index, InstructionError::Custom(u32::from(expected))),
+        "expected Anchor error {name}"
     );
 }
 

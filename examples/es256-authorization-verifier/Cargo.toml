@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["adapter"]
+members = ["adapter", "test-programs/cpi-forwarder"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -48,6 +48,8 @@ solana-sha256-hasher = { version = "=3.1.0", features = ["sha2"] }
 es256-jws-adapter = { path = "adapter" }
 litesvm = { version = "=0.18.1", features = ["precompiles"] }
 solana-account = "=4.7.0"
+solana-compute-budget-interface = "=3.1.0"
+solana-ed25519-program = "=3.0.0"
 solana-instruction = "=3.5.1"
 solana-keypair = "=3.1.2"
 solana-precompile-error = "=3.0.0"

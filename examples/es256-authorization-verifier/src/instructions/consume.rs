@@ -71,8 +71,12 @@ pub fn process_consume_authorization(
 
     let now = Clock::get()?.unix_timestamp;
     check_claims(&claims, now)?;
+    // `iat` may lead the clock, so the clock itself must reach `not_before`.
+    // `now < exp <= not_after` already bounds the end.
     require!(
-        trusted_key.not_before <= claims.iat && claims.exp <= trusted_key.not_after,
+        trusted_key.not_before <= now
+            && trusted_key.not_before <= claims.iat
+            && claims.exp <= trusted_key.not_after,
         VerifierError::OutsideKeyWindow
     );
     check_mandate(&ctx.accounts.mandate, &claims)?;

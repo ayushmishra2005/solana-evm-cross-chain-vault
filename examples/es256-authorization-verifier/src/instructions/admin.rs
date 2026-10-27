@@ -82,7 +82,7 @@ pub struct RegisterTrustedKey<'info> {
         init,
         payer = administrator,
         space = 8 + TrustedKey::INIT_SPACE,
-        seeds = [TRUSTED_KEY_SEED, config.key().as_ref(), params.kid.as_bytes()],
+        seeds = [TRUSTED_KEY_SEED, config.key().as_ref(), kid_seed(&params.kid)],
         bump,
     )]
     pub trusted_key: Account<'info, TrustedKey>,

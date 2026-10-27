@@ -61,7 +61,7 @@ pub enum VerifierError {
     PublicKeyMismatch,
     #[msg("Trusted key is revoked")]
     KeyRevoked,
-    #[msg("Token lifetime lies outside the key validity window")]
+    #[msg("Token lifetime or current time lies outside the key validity window")]
     OutsideKeyWindow,
     #[msg("Issuer is not accepted")]
     IssuerMismatch,

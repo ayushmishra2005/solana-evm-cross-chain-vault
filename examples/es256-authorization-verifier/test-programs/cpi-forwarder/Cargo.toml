@@ -1,0 +1,25 @@
+[package]
+name = "es256-cpi-forwarder"
+version = "0.1.0"
+description = "Test-only program that relays one instruction by CPI, for adversarial verifier tests"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+repository = "https://github.com/ayushmishra2005/solana-evm-cross-chain-vault"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "es256_cpi_forwarder"
+
+[features]
+default = []
+no-entrypoint = []
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = "=1.2.1"
+
+[lints]
+workspace = true
