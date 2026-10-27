@@ -36,7 +36,7 @@ An administrator registers the keys it trusts and the payment contexts it approv
 | `revoke_mandate` | administrator | Permanently revokes a mandate. |
 | `consume_authorization` | consumer | Verifies one verdict against a trusted key and an approved mandate and creates its permanent nonce receipt. |
 
-A receipt is the PDA `["consumed", config, sha256("es256-authorization-verifier:nonce:v1" ‖ nonce)]`, created with Anchor `init`. If it already exists, the consume fails, so each nonce succeeds at most once per config. Receipts can never be closed or reset.
+A receipt is the PDA `["consumed", config, sha256("es256-authorization-verifier:nonce:v1" ‖ nonce)]`, created with Anchor `init`. If it already exists, the consume fails, so each nonce succeeds at most once per config. The program has no instruction that closes or resets a receipt.
 
 ## Cryptographic verification
 
@@ -45,7 +45,8 @@ A receipt is the PDA `["consumed", config, sha256("es256-authorization-verifier:
 - **Low S.** The precompile rejects `s > n/2`. OpenSSL and many JOSE libraries emit high-S about half the time, so the adapter rewrites `s` to `n - s`. That form verifies the same message under the same key. Normalization does not affect replay protection, because receipts are keyed by the signed nonce, not by the signature.
 - **Why the program reads the verified bytes itself.** The native program accepts many layouts: up to eight signatures, offsets into other instructions, overlapping slices, an ignored padding byte, account metas and trailing bytes. The program accepts exactly one layout:
   - one signature and a zero padding byte;
-  - every offset set to `u16::MAX` (this instruction), with key at 16, signature at 49 and message at 113;
+  - all three instruction-index fields set to `u16::MAX`, so the key, signature and message are all read from the precompile instruction's own data;
+  - fixed byte offsets within that data: the 33-byte key at 16, the 64-byte signature at 49 and the message at 113;
   - message length 1 to 512, running to the end of the data;
   - no accounts.
 
@@ -89,7 +90,7 @@ The parser accepts one profile and rejects everything else. **It deliberately re
   | `category` | 32 |
   | `currency` | 16 |
 
-  The signing input is at most 512 bytes. That limit binds first, so the per-field maximums cannot all be reached together. For example, a 128-byte recipient does not fit.
+  The whole signing input is at most 512 bytes, enforced separately from the per-field limits. A single field can reach its maximum when the others are short; a 128-byte recipient, for example, fits in a 509-byte signing input. Not every field can be at its maximum at once.
 - **Context values are compared byte for byte.** `iss` must be `https://verdicts.saifuro.com` and `verdict` must be `allow`. Currency, recipient and the other context fields are case-sensitive.
 
 Time and window boundaries:
@@ -104,12 +105,14 @@ Time and window boundaries:
 
 ## Trust boundaries
 
-- **The administrator is the on-chain trust root.** Whoever controls it can trust any key and approve any context. Nothing here protects against a compromised administrator. The administrator and consumer cannot be rotated: a new config requires a new environment seed or a new deployment.
+- **The administrator is the on-chain trust root for a config.** Whoever controls it can trust any key and approve any context. Nothing here protects against a compromised administrator. The administrator and consumer are fixed when the config is created and cannot be rotated. There is exactly one config per environment, `Production` and `Sandbox`, so replacing the roles of an initialized environment requires a separate deployment under a different program ID.
+- **The upgrade authority is a separate trust root.** It alone can create configs, and while the program is upgradeable it can replace the program. Permanent receipts and terminal revocation are properties of this implementation; an authorized upgrade could change them. Making the program immutable after its configs exist removes this trust root, but no further config can then be created.
 - **No HTTP on-chain.** JWKS retrieval, TLS and key validation happen off-chain, and key rotation takes administrator transactions. A key revoked by the issuer stays trusted until the administrator revokes it. Re-registering a revoked key's bytes under a new kid is an administrator decision that the program does not prevent.
 - **The consumer** must sign every consume. A compromised consumer key cannot forge verdicts, but it can consume, and so burn, valid verdicts before their intended use.
 - **A mandate is a standing approval.** Every distinct issuer-signed nonce that matches it can be consumed, and the program sets no usage or spending cap. `jti` is recorded in the receipt as a hash but is not tracked for uniqueness; the nonce is the replay identity.
 - **A signed verdict is not settlement.** Whatever acts on a receipt must enforce what actually happens to funds.
-- **No signed domain separation.** The verdict does not name this program, config or cluster. Replay protection is local to one config of one deployment. The same token could be consumed once on each cluster or deployment that trusts the key. Production and Sandbox are separated only by the kid prefix.
+- **No signed domain separation.** The verdict does not name this program, config or cluster. Replay protection is local to one config of one deployment. The same token could be consumed once on each cluster or deployment that trusts the key.
+- **Environment isolation.** Production and Sandbox have separate config PDAs, and every trusted key, mandate and receipt belongs to exactly one config. On top of that, a Production config refuses `sandbox-` kids and a Sandbox config requires them. The prefix is a naming rule, not proof of where a key came from: the administrator must register only keys taken from the issuer's authenticated JWKS for that environment.
 - **Receipts are permanent.** Each receipt (185 bytes) locks rent-exempt lamports forever. That is 1,590,040 lamports under LiteSVM's default rent parameters; the actual cost depends on the cluster's rent settings.
 
 ## Threat model
@@ -128,7 +131,14 @@ Time and window boundaries:
 
 ## Testing
 
-Build both programs, then run the suites against the built binary. When `SBF_OUT_DIR` is set, it is the only place the harness looks; there is no fallback. If `ES256_EXPECTED_SBPF_ARCH` is also set, the harness asserts the loaded ELF is that architecture.
+Prerequisites:
+- `cargo-build-sbf` 4.4.0 (`cargo install cargo-build-sbf --version 4.4.0 --locked`), run with `--tools-version v1.58`; it fetches platform-tools v1.58 on first use. An older Solana CLI install may put a different `cargo-build-sbf` first on `PATH`, so check that `cargo-build-sbf --version` reports 4.4.0.
+- Rust 1.89 or newer (the crate's `rust-version`); validated with Rust 1.98.1.
+- Dependencies are pinned by this example's own `Cargo.lock`.
+
+Build both programs, then run the suites against the built binary.
+- One `cargo test` run covers one architecture. `SBF_OUT_DIR` chooses the build directory: it defaults to `target/deploy`, and when set it is the only place the harness looks, with no fallback.
+- `ES256_EXPECTED_SBPF_ARCH` (`v0` or `v3`) makes the harness assert the loaded ELF is that architecture. Without it, the harness only checks that the binary is v0 or v3.
 
 ```bash
 cd examples/es256-authorization-verifier
@@ -147,11 +157,19 @@ cargo-build-sbf --tools-version v1.58 --arch v3 \
 SBF_OUT_DIR=$PWD/target/deploy-v3 ES256_EXPECTED_SBPF_ARCH=v3 \
   cargo test --locked --workspace --all-features
 
-# measurements
-cargo test --locked --test limits -- --nocapture --test-threads=1
+# measurements, one architecture per run
+SBF_OUT_DIR=$PWD/target/deploy ES256_EXPECTED_SBPF_ARCH=v0 \
+  cargo test --locked --test limits -- --nocapture --test-threads=1
+SBF_OUT_DIR=$PWD/target/deploy-v3 ES256_EXPECTED_SBPF_ARCH=v3 \
+  cargo test --locked --test limits -- --nocapture --test-threads=1
 ```
 
-The suite has 125 tests: 20 program unit tests, 8 adapter unit tests and 97 LiteSVM integration tests. Every integration test runs the compiled program next to the real native secp256r1 precompile (LiteSVM `precompiles` feature), with no mock.
+The suite has 125 tests: 20 program unit tests, 8 adapter unit tests and 97 LiteSVM integration tests.
+- **Acceptance and signature scenarios** execute the compiled SBF program with the native secp256r1 precompile enabled (LiteSVM `precompiles` feature), with no mock.
+- **Other integration tests** exercise administration and account validation, or inspect the loaded ELF.
+- **Mutation sweeps** (`robustness.rs`) run 4,622 re-signed mutations, each on a fresh copy of the configured ledger. Each outcome is checked against the program's own parser run on the host: a rejected input must fail on-chain with exactly that parser error, and a parsed one must be consumed or fail a post-parse authorization check.
+
+Acceptance tests sign with P-256 keys generated in memory on each run. They do not demonstrate acceptance of a live Saifuro-issued verdict. The adapter's conversion of Saifuro's published JWK is unit-tested.
 
 Measured on LiteSVM 0.18.1 (SBPFv0 / SBPFv3):
 
@@ -163,7 +181,11 @@ Measured on LiteSVM 0.18.1 (SBPFv0 / SBPFv3):
 | Late rejection (category mismatch) | 479 B | 1,036 B | 38,188 / 38,154 |
 | Native rejection (high S) | 476 B | 1,033 B | 0 (the program never runs) |
 
-Compute units are LiteSVM's `compute_units_consumed` for the transaction. They do not include the native precompile's own verification. The program runs on the default 32 KiB heap, using no custom allocator. It allocates the decoded header and payload, which together are smaller than the 512-byte input, and the instructions it loads from the sysvar, which are bounded by the transaction size. Binary sizes are 329,952 bytes for SBPFv0 and 309,576 bytes for SBPFv3.
+Compute units are LiteSVM's `compute_units_consumed` for the transaction. That figure is the verifier's own execution, including the system-program call that creates the receipt; the native precompile reports 0 compute units, whether it accepts or rejects. The precompile is paid for through signature fees instead. A consume transaction pays two, one for the payer and one for the precompile signature: 10,000 lamports at LiteSVM's default.
+
+The program runs on the default 32 KiB heap, using no custom allocator. It allocates the decoded header and payload, which together are smaller than the 512-byte input, and the instructions it loads from the sysvar, which are bounded by the transaction size.
+
+Binary sizes are 329,952 bytes for SBPFv0 and 309,576 bytes for SBPFv3. The test-only forwarder is 15,296 and 13,632 bytes.
 
 LiteSVM executes transactions one at a time. The competing-submission test shows that the second of two concurrently prepared transactions fails on the existing receipt. On a validator, both transactions write-lock the same receipt address, so the runtime serializes them; that scheduling path is not exercised here.
 
@@ -173,4 +195,10 @@ LiteSVM executes transactions one at a time. The competing-submission test shows
 - No automatic JWKS synchronization, and no protection against a compromised administrator.
 - No replay protection across clusters, deployments or configs.
 - Not production payment authorization and not escrow settlement. Nothing moves funds.
-- Legacy transactions only. The tests do not use address lookup tables.
+- Only legacy transactions are tested. Versioned transactions and address lookup tables are not covered, and the example makes no claim about them.
+
+## References
+
+- Solana [precompiles](https://solana.com/docs/core/programs/precompiles) (secp256r1 instruction layout) and [instruction introspection](https://solana.com/docs/core/instructions/instruction-introspection)
+- Saifuro [verdict verification](https://docs.saifuro.com/reference/verify-a-verdict) and [signing keys and rotation](https://docs.saifuro.com/reference/signing-keys)
+- [RFC 7515](https://www.rfc-editor.org/rfc/rfc7515) (JWS) and [RFC 7518 §3.4](https://www.rfc-editor.org/rfc/rfc7518#section-3.4) (ES256)

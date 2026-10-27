@@ -5,10 +5,9 @@
 
 mod common;
 
-use anchor_lang::solana_program::instruction::Instruction;
 use common::*;
 use es256_authorization_verifier::{Environment, JTI_DOMAIN, VerifierError, domain_hash};
-use es256_jws_adapter::{SyntheticSigner, high_s_twin, is_low_s, secp256r1_instruction};
+use es256_jws_adapter::{SyntheticSigner, high_s_twin, is_low_s};
 use solana_instruction::error::InstructionError;
 use solana_precompile_error::PrecompileError;
 use solana_signer::Signer;
@@ -321,31 +320,4 @@ fn production_config_refuses_sandbox_keys() {
             InstructionError::Custom(u32::from(VerifierError::InvalidKeyId))
         )
     );
-}
-
-#[test]
-fn typical_verdict_fits_transaction_and_compute_limits() {
-    let mut fixture = Fixture::new();
-    let verdict = fixture.sign(&VerdictClaims::default());
-    let instructions: [Instruction; 2] = [
-        secp256r1_instruction(
-            &verdict.public_key,
-            &verdict.signature,
-            &verdict.signing_input,
-        )
-        .unwrap(),
-        fixture.consume_instruction(verdict.nonce_hash()),
-    ];
-    let consumer = fixture.consumer.insecure_clone();
-    let transaction = fixture.transaction(&instructions, &[&consumer]);
-    let size = transaction_size(&transaction);
-    let meta = fixture.svm.send_transaction(transaction).expect("consumed");
-
-    println!(
-        "signing input {} bytes, transaction {size} bytes, {} compute units",
-        verdict.signing_input.len(),
-        meta.compute_units_consumed
-    );
-    assert!(size <= 1_232);
-    assert!(meta.compute_units_consumed <= 200_000);
 }

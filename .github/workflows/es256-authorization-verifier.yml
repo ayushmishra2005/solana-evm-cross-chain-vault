@@ -39,6 +39,8 @@ jobs:
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
           --manifest-path test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy
+    - name: Check the build left Cargo.lock unchanged
+      run: git diff --exit-code -- Cargo.lock
     - name: Format
       run: cargo fmt --all --check
     - name: Lint
@@ -67,6 +69,8 @@ jobs:
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 --sbf-out-dir target/deploy-v3
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
           --manifest-path test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy-v3
+    - name: Check the build left Cargo.lock unchanged
+      run: git diff --exit-code -- Cargo.lock
     - name: Run tests against SBPFv3
       env:
         SBF_OUT_DIR: ${{ github.workspace }}/examples/es256-authorization-verifier/target/deploy-v3

@@ -145,7 +145,8 @@ pub fn normalize_signature(signature: &[u8; SIGNATURE_LEN]) -> AdapterResult<[u8
     raw_signature(&r, &low_s)
 }
 
-/// Whether the precompile would accept this `s` without normalization.
+/// Whether `s <= n/2`. This alone does not make the signature valid: it
+/// does not reject `s = 0` or check `r`; [`normalize_signature`] does both.
 pub fn is_low_s(signature: &[u8; SIGNATURE_LEN]) -> AdapterResult<bool> {
     let (_, s) = signature.split_at(FIELD_SIZE);
     Ok(BigNum::from_slice(s)? <= BigNum::from_slice(&SECP256R1_HALF_ORDER)?)
@@ -431,18 +432,11 @@ mod tests {
 
     #[test]
     fn compresses_the_published_saifuro_key() {
-        let compressed = compress_jwk_public_key(
-            "0sSLihPTUCksZoUJR3Eh22UcZhhOu8-nEqSa_98rE_I",
-            "eXSPgBZzeT1E6HtkD8tlg8yujO37jKQhH3SDd99Xx68",
-        )
-        .unwrap();
+        let compressed = compress_jwk_public_key(SAIFURO_X, SAIFURO_Y).unwrap();
         assert_eq!(compressed[0], 0x03);
         assert!(
-            compress_jwk_public_key(
-                "0sSLihPTUCksZoUJR3Eh22UcZhhOu8-nEqSa_98rE_I",
-                "eXSPgBZzeT1E6HtkD8tlg8yujO37jKQhH3SDd99Xx6g",
-            )
-            .is_err()
+            compress_jwk_public_key(SAIFURO_X, "eXSPgBZzeT1E6HtkD8tlg8yujO37jKQhH3SDd99Xx6g")
+                .is_err()
         );
     }
 }
