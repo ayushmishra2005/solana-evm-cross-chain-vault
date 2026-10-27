@@ -189,6 +189,8 @@ Binary sizes are 329,952 bytes for SBPFv0 and 309,576 bytes for SBPFv3. The test
 
 LiteSVM executes transactions one at a time. The competing-submission test shows that the second of two concurrently prepared transactions fails on the existing receipt. On a validator, both transactions write-lock the same receipt address, so the runtime serializes them; that scheduling path is not exercised here.
 
+[`devnet/`](devnet/) records one accepted verdict and one rejected replay on Solana devnet, with the runner that produced them.
+
 ## Limitations
 
 - Not a general JWT library. Tokens outside the profile, including valid ones with escapes, extra claims or other algorithms, are rejected.
