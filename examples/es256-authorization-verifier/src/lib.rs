@@ -18,7 +18,7 @@ pub use errors::VerifierError;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("6b14551jSHhBRGhdFuqEqzEa5EDsujpC3Ku4jQtDQGao");
+declare_id!("da9yz64zbrJ4fyi8VTR3xfVZu8GhfhUHkC7AZQxCGG7");
 
 #[program]
 pub mod es256_authorization_verifier {
