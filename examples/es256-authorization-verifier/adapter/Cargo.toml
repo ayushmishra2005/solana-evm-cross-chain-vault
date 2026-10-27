@@ -1,0 +1,20 @@
+[package]
+name = "es256-jws-adapter"
+version = "0.1.0"
+description = "Host-side builder for the secp256r1 instruction the ES256 verifier consumes"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+openssl = "0.10"
+solana-instruction = "=3.5.1"
+solana-sdk-ids = "=3.1.0"
+# The precompile's own constants; vendored OpenSSL matches what the native
+# precompile pulls in, so no system OpenSSL is needed.
+solana-secp256r1-program = { version = "=3.0.0", features = ["openssl-vendored"] }
+
+[lints]
+workspace = true

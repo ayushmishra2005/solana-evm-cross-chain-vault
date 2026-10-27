@@ -402,6 +402,8 @@ SBF_OUT_DIR=$PWD/target/deploy-v3 HOSTILE_SBF_OUT_DIR=$PWD/target/deploy-hostile
   cargo test --locked --workspace --all-features
 ```
 
+A standalone example, independent of the vault, verifies ES256-signed authorization verdicts with the native secp256r1 precompile: see [`examples/es256-authorization-verifier`](examples/es256-authorization-verifier/README.md).
+
 ### Cross-chain E2E
 
 Requires Python 3, Cargo and both Solana SBF artifacts from the Solana section. From `contracts/solevm-vault`:
