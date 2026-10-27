@@ -4,12 +4,12 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "examples/es256-authorization-verifier/**"
+      - "programs/es256-authorization-verifier/**"
       - ".github/workflows/es256-authorization-verifier.yml"
   pull_request:
     branches: [ "main" ]
     paths:
-      - "examples/es256-authorization-verifier/**"
+      - "programs/es256-authorization-verifier/**"
       - ".github/workflows/es256-authorization-verifier.yml"
 
 permissions:
@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: examples/es256-authorization-verifier
+        working-directory: programs/es256-authorization-verifier
 
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -47,7 +47,7 @@ jobs:
       run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Run tests against SBPFv0
       env:
-        SBF_OUT_DIR: ${{ github.workspace }}/examples/es256-authorization-verifier/target/deploy
+        SBF_OUT_DIR: ${{ github.workspace }}/programs/es256-authorization-verifier/target/deploy
         ES256_EXPECTED_SBPF_ARCH: v0
       run: cargo test --locked --workspace --all-features
 
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: examples/es256-authorization-verifier
+        working-directory: programs/es256-authorization-verifier
 
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -73,6 +73,6 @@ jobs:
       run: git diff --exit-code -- Cargo.lock
     - name: Run tests against SBPFv3
       env:
-        SBF_OUT_DIR: ${{ github.workspace }}/examples/es256-authorization-verifier/target/deploy-v3
+        SBF_OUT_DIR: ${{ github.workspace }}/programs/es256-authorization-verifier/target/deploy-v3
         ES256_EXPECTED_SBPF_ARCH: v3
       run: cargo test --locked --workspace --all-features

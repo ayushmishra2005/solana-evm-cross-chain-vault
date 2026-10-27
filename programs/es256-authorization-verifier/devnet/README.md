@@ -8,7 +8,7 @@ Verdicts are locally generated test data, signed by a P-256 key generated in mem
 
 ## Prerequisites
 
-- The toolchain listed under Testing in the [example README](../README.md#testing).
+- The toolchain listed under Testing in the [verifier README](../README.md#testing).
 - The Solana CLI.
 - Two disposable devnet keypairs kept outside the repository: a deployer, which pays and becomes the upgrade authority and administrator, and a consumer.
 
@@ -17,7 +17,7 @@ Verdicts are locally generated test data, signed by a P-256 key generated in mem
 1. Build SBPFv0. `declare_id!` must match the program keypair you deploy with.
 
    ```bash
-   cd examples/es256-authorization-verifier
+   cd programs/es256-authorization-verifier
    cargo-build-sbf --tools-version v1.58 --arch v0
    shasum -a 256 target/deploy/es256_authorization_verifier.so
    ```
@@ -86,4 +86,4 @@ An earlier run, made when the program was deployed, used key `sandbox-devnet-01`
 - Devnet only. There is no replay protection across clusters, deployments or configs.
 - Only legacy transactions were sent, one at a time.
 - The deployer is also the administrator, and the consumer key is disposable.
-- Compute units differ from the LiteSVM figures in the example README: 47,668 and 41,697 on devnet, against 37,327. They vary with the verdict size and with the receipt address's bump search.
+- Compute units differ from the LiteSVM figures in the verifier README: 47,668 and 41,697 on devnet, against 37,327. They vary with the verdict size and with the receipt address's bump search.
