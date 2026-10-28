@@ -147,7 +147,7 @@ programs/authorization-verifier
 
 A separate Solana program that verifies ES256 signatures with the native secp256r1 program. It has two profiles. The first verifies ES256-signed authorization claims. A claim is accepted only if it is signed by an administrator-registered key and matches an administrator-approved mandate. A permanent receipt per nonce prevents replay within a configuration. It enforces one fixed JWT profile and issuer. This first profile is deployed on devnet, where an authorization and its rejected replay have been exercised: see its [README](programs/authorization-verifier/README.md) and [devnet results](programs/authorization-verifier/devnet/README.md).
 
-The second profile gates the remote leg's strategy deployment: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval). It has not been deployed on devnet. It has been [rehearsed on a local validator](#v2-deployment-authorization-local-rehearsal-only), and the scripts for a later devnet run are in the [runbook](docs/operations.md#v2-deployment-authorization).
+The second profile gates the remote leg's strategy deployment: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval). On 28 October 2026 it was deployed on devnet as a separate V2 verifier, beside a fresh V2 leg, where its full authorization lifecycle was run and re-verified: see [V2 deployment authorization: verified on devnet](#v2-deployment-authorization-verified-on-devnet). The scripts are in the [runbook](docs/operations.md#v2-deployment-authorization).
 
 ## Key design decisions
 
@@ -514,7 +514,8 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 │   ├── devnet/              # V1 devnet instance: re-verify its recorded run
 │   └── devnet-v2/           # V2 deployment authorization: build, rehearse, deploy, run, verify
 ├── evidence/
-│   └── devnet/v1.json       # V1 devnet run record, verifiable against devnet
+│   ├── devnet/v1.json       # V1 devnet run record, verifiable against devnet
+│   └── devnet/v2.json       # V2 deployment-authorization run record, verifiable against devnet
 └── docs/                    # operations runbook and README image
 ```
 
@@ -583,6 +584,8 @@ Compared with v0.1.0:
 
 ## Solana Devnet — Verified Deployment and Test Evidence
 
+Two instances run on Solana devnet under disposable keys, each with its own programs, record and verification script. V1 is the remote leg without deployment authorization, described first. V2 adds the ES256 deployment authorization: see [V2 deployment authorization: verified on devnet](#v2-deployment-authorization-verified-on-devnet).
+
 On 23 October 2026 the Solana remote leg and its test strategy adapter were deployed on Solana devnet under disposable keys. A scripted run, `devnet-1`, then executed 29 transactions against them: setup, an authenticated allocation, custody reconciliation, reporting, a close after a partial arrival, a recovery, a guardian-only close on a frozen leg, and six attacks that must fail. All 29 landed as expected (23 successes and 6 rejections with the exact program error), and all 96 state checks passed. The run is recorded in [`evidence/devnet/v1.json`](evidence/devnet/v1.json), and both programs and all 29 transactions were re-verified from it against the devnet RPC at finalized commitment.
 
 | Program | Program id | Deployed bytes (sha256, equal to the local build) | Deploy transaction |
@@ -633,9 +636,54 @@ This is a test deployment, not a production one:
 
 To deploy your own instance, see [Devnet instances](docs/operations.md#devnet-instances).
 
-### V2 deployment authorization: local rehearsal only
+### V2 deployment authorization: verified on devnet
 
-The deployment-authorization profile is not deployed on devnet, and nothing in this section is devnet validation. On a local `solana-test-validator` (Agave 4.3.2), with secp256r1 and in-SVM precompile verification active and devnet's feature set mirrored, the final V2 scripts and driver ran 43 transactions: 27 expected successes and 16 expected rejections, all finalized. All 115 checks passed, and the run was re-verified at finalized commitment while the validator ran. Those signatures existed only on that throwaway validator and cannot be checked against any public cluster, so the record is not committed. The scripts and safeguards for a devnet run are in [V2: deployment authorization](docs/operations.md#v2-deployment-authorization).
+On 28 October 2026 the V2 authorization verifier and a fresh V2 remote leg were deployed on Solana devnet, and the scripted run `devnet-1` exercised the deployment-authorization lifecycle against them. In this instance every strategy deployment must spend a single-use P-256 (ES256) risk approval. The native secp256r1 program and the verifier check it in the same transaction as `deploy_to_strategy`. The run sent 43 transactions, and all of them finalized: 27 expected successes and 16 expected rejections. Each rejection was simulated first, then landed as a failed, fee-paying transaction with the exact error at the expected instruction index. Each rejection also left every tracked account, token balance and receipt unchanged. All 115 state checks passed. The run is recorded in [`evidence/devnet/v2.json`](evidence/devnet/v2.json). Its 3 programs and 43 transactions were re-verified from that record at finalized commitment, together with the deployment authority, risk key, leg policy and both receipts. The re-verification was repeated from a fresh clone with no keys.
+
+| Program | Program id | Deployed bytes (sha256, equal to the local build) | Deploy transaction |
+|---|---|---|---|
+| `es256_authorization_verifier` (V2) | [`4dAHz4oRNVmQ1ru9WkUthKBKU65Bjn3jQrQ5GDfQ9CSw`](https://explorer.solana.com/address/4dAHz4oRNVmQ1ru9WkUthKBKU65Bjn3jQrQ5GDfQ9CSw?cluster=devnet) | `e7fba991220a6f4dd636f8d4d7f51c09dff7cf972494e280f16b191b75375372` | [UNgU73fN…CmDMeEF3](https://explorer.solana.com/tx/UNgU73fNsfvdaQTgLgKTaezjroGPehofyVEa14dppHsNvZopcAYxobTpwKyBax8uxugWzrFpzvUvr9ZCmDMeEF3?cluster=devnet), slot 515946819 |
+| `solevm_remote_leg` (V2) | [`DcbREPYFa4WtjknjmT7ENqP7RV3KAfXBLcBbGqyq2jhD`](https://explorer.solana.com/address/DcbREPYFa4WtjknjmT7ENqP7RV3KAfXBLcBbGqyq2jhD?cluster=devnet) | `7c58cc3a026bb95a20c7f560a6c7e2af9707c67f145325f5cbbc1ffe549c4a86` | [5V8gtdFF…EWeFVjuy](https://explorer.solana.com/tx/5V8gtdFFTutZWzPSKx8gqQAnh6fGGeWXiwcXo7ETk1PZUB114JAqM9sPvcYkF5pPWNzFpJZJepQHgSE2EWeFVjuy?cluster=devnet), slot 515946908 |
+| `solevm_test_strategy` (V1 adapter, reused) | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) | `02a978e2e299cb089edcd8d24396e9b9579cf01d34d2b5ba58d54a3eadbd39fb` | Not redeployed or upgraded; still at its V1 deploy, slot 514214836 |
+
+The upgrade authority of both V2 programs is the disposable V2 deployer `68zeWuMTyX2MKQVPo2aLd1vVeMJcSkEYyLq8YKtFushD`. The adapter keeps the V1 deployer, `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn`. The binaries were built from [`9acccc0`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/9acccc003a4a632067cf1e315e5167d3307185a7) with no uncommitted changes (git tree `ebc84a6075d1a481a62da6c5677794b313f7b5d0`) by `scripts/devnet-v2/build.sh`. That script uses `cargo-build-sbf` 4.4.0, platform-tools v1.58, SBPFv0 and `--cfg solevm_devnet`, and a clean rebuild reproduced both digests. Devnet ran Agave 4.4.0-beta.1. Secp256r1 (SIMD-0075) had been active since slot 380592000, and in-SVM precompile verification (SIMD-0159) since slot 365904000. Neither SBPFv0 shutdown gate was active.
+
+| What was tested | Step | Transaction | Result |
+|---|---|---|---|
+| Deploy 400,000 under a fresh risk approval: secp256r1, `consume_deployment_authorization`, `deploy_to_strategy` | D01 | [28Zte13o…kgcxs18G](https://explorer.solana.com/tx/28Zte13ojSZiphCWSUDxWkQvdV64dJsd3W2x1HqTccZ5zpkstEXhyg6kJwz2SVNYihLsGceDraRd3yYSkgcxs18G?cluster=devnet) | Success. Custody fell from 1,000,000 to 600,000 and the adapter vault rose to 400,000. Created receipt [`4KmRPswc…`](https://explorer.solana.com/address/4KmRPswceb5u8vKG1R463mn44tzBeVPUQEsUFkr9dBVy?cluster=devnet) |
+| Replay of D01's spent approval | N08 | [2HfWkaL7…hzsEMcWV](https://explorer.solana.com/tx/2HfWkaL7aMNSr1UrxiiGaEivHk3AgqV8bqPjFM2nhtoX9MHCKGG3g8SdzE2JPkAnkJbRtrr5UPREir58hzsEMcWV?cluster=devnet) | `AccountAlreadyInUse` at instruction 1: the receipt exists |
+| Approval of 150,000 presented with a deployment of 150,001 | N11 | [DSrAbtmn…nW6TKPWE](https://explorer.solana.com/tx/DSrAbtmnEynwjumx5mwbJtYavnHBNuGKHBP1VQp4L56SYkgKGNSkqVC6dNe7Y91NHQGjaJrc6eiXw4RnW6TKPWE?cluster=devnet) | `InvalidDeploymentInstruction` at instruction 1 |
+| Signed message altered after signing | N12 | [mUNBB5ex…npaPN2QY](https://explorer.solana.com/tx/mUNBB5exZz6TBw5Jh7aesXL7QdMVSS4iJ82jqSJ2xy9kT52ZdXWngnJewdEwnPXWLhkfBXsySZvXDHtnpaPN2QY?cluster=devnet) | secp256r1 `InvalidSignature` at instruction 0 |
+| Approved deployment whose strategy deposit fails | N14 | [uuwr6u7a…RADS9j7p](https://explorer.solana.com/tx/uuwr6u7aKbxAvJSTpMeZWAFKJh34fVfPG4hRH9gN7sTmT6rPxXynBTebPkBVhEcgoQUNUidca7QbxSrRADS9j7p?cluster=devnet) | `DepositsPaused` at instruction 2. The receipt rolled back, and no balance changed |
+| The same approval, retried in a new transaction | D02 | [4LAg6pqC…uq4p1KRz](https://explorer.solana.com/tx/4LAg6pqCmYBF33z8hptyyhsyytT6FBhhwafZco78DDSHm7aED9KmoRTed4J9w2kwHn1qRUjKGmuNKimruq4p1KRz?cluster=devnet) | Success: 200,000 deployed. Created receipt [`HcJYPoLv…`](https://explorer.solana.com/address/HcJYPoLv2X2kma1CCxZFcfvkqKnDtuh6jddrKethf5fS?cluster=devnet) |
+| Recall of 800,000 with no risk approval | R01 to R04 | [5bd5mTQ9…UkYYxyTN](https://explorer.solana.com/tx/5bd5mTQ9GmkREirMcwCWNvzZd3oCR3xShNMQWUfeAwwQQDQugzPBLSz6Lw3dJ642WMPwe3BPGdYKtqAUUkYYxyTN?cluster=devnet), [3eR2WxLu…W9fvLhq1](https://explorer.solana.com/tx/3eR2WxLu9sJ7f1N7TuwsXaumDsmcYfXZLgZxM2nppgEX6qF2hczTtArJGf1De72cAqG6zsGNMJHkocyCW9fvLhq1?cluster=devnet), [4XEgWZDi…qPJ85N9K](https://explorer.solana.com/tx/4XEgWZDiDbeTih6UjSho1W9iYwm6zLwohnf2kxBx37oewnExYkrXpoojLR3RKQPaX5YCsxG51a4Yx4VtqPJ85N9K?cluster=devnet), [5wKHoVL7…9RKdusVE](https://explorer.solana.com/tx/5wKHoVL7n5kumyHWRMrcq2nWQjLVF5jGAzpaUc7yafGCNVMxuqrLWMsmAHLWt1EGq2Cuctp7CehnxusK9RKdusVE?cluster=devnet) | Success. 400,000 was reserved in custody and 400,000 withdrawn from the strategy, and all 800,000 reached the outbound escrow. RecallSent was published. None of the four transactions names the verifier or the leg's policy |
+| Valid approval on a leg the guardian froze | N16 | [2PtJ5nyB…PH9u9ssp](https://explorer.solana.com/tx/2PtJ5nyBUmoHbHm3U85TRNzFjTKWNbR23KXFm8LXzUoEsN1b7CWNZxgukAVh4P2TAFpJjj8TYhEkNNo3PH9u9ssp?cluster=devnet) | `Frozen` at instruction 2 |
+
+The other expected rejections were:
+
+- the wrong signer for each administrative step: the namespace claim, the deployment authority, risk-key registration and adoption (N01, N02, N03, N05);
+- a second adoption (N06);
+- a fully approved deployment before adoption (N04);
+- `deploy_to_strategy` with no approval (N07), or alone against a spent receipt (N09);
+- an approval for a stale deployment context (N10);
+- an approval that had expired by the cluster clock (N13);
+- a replay of the retried approval (N15).
+
+Each authorized deployment is a 1,144-byte legacy transaction with 3 instructions and 22 account keys. D01 used 57,633 compute units: 16,782 for the verifier's consume and 40,851 for the leg's deploy. D02 used 56,133. The 43 transactions paid 385,000 lamports in fees, at 5,000 lamports per signature with no priority fee. The run consumed 0.0359 devnet SOL in total, including rent for the mint, the token accounts, the namespace state and the two permanent 226-byte receipts (1,798,320 lamports each). Deploying the two programs cost 6.5265 devnet SOL: 6.5185 for program data rent, 0.0017 for the program accounts and 0.0064 in fees.
+
+To re-check the run against devnet, with no keys or SOL:
+
+```bash
+scripts/devnet-v2/verify.sh evidence/devnet/v2.json
+```
+
+This is a test deployment, not a production one:
+
+- The token, [`8j7mDkzb…`](https://explorer.solana.com/address/8j7mDkzbDUpWN17wFG19nJqvt3TJerqXRNxwXozF9qnx?cluster=devnet), is a fresh 6-decimal test token with no value, labelled on chain as not USDC. No real SOL, USDC or other asset of value was used.
+- There is no production risk service. The run generated its P-256 risk key in memory, registered only the public half and never stored the private key.
+- There is no live bridge. Disposable keys stand in for the message receiver and token delivery, the EVM contracts were not deployed, and every role is a disposable key.
+- The run does not sign an approval with a key that was never registered. That rejection is covered only by the verifier's LiteSVM suite.
+- Before this run, the same scripts and driver were rehearsed on a local validator that mirrored devnet's feature set, with the same 43 transactions and 115 checks. That record is not committed, because its signatures cannot be checked on any public cluster.
 
 ## License
 
