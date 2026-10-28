@@ -59,12 +59,12 @@ impl Keys {
     }
 }
 
-fn read(dir: &Path, name: &str) -> Res<Keypair> {
+pub(crate) fn read(dir: &Path, name: &str) -> Res<Keypair> {
     let path = dir.join(format!("{name}.json"));
     read_keypair_file(&path).map_err(|error| format!("{}: {error}", path.display()).into())
 }
 
-fn read_or_create(path: &Path) -> Res<Keypair> {
+pub(crate) fn read_or_create(path: &Path) -> Res<Keypair> {
     if path.exists() {
         return read_keypair_file(path)
             .map_err(|error| format!("{}: {error}", path.display()).into());

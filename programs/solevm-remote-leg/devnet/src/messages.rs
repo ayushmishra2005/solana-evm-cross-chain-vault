@@ -5,8 +5,8 @@
 
 use protocol_types::{
     AllocateBody, ApplicationId, AssetAmount, Body, ChainId, Commitment, ConfigVersion,
-    DeploymentId, Flags, Header, LaneId, Message, MessageId, PROTOCOL_VERSION, ResolveAction,
-    ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
+    DeploymentId, Flags, Header, LaneId, Message, MessageId, PROTOCOL_VERSION, RecallBody,
+    ResolveAction, ResolveBody, SCHEMA_VERSION, Sequence, Timestamp, TransferId, VaultId,
 };
 
 use crate::Res;
@@ -80,6 +80,28 @@ pub(crate) fn allocate(
     encode(Message {
         header: header(domain, sequence, previous, now),
         body: Body::Allocate(body),
+    })
+}
+
+/// A recall of `amount` that accepts nothing less in return.
+pub(crate) fn recall(
+    domain: &Domain,
+    sequence: u64,
+    previous: [u8; 32],
+    now: u64,
+    transfer_id: [u8; 32],
+    amount: u64,
+) -> Res<Encoded> {
+    let body = RecallBody {
+        transfer_id: TransferId::new(transfer_id),
+        requested_amount: AssetAmount::new(u128::from(amount)),
+        minimum_return_amount: AssetAmount::new(u128::from(amount)),
+        deadline: Timestamp::new(now.saturating_add(LIFETIME)),
+        config_version: ConfigVersion::new(CONFIG_VERSION),
+    };
+    encode(Message {
+        header: header(domain, sequence, previous, now),
+        body: Body::Recall(body),
     })
 }
 

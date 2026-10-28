@@ -73,6 +73,9 @@ jobs:
     - name: Devnet scripts
       working-directory: scripts/devnet
       run: shellcheck -x -P SCRIPTDIR -s bash *.sh
+    - name: V2 devnet scripts
+      working-directory: scripts/devnet-v2
+      run: shellcheck -x -P SCRIPTDIR -s bash *.sh
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: sbf-v0

@@ -4,6 +4,7 @@
 # Usage: run.sh [LABEL]   (LABEL: 1-32 of a-z, 0-9, '-'; one namespace per label)
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+require_v1_sources
 require cargo
 require git
 

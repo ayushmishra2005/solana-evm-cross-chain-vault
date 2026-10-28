@@ -243,6 +243,7 @@ LiteSVM executes transactions one at a time. The competing-submission test shows
 - Not production payment authorization and not escrow settlement. Nothing moves funds.
 - The first profile is tested only in legacy transactions. Versioned transactions and address lookup tables are not covered for it, and the program makes no claim about them. The deployment profile is also tested as a v0 transaction through an address lookup table, in the remote leg's `tests/authorization_limits.rs`.
 - The devnet deployment runs the first profile's binary only. The deployment profile has not been deployed.
+- No production program id. The default id, `da9yz64…`, is the devnet deployment's, under a test key and upgrade authority, and default builds keep it only for compatibility with that deployment. The V2 devnet build uses `4dAHz4oRNVmQ1ru9WkUthKBKU65Bjn3jQrQ5GDfQ9CSw`. A mainnet release needs a dedicated id and upgrade authority, and a governance and security review of both.
 
 ## References
 

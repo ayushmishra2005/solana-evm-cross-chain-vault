@@ -5,7 +5,8 @@ members = ["adapter", "test-programs/cpi-forwarder"]
 [workspace.lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }
+# `solevm_devnet` selects the disposable devnet program id; see scripts/devnet-v2.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))', 'cfg(solevm_devnet)'] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

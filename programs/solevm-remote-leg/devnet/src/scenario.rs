@@ -76,7 +76,27 @@ const PRINCIPAL_AFTER_RECOVERY: u64 = 1_900_000;
 const CLOSED_CLAIMS_AT_END: u128 = 1_500_000;
 const CLOSED_CREDIT_AT_END: u128 = 600_000;
 
+/// The leg id of the recorded V1 devnet instance.
+const V1_LEG_ID: Pubkey = Pubkey::from_str_const("27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE");
+
+/// The V1 commands derive every address from the compiled leg id. A build
+/// whose sources declare another id would address a different program while
+/// reading the V1 keys and writing over V1 records, so it stops before
+/// reading settings, keys or the network.
+fn require_v1_build() -> Res<()> {
+    if solevm_remote_leg::ID != V1_LEG_ID {
+        return Err(format!(
+            "these sources declare the V2 devnet leg {}, not the V1 leg {V1_LEG_ID}; \
+             the V1 instance is read-only (verify and report still work), use run-v2",
+            solevm_remote_leg::ID
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub(crate) fn print_addresses() -> Res<()> {
+    require_v1_build()?;
     let settings = Settings::from_env()?;
     let keys = Keys::load(&settings.key_dir(), &settings.label)?;
     let namespace = Namespace::derive(&settings.label, &keys);
@@ -87,6 +107,7 @@ pub(crate) fn print_addresses() -> Res<()> {
 }
 
 pub(crate) fn run() -> Res<()> {
+    require_v1_build()?;
     let settings = Settings::from_env()?;
     let chain = Chain::new(&settings.rpc_url);
     let (cluster, genesis) = identify_cluster(&chain, settings.allow_localnet)?;
@@ -1941,20 +1962,23 @@ impl<'a> Driver<'a> {
     }
 }
 
-fn decode_at<T: AccountDeserialize>(data: &[Option<Vec<u8>>], index: usize) -> Res<Option<T>> {
+pub(crate) fn decode_at<T: AccountDeserialize>(
+    data: &[Option<Vec<u8>>],
+    index: usize,
+) -> Res<Option<T>> {
     data.get(index)
         .and_then(Option::as_ref)
         .map(|bytes| decode(bytes))
         .transpose()
 }
 
-fn decode<T: AccountDeserialize>(data: &[u8]) -> Res<T> {
+pub(crate) fn decode<T: AccountDeserialize>(data: &[u8]) -> Res<T> {
     let mut slice = data;
     T::try_deserialize(&mut slice).map_err(|error| format!("account decode: {error:?}").into())
 }
 
 /// The last event of type `T` in a transaction's logs.
-fn event<T: Discriminator + AnchorDeserialize>(logs: &[String]) -> Option<T> {
+pub(crate) fn event<T: Discriminator + AnchorDeserialize>(logs: &[String]) -> Option<T> {
     logs.iter()
         .filter_map(|line| line.strip_prefix("Program data: "))
         .filter_map(|payload| BASE64.decode(payload).ok())
@@ -1984,6 +2008,21 @@ fn settlement(
 }
 
 /// The number Anchor reports for one program error.
-fn code_of(error: RemoteLegError) -> u32 {
+pub(crate) fn code_of(error: RemoteLegError) -> u32 {
     (error as u32).saturating_add(anchor_lang::error::ERROR_CODE_OFFSET)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v1_commands_refuse_the_v2_build() {
+        let error = require_v1_build()
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(error.contains("V2 devnet leg"), "{error}");
+        assert!(error.contains(&V1_LEG_ID.to_string()), "{error}");
+    }
 }

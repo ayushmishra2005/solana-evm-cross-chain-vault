@@ -4,6 +4,7 @@
 # Usage: localnet.sh [LABEL]
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+require_v1_sources
 require solana-test-validator
 require "$SOLANA"
 

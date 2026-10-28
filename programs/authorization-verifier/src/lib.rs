@@ -22,7 +22,13 @@ pub use errors::VerifierError;
 pub use instructions::*;
 pub use state::*;
 
+// The devnet id is a cfg, not a feature, so `--all-features` builds keep the
+// default id. The remote leg's devnet build embeds this id; see
+// scripts/devnet-v2.
+#[cfg(not(solevm_devnet))]
 declare_id!("da9yz64zbrJ4fyi8VTR3xfVZu8GhfhUHkC7AZQxCGG7");
+#[cfg(solevm_devnet)]
+declare_id!("4dAHz4oRNVmQ1ru9WkUthKBKU65Bjn3jQrQ5GDfQ9CSw");
 
 #[program]
 pub mod es256_authorization_verifier {

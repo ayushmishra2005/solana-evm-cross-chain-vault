@@ -58,11 +58,13 @@ pub use strategy::{
 pub use transport::{TRANSPORT_LEDGER_SEED, TransportLedger};
 
 // The devnet id is a cfg, not a feature, so `--all-features` builds keep the
-// production id.
+// production id. The V1 devnet instance at 27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE
+// predates deployment authorization and is kept as recorded; this is the V2
+// instance, see scripts/devnet-v2.
 #[cfg(not(solevm_devnet))]
 declare_id!("4sLaaRdiY74cvqVCXLjW2wPncy2ArQkTRauNTdphKByo");
 #[cfg(solevm_devnet)]
-declare_id!("27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE");
+declare_id!("DcbREPYFa4WtjknjmT7ENqP7RV3KAfXBLcBbGqyq2jhD");
 
 #[program]
 pub mod solevm_remote_leg {

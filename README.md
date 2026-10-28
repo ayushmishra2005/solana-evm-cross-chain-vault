@@ -147,7 +147,7 @@ programs/authorization-verifier
 
 A separate Solana program that verifies ES256 signatures with the native secp256r1 program. It has two profiles. The first verifies ES256-signed authorization claims. A claim is accepted only if it is signed by an administrator-registered key and matches an administrator-approved mandate. A permanent receipt per nonce prevents replay within a configuration. It enforces one fixed JWT profile and issuer. This first profile is deployed on devnet, where an authorization and its rejected replay have been exercised: see its [README](programs/authorization-verifier/README.md) and [devnet results](programs/authorization-verifier/devnet/README.md).
 
-The second profile gates the remote leg's strategy deployment: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval). It has not been deployed.
+The second profile gates the remote leg's strategy deployment: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval). It has not been deployed on devnet. It has been [rehearsed on a local validator](#v2-deployment-authorization-local-rehearsal-only), and the scripts for a later devnet run are in the [runbook](docs/operations.md#v2-deployment-authorization).
 
 ## Key design decisions
 
@@ -231,6 +231,10 @@ The leg moves assets into the adapter vault itself and signs adapter calls with 
 
 ### Strategy deployment needs a risk approval
 
+![Strategy deployment decision: capital received and attributed on Solana is deployed to the strategy only with a valid signed risk authorization; with a missing or invalid one it stays in custody](docs/images/strategy-deployment-decision-flow.png)
+
+*The 100,000 USDC amount is illustrative. Devnet runs use a valueless six-decimal test token, and this repository has no production risk service. The image shows one deployment decision; recalls and withdrawals need no approval.*
+
 `deploy_to_strategy` is the only instruction that increases strategy exposure, and it runs only in this transaction:
 
 ```
@@ -248,6 +252,7 @@ Limits of this control:
 - The network domain is set by the verifier's upgrade authority. A program cannot read the genesis hash.
 - The adapter's code version is not bound. Its program id and accounts are, so an adapter upgrade voids no outstanding approval until the risk administrator advances the policy generation.
 - The risk decision itself happens off-chain. `tests/risk_approval.rs` uses a deterministic test risk policy, not a production risk service.
+- A compromised risk key can push exposure up to the attributed principal and the strategy ceiling. The risk administrator must revoke it and advance the policy generation: see [Risk key compromise](docs/operations.md#risk-key-compromise). The verifier's upgrade authority can approve any deployment the leg would accept, so it needs the same custody as the leg's: see [Roles, trust and key custody](docs/operations.md#roles-trust-and-key-custody).
 
 ### Initialization is reserved to the upgrade authority
 
@@ -376,6 +381,8 @@ The E2E suite exercises live EVM production contracts and live Solana remote-leg
 
 All current test suites pass.
 
+The Mollusk suite (`tests/compute.rs`) guards instruction cost in CI. The most expensive instruction, `process_settlement`, peaked at about 85,000 compute units locally, and the devnet close (T09) used 80,707 for its whole transaction, under the default budget of 200,000 per instruction. An authorized deployment uses about 60,000 compute units in LiteSVM: about 16,000 for the verifier's consume and 44,000 for `deploy_to_strategy`. As a legacy transaction with a compute-budget prefix it is 1,196 of 1,232 bytes, and 705 bytes through an address lookup table. `tests/authorization_limits.rs` checks both sizes.
+
 ## Running the project
 
 ### Rust
@@ -500,11 +507,15 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 ├── contracts/
 │   └── solevm-vault/
 ├── programs/
-│   └── solevm-remote-leg/
-│       └── devnet/          # devnet scenario driver and evidence verifier
+│   ├── solevm-remote-leg/
+│   │   └── devnet/          # devnet scenario driver and evidence verifier
+│   └── authorization-verifier/
 ├── scripts/
-│   └── devnet/              # build, deploy, run and verify on Solana devnet
-└── docs/                    # operations runbook, internal security review, devnet evidence
+│   ├── devnet/              # V1 devnet instance: re-verify its recorded run
+│   └── devnet-v2/           # V2 deployment authorization: build, rehearse, deploy, run, verify
+├── evidence/
+│   └── devnet/v1.json       # V1 devnet run record, verifiable against devnet
+└── docs/                    # operations runbook and README image
 ```
 
 ## Scope and limitations
@@ -514,7 +525,7 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 - No production Solana yield strategy is included
 - No keeper or indexer is required for the current test architecture
 - The EVM test environment uses a test authenticator rather than a real bridge authenticator
-- No external audit has been performed. The internal review in [docs/security-review.md](docs/security-review.md) is not an audit, and passing tests are not a substitute for one
+- No external audit has been performed. The developers reviewed the remote leg, the Solidity vault and coordinator, the protocol codec, deployment authorization and CI themselves, by reading the code paths and running the suites and the devnet scenario's live attacks. They found no critical or high-severity defect in that scope, and the open findings are listed below. That internal review is not an audit, and passing tests are not a substitute for one
 - The repository is not presented as production-ready
 - One unresolved remote allocation, recall or recovery cycle is supported
 - Classic SPL Token is supported by the Solana leg, not Token-2022
@@ -527,18 +538,23 @@ cargo run -p evm-differential -- --seed 1 --cases 64 --steps 4 --describe 12
 
 ### Unresolved release risks
 
-Both risks below are known and unresolved. Each must be fixed, or explicitly accepted, before a release that holds user funds.
+The risks below are known and unresolved. Each must be fixed, or explicitly accepted, before a release that holds user funds. The first two are release blockers: each needs a financial-finality policy that only the owner can set.
 
-- **Stuck recall.** Close applies only to allocations, and a recall has no close or recovery path. If a recall never produces RecallSent, the coordinator's single cycle stays open and blocks every new allocation, recall and recovery. That happens when the recall stays quarantined (Admit refuses a recall that asks for more principal than the leg accepted), when a frozen leg's guardian does not co-sign, or when the leg cannot finish withdrawing, sending and reporting it. Separately, recalled assets lost in asset transport after RecallSent stay in inbound transit, and so in NAV, with no impairment path.
+- **Stuck recall (release blocker).** Close applies only to allocations, and a recall has no close or recovery path. If a recall never produces RecallSent, the coordinator's single cycle stays open and blocks every new allocation, recall and recovery. That happens when the recall stays quarantined (Admit refuses a recall that asks for more principal than the leg accepted), when a frozen leg's guardian does not co-sign, or when the leg cannot finish withdrawing, sending and reporting it. Separately, recalled assets lost in asset transport after RecallSent stay in inbound transit, and so in NAV, with no impairment path.
   - *Recommended solution:* give recalls the deadline-then-close path that allocations already have. After a recall deadline, the EVM administrator may close the recall. The leg settles the close like an allocation close: guardian co-signed on a frozen leg, ending its cycle with a TransportSettlement. The vault keeps what has arrived and moves the unreturned rest of the recall, whether still pending or in inbound transit, from NAV into `impairedTransport`.
   - *Decision required:* the recall deadline, who may authorize the close, and how a late arrival is credited back. Closing a recall recognizes possible loss, so this is a financial-finality policy only the owner can set.
-- **Close-pending epoch liveness.** While a close is pending, the coordinator skips every report. If the epoch is at cutoff in that window, its remote valuation cannot lock, and `finalizeEpoch` reverts with `RemoteValuationRequired` until the settlement has landed and a fresh report for the epoch has arrived. The settlement needs the Close relayed to and processed by the leg, with the guardian's co-signature on a frozen leg, and the TransportSettlement relayed back. Nothing times out or falls back, so that epoch's deposits and redemptions wait on the round trip. Requesting a close early in an epoch narrows this window but does not remove it.
+- **Close-pending epoch liveness (release blocker).** While a close is pending, the coordinator skips every report. If the epoch is at cutoff in that window, its remote valuation cannot lock, and `finalizeEpoch` reverts with `RemoteValuationRequired` until the settlement has landed and a fresh report for the epoch has arrived. The settlement needs the Close relayed to and processed by the leg, with the guardian's co-signature on a frozen leg, and the TransportSettlement relayed back. Nothing times out or falls back, so that epoch's deposits and redemptions wait on the round trip. Requesting a close early in an epoch narrows this window but does not remove it.
   - *Recommended solution:* let an epoch that reaches cutoff while a close is pending lock its valuation without a fresh report. It would use the last accepted remote value, and price the closing allocation's whole claim as if impaired: `managedBacking()` less the claim held in `outboundInTransit`. The epoch can then finalize. When the TransportSettlement lands, it credits what arrived to later epochs, as a recovery does.
   - *Decision required:* redeemers in that epoch would bear the closing allocation conservatively, and later holders would receive whatever arrived. This valuation policy needs the owner's acceptance.
+- **No production verifier identity.** The leg accepts deployment approvals only from the verifier id its build compiles in. In default builds that is `da9yz64…`, the historical V1 devnet verifier, kept for compatibility with that deployment; its program key and upgrade authority were made for testing. The V2 devnet build uses `4dAHz4oR…` instead. Whoever controls the verifier's upgrade authority controls which deployments are approved.
+  - *Required before mainnet:* a dedicated production verifier id and upgrade authority, set in the verifier's default `declare_id!`, and a governance and security review of who holds that authority.
+- **Anyone can publish reports (low severity).** In `publish_report.rs`, the payer of `publish_remote_report` is any signer, and the caller chooses `epoch_id`. Nothing limits how often reports are published, and report records cannot be closed. Each report is built from on-chain state, so it is truthful and cannot misprice anything. But each one advances the outbound lane, which the EVM side consumes strictly in order. A caller publishing in a loop, paying a report record's rent and a fee each time, forces the relayer to submit every report to `RemoteAccounting.processRemoteReport` before a later TransportSettlement or RecallSent can land. The impact is relayer cost and settlement delay; no funds or accounting are at risk.
+  - *Minimal fix:* require the signer to be the configured transport verifier or the administrator. That is one constraint, with no layout change.
+  - *Decision required:* with the fix, reporting no longer stays live without the operator.
 
 ## Deployment and relaying
 
-The [operations runbook](docs/operations.md) covers build, fresh deployment, upgrades, what cannot be rolled back, the emergency procedure and relayer retries.
+The [operations runbook](docs/operations.md) covers each role's powers and what its compromise allows, build, fresh deployment, upgrades, what cannot be rolled back, the emergency procedure, relayer retries and the devnet instances.
 
 ### Deployment order
 
@@ -567,15 +583,59 @@ Compared with v0.1.0:
 
 ## Solana Devnet — Verified Deployment and Test Evidence
 
-Two programs, the Solana remote leg and its test strategy adapter, are deployed on Solana devnet under disposable keys. A scripted run executed 29 transactions against them, from setup and an authenticated allocation through a close after a partial arrival, a recovery and the frozen-leg guardian path, including six attacks that must fail. All 96 state checks passed. Both programs and all 29 transactions were then re-verified against the devnet RPC at finalized commitment, including that the deployed program bytes match the local build. The per-transaction results, Explorer links and build provenance are in [docs/devnet-verification.md](docs/devnet-verification.md).
+On 23 October 2026 the Solana remote leg and its test strategy adapter were deployed on Solana devnet under disposable keys. A scripted run, `devnet-1`, then executed 29 transactions against them: setup, an authenticated allocation, custody reconciliation, reporting, a close after a partial arrival, a recovery, a guardian-only close on a frozen leg, and six attacks that must fail. All 29 landed as expected (23 successes and 6 rejections with the exact program error), and all 96 state checks passed. The run is recorded in [`evidence/devnet/v1.json`](evidence/devnet/v1.json), and both programs and all 29 transactions were re-verified from it against the devnet RPC at finalized commitment.
+
+| Program | Program id | Deployed bytes (sha256, equal to the local build) | Deploy transaction |
+|---|---|---|---|
+| `solevm_remote_leg` | [`27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE`](https://explorer.solana.com/address/27zReYgZvFTaUSWwob4qirN2Yxekcm32mnQDpMzeTyAE?cluster=devnet) | `0de7a35acbcb41c33f71af50d0efce4803da1a297a21650876ddd1bc45df6dc3` | [2bMZd9Yc…pJwcSsFw](https://explorer.solana.com/tx/2bMZd9YcTUWEAZduVMN9kfFP6MJkePzKwFwkCw6RfLSvkLqCeF6jnweKHfprS4sXSbxw2Tt7BfnW3VzDpJwcSsFw?cluster=devnet), slot 514214756 |
+| `solevm_test_strategy` | [`8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8`](https://explorer.solana.com/address/8bFiHDwdAurdhTv5F9JaVD4QgdJ2XxEHRK2BAyiCyjZ8?cluster=devnet) | `02a978e2e299cb089edcd8d24396e9b9579cf01d34d2b5ba58d54a3eadbd39fb` | [45T1Nfhk…TJaaaftH](https://explorer.solana.com/tx/45T1NfhkxHBW7K3wRWUKqfkFehqPPjLW9hbkjsbHh9pMqEfBghTrKCbj2hKvq8h4ZLgn8FaAGK6zUD8uTJaaaftH?cluster=devnet), slot 514214836 |
+
+Both programs' upgrade authority is the disposable deployer `HiiQJU2B2KrC5ujyrD5EJbAsA5WHyL5PwPoKmiVtKytn`. Each rejection had to land on chain with the exact program error and leave every tracked account and token balance byte-for-byte unchanged:
+
+| Attack that must fail | Step | Result |
+|---|---|---|
+| A namespace claim co-signed by a key other than the upgrade authority | N01 | `Unauthorized`, config not created |
+| A replay of Allocate A's exact bytes | N02 | `InvalidSequence` |
+| A valid next Allocate signed by an attacker instead of the transport verifier | N03 | `Unauthorized` |
+| A replay of the Recover message, which would credit the pool twice | N04 | `InvalidSequence` |
+| A close on the frozen leg without the guardian | N05 | `Frozen` |
+| A close on the frozen leg co-signed by an attacker posing as the guardian | N06 | `Unauthorized` |
+
+Close and Recover conserved value after each settlement (T09, T11, T15). At the end, closed claims of 1,500,000 equal credit 600,000 + impaired 600,000 + recovered 300,000, in base units of the 6-decimal test token. Custody held 1,900,000, all of it attributed principal, with no transfer open.
 
 To re-check the recorded run against devnet, with no keys or SOL:
 
 ```bash
-scripts/devnet/verify.sh docs/devnet-evidence.json
+scripts/devnet/verify.sh evidence/devnet/v1.json
 ```
 
-This is a test deployment, not a production one. No real bridge is involved: disposable keys stand in for the bridge's message receiver and token delivery. The EVM contracts were not deployed; they run in the local Foundry suites. The token is a valueless test token, not USDC, and the run is not an audit; see [Scope and limitations](#scope-and-limitations). To deploy your own instance, see [Devnet instance](docs/operations.md#devnet-instance).
+It checks that the RPC serves devnet by its genesis hash. Then, at finalized commitment, it re-fetches:
+
+- each program account, which must be owned by the upgradeable loader, be executable, have the recorded upgrade authority, and hold the recorded local build's bytes with nothing after them;
+- each deploy and scenario transaction, which must be at its recorded slot, invoke the recorded program, and succeed or fail exactly as recorded.
+
+`SOLEVM_RPC_URL` selects another devnet RPC. RPC nodes do not serve past account state, so this cannot recheck before and after states. The driver checked those against live state during the run, and each step's `before` and `after` snapshots are in the record. The record leaves out the disposable signers' wallet addresses, except each program's upgrade authority. To render every step with its Explorer link, from `programs/solevm-remote-leg/devnet`:
+
+```bash
+cargo run --locked --release -- report ../../../evidence/devnet/v1.json
+```
+
+**Build provenance.** The run used commit [`7f38ba9`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/7f38ba90b38aa136a38f88612f677ffde4eee608) plus uncommitted hardening changes, recorded as git tree `b3aaf0ee47347dc4467ce7187eeebdae051dc0bc`. Those changes were merged as [`1aebf3f`](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/commit/1aebf3f7a4f7d2a84756a94f574c394075dba585), whose build inputs are the same git objects: `src` `78a57c8f`, `test-strategy` `22751384`, `Cargo.toml` `72c1ae9a` and `Cargo.lock` `dd8526da` under `programs/solevm-remote-leg`, and root `crates` `487256f6` and `Cargo.toml` `a76d3adb`. Check them with `git rev-parse 1aebf3f:<path>`. The binaries were built by `scripts/devnet/build.sh` with `cargo-build-sbf` 4.4.0, platform-tools v1.58, SBPFv0 and `--cfg solevm_devnet`, and a rebuild on the same machine reproduced both digests. To rebuild them, check out `1aebf3f` and run its `scripts/devnet/build.sh`: current sources declare the V2 leg id, so every V1 script except `verify.sh` refuses. A rebuild on another machine may differ, because host paths can end up in the binary. No containerized verifiable build was made.
+
+This is a test deployment, not a production one:
+
+- No real bridge is involved. Disposable keys stand in for the bridge's message receiver and token delivery, and the source application is the fixed identifier `keccak256("solevm/devnet/simulated-evm-hub")`.
+- The EVM contracts were not deployed; they run in the local Foundry suites.
+- The token is a fresh 6-decimal test token, labelled on chain as having no value and not being USDC.
+- Every role is a disposable key, and a single disposable key as upgrade authority is not a production setup.
+- The run is not an audit; see [Scope and limitations](#scope-and-limitations).
+- If devnet is reset, or RPC nodes stop serving this history, the links and `verify.sh` stop resolving. The record still holds what was observed.
+
+To deploy your own instance, see [Devnet instances](docs/operations.md#devnet-instances).
+
+### V2 deployment authorization: local rehearsal only
+
+The deployment-authorization profile is not deployed on devnet, and nothing in this section is devnet validation. On a local `solana-test-validator` (Agave 4.3.2), with secp256r1 and in-SVM precompile verification active and devnet's feature set mirrored, the final V2 scripts and driver ran 43 transactions: 27 expected successes and 16 expected rejections, all finalized. All 115 checks passed, and the run was re-verified at finalized commitment while the validator ran. Those signatures existed only on that throwaway validator and cannot be checked against any public cluster, so the record is not committed. The scripts and safeguards for a devnet run are in [V2: deployment authorization](docs/operations.md#v2-deployment-authorization).
 
 ## License
 
