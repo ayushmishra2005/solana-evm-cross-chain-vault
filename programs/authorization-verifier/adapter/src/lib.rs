@@ -208,6 +208,23 @@ impl SyntheticSigner {
         })
     }
 
+    /// A key with a fixed private scalar in `1..n`, so a test can pin its
+    /// public key. Only for fixtures: the scalar is in the caller's source.
+    pub fn from_secret(secret: &[u8; FIELD_SIZE]) -> AdapterResult<Self> {
+        let group = p256_group()?;
+        let private = BigNum::from_slice(secret)?;
+        let order = BigNum::from_slice(&SECP256R1_ORDER)?;
+        if private < BigNum::from_u32(1)? || private >= order {
+            return Err(AdapterError::ScalarOutOfRange);
+        }
+        let mut context = BigNumContext::new()?;
+        let mut public = EcPoint::new(&group)?;
+        public.mul_generator2(&group, &private, &mut context)?;
+        let key = EcKey::from_private_components(&group, &private, &public)?;
+        key.check_key()?;
+        Ok(Self { key })
+    }
+
     pub fn public_key(&self) -> AdapterResult<[u8; COMPRESSED_PUBLIC_KEY_LEN]> {
         compressed(&p256_group()?, self.key.public_key())
     }
@@ -285,6 +302,54 @@ mod tests {
         assert_eq!(ours.program_id, sdk.program_id);
         assert_eq!(ours.data, sdk.data);
         assert!(ours.accounts.is_empty());
+    }
+
+    #[test]
+    fn a_fixed_secret_yields_a_fixed_key_that_signs() {
+        let secret = [0x2A; FIELD_SIZE];
+        let first = SyntheticSigner::from_secret(&secret).unwrap();
+        let second = SyntheticSigner::from_secret(&secret).unwrap();
+        assert_eq!(first.public_key().unwrap(), second.public_key().unwrap());
+        assert_ne!(
+            first.public_key().unwrap(),
+            SyntheticSigner::from_secret(&[0x2B; FIELD_SIZE])
+                .unwrap()
+                .public_key()
+                .unwrap()
+        );
+
+        let message = b"fixed key";
+        let signature = normalize_signature(&second.sign(message).unwrap()).unwrap();
+        let point = EcPoint::from_bytes(
+            &p256_group().unwrap(),
+            &first.public_key().unwrap(),
+            &mut BigNumContext::new().unwrap(),
+        )
+        .unwrap();
+        let verifying = EcKey::from_public_key(&p256_group().unwrap(), &point).unwrap();
+        let (r, s) = signature.split_at(FIELD_SIZE);
+        let signature = EcdsaSig::from_private_components(
+            BigNum::from_slice(r).unwrap(),
+            BigNum::from_slice(s).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            signature
+                .verify(&openssl::sha::sha256(message), &verifying)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn a_secret_outside_the_scalar_field_is_refused() {
+        let mut order = [0u8; FIELD_SIZE];
+        order.copy_from_slice(&SECP256R1_ORDER);
+        for secret in [[0u8; FIELD_SIZE], order, [0xFF; FIELD_SIZE]] {
+            assert_eq!(
+                SyntheticSigner::from_secret(&secret).unwrap_err(),
+                AdapterError::ScalarOutOfRange
+            );
+        }
     }
 
     #[test]

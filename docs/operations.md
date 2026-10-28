@@ -10,6 +10,9 @@ How to build, deploy, upgrade and operate the Solana remote leg, what cannot be 
 | Administrator | `initialize_remote_leg` signer, fixed for the namespace | Multisig |
 | Emergency guardian | `InitializeParams.emergency_guardian`, fixed | A separate key or multisig that can react quickly. It must differ from the administrator |
 | Transport verifier | `InitializeParams.transport_verifier`, fixed | The relayer's hot key, scoped to this one namespace |
+| Authorization verifier upgrade authority | Loader ProgramData of the authorization verifier | As for the leg's upgrade authority. It creates each namespace's deployment authority, and its program decides which deployments verify |
+| Risk administrator | `initialize_deployment_authority` params, fixed | Multisig. It registers and revokes risk keys and advances the policy generation |
+| Risk key | `register_risk_key`, revocable | The risk service's P-256 signing key, ideally non-exportable |
 
 No instruction rotates the administrator, guardian or transport verifier, so choose them for the life of the namespace.
 
@@ -34,9 +37,29 @@ The program ids in `declare_id!` are the production ids. `--cfg solevm_devnet` s
 3. `initialize_control_state` (administrator): risk limits, the config commitment and the watermark lag.
 4. Initialize the strategy adapter, then `initialize_strategy_state` (administrator) with the principal ceiling. This pins the adapter program, its state and its vault.
 5. `initialize_outbound_state` (administrator).
-6. Point the relayer at the namespace. Open allocations only after it routes all seven message types.
+6. Set up deployment authorization:
+   - The authorization verifier's upgrade authority runs `initialize_deployment_authority` for the namespace. It names the risk administrator and the network domain, which is the cluster's genesis hash.
+   - The risk administrator runs `register_risk_key`.
+   - The leg administrator runs `initialize_deploy_authorization`, once. It cannot be replaced or removed.
 
-`programs/solevm-remote-leg/devnet/src/scenario.rs` builds every one of these instructions and can serve as a reference client. When an existing deployment adopts a release, follow the order under "Deployment order" in the [README](../README.md#deployment-order).
+   Until then `deploy_to_strategy` fails, and nothing else is affected.
+7. Point the relayer at the namespace. Open allocations only after it routes all seven message types.
+
+`programs/solevm-remote-leg/devnet/src/scenario.rs` builds the instructions of steps 2 to 5 and can serve as a reference client for them. It builds nothing for step 6 and never calls `deploy_to_strategy`. The published devnet run used a leg without deployment authorization, and no devnet namespace has adopted it.
+
+The step 6 instructions, and the authorized deployment transaction, are built only in local LiteSVM tests, by `programs/solevm-remote-leg/tests/common/authorization.rs`:
+
+- `install_deploy_authorization` runs step 6 in order;
+- `initialize_deployment_authority_instruction`, `register_risk_key` and `adopt_instruction` build its three instructions;
+- `authorized_deploy` builds `[secp256r1, consume_deployment_authorization, deploy_to_strategy]`.
+
+Their risk key is a fixed test secret. A real deployment also needs:
+
+- the authorization verifier deployed or upgraded with the deployment profile. The devnet verifier runs the first profile only;
+- the cluster's genesis hash as the network domain;
+- a risk service that holds the risk key and signs approvals. This repository has none.
+
+When an existing deployment adopts a release, follow the order under "Deployment order" in the [README](../README.md#deployment-order).
 
 ## Upgrade
 
@@ -45,12 +68,15 @@ The program ids in `declare_id!` are the production ids. `--cfg solevm_devnet` s
 3. The upgrade authority executes the upgrade from the buffer, through the multisig if there is one. An interrupted write leaves a funded buffer. Resume it by deploying with the same `--buffer` key, or reclaim its rent with `solana program close <BUFFER>`.
 4. Confirm that the on-chain bytes match the recorded SHA-256 and that `solana program show <PROGRAM_ID>` names the expected authority.
 
+An approval binds the strategy adapter's program id, state, authority and vault, not its code. Upgrading the adapter program therefore voids no outstanding approval. Pause approvals, have the risk administrator run `advance_policy_generation`, upgrade the adapter, and resume approvals only after reviewing the new code. An accepted ConfigUpdate needs no such step, because it changes the configuration version the approval names.
+
 ## What cannot be rolled back
 
 - **Program upgrades are one-way once accounts change.** As soon as an account holds a value the previous program does not know, the previous program cannot read it. Examples: a quarantined, closed or recovery transfer record, a consumed Resolve, a settlement report record. Redeploying the old binary does not restore the old account state.
 - **The EVM vault and coordinator are not upgradeable.** The vault binds its coordinator once, so an EVM change means new contracts and a new Solana namespace.
 - **A freeze is permanent.** There is no unfreeze instruction. A frozen leg can only unwind, and new allocations need a new namespace.
 - **Roles are permanent.** Replacing the administrator, guardian or verifier means a new namespace.
+- **Deployment authorization adoption is permanent.** A namespace that adopted a deployment authority deploys only through it.
 - **Making the program immutable** (`solana program set-upgrade-authority --final`) cannot be undone. It also stops new namespaces, because initialization requires the upgrade authority's signature.
 
 ## Emergency procedure
@@ -83,6 +109,13 @@ The devnet scenario shows the close step live (T14, N05, N06, T15).
 4. Unwind with guardian co-signatures. Open a new namespace with a new verifier and a new coordinator.
 
 The verifier cannot redirect custody. Assets leave only for the pinned outbound escrow or the pinned adapter vault.
+
+### Risk key compromise
+
+1. The risk administrator runs `advance_policy_generation`, which voids every approval signed for an earlier generation, and `revoke_risk_key`. The revocation is required: it also stops approvals the key signed in advance for a later generation.
+2. Register a new key. Freeze the leg if exposure must stop altogether.
+
+A risk key alone can only approve deployments the leg would otherwise accept: within attributed principal and the strategy ceiling, into the pinned adapter vault, and never on a frozen leg. Recalls and unwinding never need it.
 
 ### Guardian or administrator compromise
 

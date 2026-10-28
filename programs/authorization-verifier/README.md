@@ -4,12 +4,15 @@ A standalone Solana program that consumes an ES256-signed authorization verdict,
 
 It is an independent demonstration of the verification technique. It is not an escrow or payment system, it moves no tokens, and it is not an official Saifuro integration. The verdict format follows Saifuro's published examples so the profile has a concrete, documented shape.
 
+A second, separate profile approves the SolEVM remote leg's strategy deployments: see [Deployment authorization profile](#deployment-authorization-profile). The two profiles share only the precompile checks. Everything else below describes the first profile unless it says otherwise.
+
 ```
-programs/es256-authorization-verifier
+programs/authorization-verifier
 ├── src/                         on-chain program (Anchor 1.2.1)
 │   ├── precompile.rs            finds and pins the native verification
 │   ├── jwt.rs                   strict compact-JWS / JSON profile parser
-│   ├── instructions/            admin and consume instructions
+│   ├── deployment.rs            deployment approval layout, context commitment, pinned deployment
+│   ├── instructions/            admin and consume instructions of both profiles
 │   └── state.rs                 accounts, seeds, bounds
 ├── adapter/                     host-side helpers (JWK compression, low-S, instruction builder)
 ├── devnet/                      devnet runner and verified deployment
@@ -130,6 +133,44 @@ Time and window boundaries:
 | Account substitution, forged admin state | Anchor owner, discriminator, seeds and `has_one` checks | `authorization.rs`, `admin.rs` |
 | Malformed input crashing the program | Bounded, checked parsing; mutation sweeps on SBF | `robustness.rs`, unit tests |
 
+## Deployment authorization profile
+
+This profile gates `deploy_to_strategy` in `programs/solevm-remote-leg`, the only instruction that increases strategy exposure. It has its own accounts, seeds, errors and message format, so no first-profile key, mandate, config or receipt satisfies it, and no first-profile verdict decodes as an approval.
+
+| Instruction | Signer | Effect |
+|---|---|---|
+| `initialize_deployment_authority` | Program upgrade authority | Creates `["solevm-deploy-authority", remote_leg_program, remote_config]` for one existing leg namespace, with the risk administrator and the network domain |
+| `register_risk_key` / `revoke_risk_key` | Risk administrator | Trusts or permanently revokes a P-256 key, at `["solevm-risk-key", authority, parity, x]` |
+| `advance_policy_generation` | Risk administrator | Voids every approval signed for the previous generation |
+| `consume_deployment_authorization` | Anyone (pays rent) | Verifies one approval and writes `["solevm-deploy-receipt", authority, nonce]` |
+
+The signed message is exactly 154 bytes, all integers little-endian:
+
+| Offset | Bytes | Field |
+|---|---|---|
+| 0 | 8 | magic `SOLEVMAZ` |
+| 8 | 1 | version, 2 |
+| 9 | 1 | operation, 1 = deploy to strategy |
+| 10 | 32 | deployment authority |
+| 42 | 32 | network domain |
+| 74 | 8 | policy generation |
+| 82 | 32 | deployment context commitment |
+| 114 | 8 | amount |
+| 122 | 16 | nonce |
+| 138 | 8 | issued at |
+| 146 | 8 | expires at |
+
+The context commitment is SHA-256 over a domain string, this program's id and sixteen fixed-width fields of the leg's state (`DeploymentContext` in `src/deployment.rs`). Consume refuses an approval unless all of these hold:
+- it is the directly preceding precompile's message, verified top level;
+- it names this authority, its network domain and its current generation;
+- its amount is nonzero and the nonce matches;
+- it lives at most 300 seconds, is issued no more than 60 seconds ahead, and has not expired;
+- it is signed by a registered, unrevoked key inside its window.
+
+The next instruction must be the authority's remote-leg program, with exactly `deploy_to_strategy`'s selector and the signed amount, exactly 15 accounts, this namespace's remote config and this receipt. The leg checks the reverse direction and the receipt itself. A receipt is written only in that transaction and cannot authorize anything later.
+
+The network domain is the authority's attestation of the cluster, because a program cannot read the genesis hash. The deployment's adapter code version is not bound. The risk decision is off-chain; the leg's `tests/risk_approval.rs` uses a deterministic test risk policy, not a production risk service.
+
 ## Testing
 
 Prerequisites:
@@ -142,7 +183,7 @@ Build both programs, then run the suites against the built binary.
 - `ES256_EXPECTED_SBPF_ARCH` (`v0` or `v3`) makes the harness assert the loaded ELF is that architecture. Without it, the harness only checks that the binary is v0 or v3.
 
 ```bash
-cd programs/es256-authorization-verifier
+cd programs/authorization-verifier
 cargo-build-sbf --tools-version v1.58 --arch v0
 cargo-build-sbf --tools-version v1.58 --arch v0 \
   --manifest-path test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy
@@ -165,7 +206,7 @@ SBF_OUT_DIR=$PWD/target/deploy-v3 ES256_EXPECTED_SBPF_ARCH=v3 \
   cargo test --locked --test limits -- --nocapture --test-threads=1
 ```
 
-The suite has 125 tests: 20 program unit tests, 8 adapter unit tests and 97 LiteSVM integration tests.
+The suite has 173 tests: 26 program unit tests, 10 adapter unit tests and 137 LiteSVM integration tests. Of these, 46 cover the deployment profile (`deployment_admin.rs`, `deployment_consume.rs` and the `deployment` unit tests); the remote leg's suites exercise it against the real leg.
 - **Acceptance and signature scenarios** execute the compiled SBF program with the native secp256r1 precompile enabled (LiteSVM `precompiles` feature), with no mock.
 - **Other integration tests** exercise administration and account validation, or inspect the loaded ELF.
 - **Mutation sweeps** (`robustness.rs`) run 4,622 re-signed mutations, each on a fresh copy of the configured ledger. Each outcome is checked against the program's own parser run on the host: a rejected input must fail on-chain with exactly that parser error, and a parsed one must be consumed or fail a post-parse authorization check.
@@ -176,17 +217,19 @@ Measured on LiteSVM 0.18.1 (SBPFv0 / SBPFv3):
 
 | Transaction | Signing input | Size (limit 1,232) | Compute units |
 |---|---|---|---|
-| Typical verdict | 476 B | 1,033 B | 37,327 / 37,297 |
-| Largest accepted verdict, plus two compute-budget instructions | 512 B | 1,121 B | 39,881 / 39,851 |
-| Over the limit, rejected by the verifier | 513 B | 1,070 B | 15,196 / 15,162 |
+| Typical verdict | 476 B | 1,033 B | 37,329 / 37,299 |
+| Largest accepted verdict, plus two compute-budget instructions | 512 B | 1,121 B | 42,883 / 42,853 |
+| Over the limit, rejected by the verifier | 513 B | 1,070 B | 18,200 / 18,166 |
 | Late rejection (category mismatch) | 479 B | 1,036 B | 38,188 / 38,154 |
 | Native rejection (high S) | 476 B | 1,033 B | 0 (the program never runs) |
+
+Under the same harness, the deployed first-profile binary measures within 5 compute units of every figure above. An earlier version of this table was 3,000 lower in the largest and over-limit rows. It was measured before the program id changed to `da9yz64…`, and the program id determines how much deriving each receipt address costs.
 
 Compute units are LiteSVM's `compute_units_consumed` for the transaction. That figure is the verifier's own execution, including the system-program call that creates the receipt; the native precompile reports 0 compute units, whether it accepts or rejects. The precompile is paid for through signature fees instead. A consume transaction pays two, one for the payer and one for the precompile signature: 10,000 lamports at LiteSVM's default.
 
 The program runs on the default 32 KiB heap, using no custom allocator. It allocates the decoded header and payload, which together are smaller than the 512-byte input, and the instructions it loads from the sysvar, which are bounded by the transaction size.
 
-Binary sizes are 329,952 bytes for SBPFv0 and 309,576 bytes for SBPFv3. The test-only forwarder is 15,296 and 13,632 bytes.
+Binary sizes are 412,352 bytes for SBPFv0 and 388,264 bytes for SBPFv3, with both profiles. The test-only forwarder is 15,296 and 13,632 bytes.
 
 LiteSVM executes transactions one at a time. The competing-submission test shows that the second of two concurrently prepared transactions fails on the existing receipt. On a validator, both transactions write-lock the same receipt address, so the runtime serializes them; that scheduling path is not exercised here.
 
@@ -198,7 +241,8 @@ LiteSVM executes transactions one at a time. The competing-submission test shows
 - No automatic JWKS synchronization, and no protection against a compromised administrator.
 - No replay protection across clusters, deployments or configs.
 - Not production payment authorization and not escrow settlement. Nothing moves funds.
-- Only legacy transactions are tested. Versioned transactions and address lookup tables are not covered, and the program makes no claim about them.
+- The first profile is tested only in legacy transactions. Versioned transactions and address lookup tables are not covered for it, and the program makes no claim about them. The deployment profile is also tested as a v0 transaction through an address lookup table, in the remote leg's `tests/authorization_limits.rs`.
+- The devnet deployment runs the first profile's binary only. The deployment profile has not been deployed.
 
 ## References
 

@@ -11,7 +11,9 @@ mod common;
 use anchor_lang::prelude::Clock;
 use anchor_lang::solana_program::instruction::Instruction;
 use anchor_spl::token::spl_token;
-use common::{ALLOCATE_TRANSFER_ID, Fixture, MAX_REMOTE_PRINCIPAL, Pubkey, RECALL_TRANSFER_ID};
+use common::{
+    ALLOCATE_TRANSFER_ID, Fixture, MAX_REMOTE_PRINCIPAL, Pubkey, RECALL_TRANSFER_ID, consumed_units,
+};
 use mollusk_svm::Mollusk;
 use mollusk_svm::program::loader_keys;
 use mollusk_svm::result::ProgramResult;
@@ -175,14 +177,20 @@ fn attributing_a_full_allocation_stays_within_its_compute_limit() {
     );
 }
 
+/// A deployment spends the approval the instruction before it consumed,
+/// which Mollusk cannot replay, so the authorized transaction runs in the
+/// live fixture and the leg's own compute line is read from its logs.
 #[test]
 fn deploying_to_the_strategy_stays_within_its_compute_limit() {
-    let mut bench = Bench::deployed();
-    bench.fixture.fund_position(ALLOCATE_TRANSFER_ID, AMOUNT);
-    let instruction = bench
-        .fixture
-        .deploy_instruction(bench.fixture.strategy_accounts(), AMOUNT);
-    bench.measure("deploy_to_strategy", instruction, true, DEPLOY_LIMIT);
+    let mut fixture = Fixture::deployed();
+    fixture.fund_position(ALLOCATE_TRANSFER_ID, AMOUNT);
+    fixture.deploy(AMOUNT).expect("deposit lands");
+    let used = consumed_units(&fixture.last_logs(), &solevm_remote_leg::ID);
+    println!("deploy_to_strategy: {used} compute units");
+    assert!(
+        used <= DEPLOY_LIMIT,
+        "deploy_to_strategy used {used} units, limit is {DEPLOY_LIMIT}"
+    );
 }
 
 #[test]
@@ -305,9 +313,20 @@ fn a_rejected_overlapping_transfer_stays_within_its_compute_limit() {
 fn a_rejected_cpi_account_stays_within_its_compute_limit() {
     let mut bench = Bench::deployed();
     bench.fixture.fund_position(ALLOCATE_TRANSFER_ID, AMOUNT);
+    // A real receipt, so the rejection comes from the vault constraint.
+    let approval = bench.fixture.approve(AMOUNT / 2);
+    let authorized =
+        bench
+            .fixture
+            .authorized_deploy(&approval, bench.fixture.strategy_accounts(), AMOUNT / 2);
+    bench.fixture.relay(&authorized).expect("deposit lands");
+    let receipt = bench.fixture.receipt_key(&approval.nonce());
+
     let mut accounts = bench.fixture.strategy_accounts();
     accounts.adapter_token_vault = bench.fixture.custody;
-    let instruction = bench.fixture.deploy_instruction(accounts, AMOUNT);
+    let instruction = bench
+        .fixture
+        .deploy_instruction(accounts, AMOUNT / 2, receipt);
     bench.measure("rejected deploy vault", instruction, false, REJECTED_LIMIT);
 }
 

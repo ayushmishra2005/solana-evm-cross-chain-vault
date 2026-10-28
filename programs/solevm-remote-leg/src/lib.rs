@@ -6,6 +6,7 @@
 use anchor_lang::prelude::*;
 
 pub mod adapter;
+pub mod authorization;
 pub mod control;
 pub mod custody;
 pub mod errors;
@@ -21,6 +22,9 @@ pub mod state;
 pub mod strategy;
 pub mod transport;
 
+pub use authorization::{
+    DEPLOY_AUTHORIZATION_RESERVED, DEPLOY_AUTHORIZATION_SEED, DeployAuthorizationPolicy,
+};
 pub use control::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, MAX_BASIS_POINTS, MessageClass, REPLAY_LANE_SEED,
     RISK_CONFIG_RESERVED, RISK_CONFIG_SEED, ReplayLane, RiskConfig, SequenceRule,
@@ -28,11 +32,12 @@ pub use control::{
 pub use errors::RemoteLegError;
 pub use events::{
     AllocateAccepted, AllocationAttributed, AllocationCompleted, AssetsDeployed, ConfigUpdated,
-    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, MessageQuarantined,
-    OutboundStateInitialized, RecallAccepted, RecallAssetsSent, RecallCompleted,
-    RecallCustodyReserved, RecallSentPublished, RemoteLegFrozen, RemoteLegInitialized,
-    RemoteReportPublished, ReplayWatermarkAdvanced, ResolveProcessed, SettlementProcessed,
-    StrategyStateInitialized, StrategyWithdrawalCompleted, TransportSettlementPublished,
+    ConsumedMessageClosed, ControlStateInitialized, CustodyReconciled, DeployAuthorizationAdopted,
+    MessageQuarantined, OutboundStateInitialized, RecallAccepted, RecallAssetsSent,
+    RecallCompleted, RecallCustodyReserved, RecallSentPublished, RemoteLegFrozen,
+    RemoteLegInitialized, RemoteReportPublished, ReplayWatermarkAdvanced, ResolveProcessed,
+    SettlementProcessed, StrategyStateInitialized, StrategyWithdrawalCompleted,
+    TransportSettlementPublished,
 };
 pub use instructions::*;
 pub use outbound::{
@@ -118,8 +123,8 @@ pub mod solevm_remote_leg {
         instructions::attribute::process_attribute_allocation(ctx)
     }
 
-    pub fn deploy_to_strategy(ctx: Context<DeployToStrategy>, maximum_amount: u64) -> Result<()> {
-        instructions::deploy::process_deploy_to_strategy(ctx, maximum_amount)
+    pub fn deploy_to_strategy(ctx: Context<DeployToStrategy>, amount: u64) -> Result<()> {
+        instructions::deploy::process_deploy_to_strategy(ctx, amount)
     }
 
     pub fn process_recall(ctx: Context<ProcessRecall>, message_bytes: Vec<u8>) -> Result<()> {
@@ -158,5 +163,11 @@ pub mod solevm_remote_leg {
 
     pub fn publish_recall_sent(ctx: Context<PublishRecallSent>) -> Result<()> {
         instructions::publish_recall_sent::process_publish_recall_sent(ctx)
+    }
+
+    pub fn initialize_deploy_authorization(
+        ctx: Context<InitializeDeployAuthorization>,
+    ) -> Result<()> {
+        instructions::deploy_authorization::process_initialize_deploy_authorization(ctx)
     }
 }

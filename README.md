@@ -42,15 +42,25 @@ flowchart LR
     T1 --> S[Solana Remote Leg]
     E -->|Asset transfer| A1[Asset Transport]
     A1 --> S
-    S --> ST[Strategy Adapter]
-    ST --> S
+    S -->|"5. Deploy, exactly the approved amount"| ST[Strategy Adapter]
+    ST -->|Withdraw, no approval needed| S
     S -->|RemoteReport / RecallSent / TransportSettlement| T2[Message Transport]
     T2 --> E
     S -->|Recalled assets| A2[Asset Transport]
     A2 --> E
+
+    subgraph OFF["Off-chain integration boundary"]
+        R["Risk authority<br/>not part of this repository<br/>tests use a deterministic test risk policy"]
+    end
+    R -.->|"1. Signed, short-lived approval of one deployment"| P["2. secp256r1 precompile<br/>verifies the P-256 signature"]
+    P --> V["3. Authorization verifier<br/>checks the approval, consumes its nonce"]
+    V -->|"4. Receipt, checked by the leg with the signed context"| S
+    V -.- VN["The verifier holds no custody, makes no strategy deposits,<br/>authenticates no bridge messages, settles nothing<br/>and keeps no vault accounting"]
 ```
 
 Message transport and asset transport are separate paths. The EVM vault is the canonical source of truth for shares, user liabilities and NAV, including remote capital. The Solana leg executes strategy operations and reports back. It does not own shares or canonical NAV.
+
+Steps 1 to 5 are one strategy deployment. The precompile, the verifier and `deploy_to_strategy` run in one Solana transaction, so a deployment that fails leaves no receipt behind. Only deployment needs an approval. Recalls, withdrawals, reports and settlement do not. The repository has no production risk service: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval).
 
 In the current repository, transport is simulated deterministically. No real bridge is integrated.
 
@@ -132,10 +142,12 @@ Deterministic scenarios that connect the live EVM vault, independent message and
 ### ES256 authorization verifier
 
 ```
-programs/es256-authorization-verifier
+programs/authorization-verifier
 ```
 
-A separate Solana program, developed independently of the vault and not part of its custody or settlement flows. It verifies ES256-signed authorization claims with the native secp256r1 program. A claim is accepted only if it is signed by an administrator-registered key and matches an administrator-approved mandate. A permanent receipt per nonce prevents replay within a configuration. It enforces one fixed JWT profile and issuer. It is deployed on devnet, where an authorization and its rejected replay have been exercised: see its [README](programs/es256-authorization-verifier/README.md) and [devnet results](programs/es256-authorization-verifier/devnet/README.md).
+A separate Solana program that verifies ES256 signatures with the native secp256r1 program. It has two profiles. The first verifies ES256-signed authorization claims. A claim is accepted only if it is signed by an administrator-registered key and matches an administrator-approved mandate. A permanent receipt per nonce prevents replay within a configuration. It enforces one fixed JWT profile and issuer. This first profile is deployed on devnet, where an authorization and its rejected replay have been exercised: see its [README](programs/authorization-verifier/README.md) and [devnet results](programs/authorization-verifier/devnet/README.md).
+
+The second profile gates the remote leg's strategy deployment: see [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval). It has not been deployed.
 
 ## Key design decisions
 
@@ -217,6 +229,26 @@ Without the co-signature they revert. A control message that reverts stays uncon
 
 The leg moves assets into the adapter vault itself and signs adapter calls with a dedicated caller identity that owns nothing. After every adapter call the leg checks the balance and principal deltas and requires custody to answer to the custody authority alone, with no delegate or close authority. Any violation reverts the whole transaction.
 
+### Strategy deployment needs a risk approval
+
+`deploy_to_strategy` is the only instruction that increases strategy exposure, and it runs only in this transaction:
+
+```
+[ compute budget ]*                      optional
+[ secp256r1 precompile ]                 native: verifies the risk key's signature
+[ consume_deployment_authorization ]     verifier: checks the approval, writes a single-use receipt
+[ deploy_to_strategy ]                   leg: spends that receipt, then moves exactly the approved amount
+```
+
+The 154-byte signed approval names the namespace's deployment authority, the cluster's network domain, the current policy generation, the amount, a nonce, a lifetime of at most five minutes, and a SHA-256 commitment to the deployment context. The context covers the leg program, the namespace and its ids, the configuration version, the strategy and adapter accounts, the principal ceiling, the asset, the custody accounts, and the principal already deployed. So an approval dies as soon as any of them changes. The verifier requires the deployment to follow it directly, with the same amount, namespace and receipt. The leg independently requires the consume directly before it, and checks the receipt's fields and the context commitment again. Anyone can relay an approval, but nobody can change what it deploys. A request above the attributed principal is rejected, not clamped.
+
+The leg fails closed. Until its administrator adopts the deployment authority once with `initialize_deploy_authorization`, nothing deploys. No instruction replaces or removes the adoption. Recalls, withdrawals, sends, reports, reconciliation, settlement, freeze and guardian recovery never consult the verifier.
+
+Limits of this control:
+- The network domain is set by the verifier's upgrade authority. A program cannot read the genesis hash.
+- The adapter's code version is not bound. Its program id and accounts are, so an adapter upgrade voids no outstanding approval until the risk administrator advances the policy generation.
+- The risk decision itself happens off-chain. `tests/risk_approval.rs` uses a deterministic test risk policy, not a production risk service.
+
 ### Initialization is reserved to the upgrade authority
 
 Only the program's upgrade authority can initialize a deployment and vault namespace, so no one can claim a deployment ahead of its operator. A program made immutable can no longer initialize new namespaces.
@@ -231,7 +263,7 @@ EVM allocation request
 → Solana accepts message
 → assets arrive independently
 → assets become attributed only after observed receipt
-→ capital may be deployed to the configured strategy
+→ capital may be deployed to the configured strategy, each time under a fresh risk approval
 ```
 
 ### Recall
@@ -392,6 +424,8 @@ Requires `cargo-build-sbf` 4.4.0 (`cargo install cargo-build-sbf --version 4.4.0
 cargo-build-sbf --tools-version v1.58 --arch v0
 cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
 cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile
+cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path ../authorization-verifier/Cargo.toml --sbf-out-dir target/deploy
+cargo-build-sbf --tools-version v1.58 --arch v0 --manifest-path ../authorization-verifier/test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy
 
 cargo fmt --all --check
 cargo check --locked --workspace --all-targets
@@ -399,18 +433,22 @@ cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo test --locked --workspace --all-features
 ```
 
-The `hostile` build is the misbehaving adapter that `tests/hostile_adapter.rs` loads. The artifacts above are SBPFv0. To check the program under SBPFv3 separately:
+The `hostile` build is the misbehaving adapter that `tests/hostile_adapter.rs` loads. The authorization verifier and its test-only CPI forwarder are built into the same directory, because every strategy deployment spends a verifier receipt. The artifacts above are SBPFv0. To check the program under SBPFv3 separately:
 
 ```bash
 cargo-build-sbf --tools-version v1.58 --arch v3 --sbf-out-dir target/deploy-v3
 cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy-v3
 cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile-v3
+cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path ../authorization-verifier/Cargo.toml --sbf-out-dir target/deploy-v3
+cargo-build-sbf --tools-version v1.58 --arch v3 --manifest-path ../authorization-verifier/test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy-v3
 
-SBF_OUT_DIR=$PWD/target/deploy-v3 HOSTILE_SBF_OUT_DIR=$PWD/target/deploy-hostile-v3 \
+SBF_OUT_DIR=$PWD/target/deploy-v3 HOSTILE_SBF_OUT_DIR=$PWD/target/deploy-hostile-v3 SOLEVM_EXPECTED_SBPF_ARCH=v3 \
   cargo test --locked --workspace --all-features
 ```
 
-The ES256 authorization verifier is a separate workspace with its own build and tests: see [`programs/es256-authorization-verifier`](programs/es256-authorization-verifier/README.md).
+When `SBF_OUT_DIR` or `HOSTILE_SBF_OUT_DIR` is set, the harness loads those binaries from that directory only, with no fallback to `target/deploy` or `target/deploy-hostile`. `SOLEVM_EXPECTED_SBPF_ARCH` makes `tests/authorization_limits.rs` assert that every loaded binary is that architecture.
+
+The ES256 authorization verifier is a separate workspace with its own build and tests: see [`programs/authorization-verifier`](programs/authorization-verifier/README.md).
 
 ### Cross-chain E2E
 
@@ -524,6 +562,8 @@ Compared with v0.1.0:
 - `publish_remote_report` has a new last account, `active_transfer_record`. While an allocation is open it must be that allocation's transfer record, derived from `["transfer-record", remote_config, transfer_id]`. A missing or wrong record fails with `MissingActiveTransferRecord` or `InvalidTransferRecord`.
 - Optional accounts always occupy their slot: `active_transfer_record`, and `emergency_guardian` on `process_recall`, `attribute_allocation`, `process_resolve` and `process_settlement`. Pass the program id for an absent account. The program does not enable Anchor's `allow-missing-optionals`, so a request that drops the slot fails with `AccountNotEnoughKeys`.
 - `advance_replay_watermark`, signed by the administrator, now requires the remote position account.
+- `deploy_to_strategy` takes the exact `amount` to deploy and three new last accounts: the leg's authorization policy (`["deploy-authorization", remote_config]`), the verifier receipt its approval created (`["solevm-deploy-receipt", deployment_authority, nonce]` under the verifier), and the instructions sysvar. It must be the instruction directly after the verifier's `consume_deployment_authorization`, as described in [Strategy deployment needs a risk approval](#strategy-deployment-needs-a-risk-approval).
+- Strategy deployment stops at the upgrade and resumes only after three steps, in order. First the verifier program, upgraded to this release, has its `initialize_deployment_authority` run for the namespace by its upgrade authority. Then the risk administrator registers a risk key. Finally the leg administrator runs `initialize_deploy_authorization`. Nothing else waits on these steps.
 
 ## Solana Devnet — Verified Deployment and Test Evidence
 

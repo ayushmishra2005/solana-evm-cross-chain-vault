@@ -5,9 +5,13 @@
 //! instruction, parses it under a strict profile, checks it against
 //! administrator-approved state and records its nonce exactly once. It moves
 //! no tokens.
+//!
+//! A second, separate profile authorizes SolEVM strategy deployments; see
+//! [`deployment`]. It shares only the precompile checks with the first.
 
 use anchor_lang::prelude::*;
 
+pub mod deployment;
 pub mod errors;
 pub mod instructions;
 pub mod jwt;
@@ -58,5 +62,34 @@ pub mod es256_authorization_verifier {
         nonce_hash: [u8; 32],
     ) -> Result<()> {
         instructions::consume::process_consume_authorization(ctx, nonce_hash)
+    }
+
+    pub fn initialize_deployment_authority(
+        ctx: Context<InitializeDeploymentAuthority>,
+        params: InitializeDeploymentAuthorityParams,
+    ) -> Result<()> {
+        instructions::deployment_admin::process_initialize_deployment_authority(ctx, params)
+    }
+
+    pub fn register_risk_key(
+        ctx: Context<RegisterRiskKey>,
+        params: RegisterRiskKeyParams,
+    ) -> Result<()> {
+        instructions::deployment_admin::process_register_risk_key(ctx, params)
+    }
+
+    pub fn revoke_risk_key(ctx: Context<RevokeRiskKey>) -> Result<()> {
+        instructions::deployment_admin::process_revoke_risk_key(ctx)
+    }
+
+    pub fn advance_policy_generation(ctx: Context<AdvancePolicyGeneration>) -> Result<()> {
+        instructions::deployment_admin::process_advance_policy_generation(ctx)
+    }
+
+    pub fn consume_deployment_authorization(
+        ctx: Context<ConsumeDeploymentAuthorization>,
+        nonce: [u8; DEPLOYMENT_NONCE_LEN],
+    ) -> Result<()> {
+        instructions::deployment_consume::process_consume_deployment_authorization(ctx, nonce)
     }
 }

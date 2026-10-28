@@ -92,4 +92,29 @@ pub enum VerifierError {
     CategoryMismatch,
     #[msg("Nonce hash argument does not match the signed nonce")]
     NonceHashMismatch,
+
+    #[msg("Deployment authority parameters are outside the profile")]
+    InvalidDeploymentAuthority,
+    #[msg("Signed message is not a SolEVM deployment authorization")]
+    InvalidAuthorizationMessage,
+    #[msg("Signed operation is not supported by this profile")]
+    UnsupportedOperation,
+    #[msg("Signed authorization names another deployment authority")]
+    AuthorityMismatch,
+    #[msg("Signed network domain does not match the deployment authority")]
+    NetworkDomainMismatch,
+    #[msg("Signed policy generation is not the current one")]
+    PolicyGenerationMismatch,
+    #[msg("Expiry must follow issue by at most 300 seconds")]
+    InvalidAuthorizationLifetime,
+    #[msg("Signed amount must be positive")]
+    InvalidAuthorizationAmount,
+    #[msg("Nonce argument does not match the signed nonce")]
+    NonceMismatch,
+    #[msg("Consume is not immediately followed by a deployment")]
+    MissingDeploymentInstruction,
+    #[msg("Following instruction is not the authorized deployment")]
+    InvalidDeploymentInstruction,
+    #[msg("Policy generation cannot advance further")]
+    PolicyGenerationExhausted,
 }

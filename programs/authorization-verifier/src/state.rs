@@ -152,3 +152,78 @@ pub fn is_profile_text(value: &[u8], max_len: usize) -> bool {
             .iter()
             .all(|byte| matches!(byte, 0x20..=0x7e) && *byte != b'"' && *byte != b'\\')
 }
+
+// SolEVM strategy-deployment profile (V2). Nothing above this line changes;
+// V2 accounts use their own seeds, so no V1 address can collide with them.
+
+pub const DEPLOYMENT_AUTHORITY_SEED: &[u8] = b"solevm-deploy-authority";
+pub const RISK_KEY_SEED: &[u8] = b"solevm-risk-key";
+pub const DEPLOYMENT_RECEIPT_SEED: &[u8] = b"solevm-deploy-receipt";
+
+/// Layout version of every V2 account and the signed message.
+pub const DEPLOYMENT_PROFILE_VERSION: u8 = 2;
+pub const DEPLOYMENT_NONCE_LEN: usize = 16;
+
+/// One remote-leg namespace's risk-authorization settings. The namespace
+/// and leg program are fixed by the address; nothing can repoint them.
+#[account]
+#[derive(InitSpace)]
+pub struct DeploymentAuthority {
+    pub version: u8,
+    pub bump: u8,
+    /// Registers and revokes risk keys and advances the policy generation.
+    pub administrator: Pubkey,
+    pub remote_leg_program: Pubkey,
+    pub remote_config: Pubkey,
+    /// Set once by the upgrade authority. The program cannot observe which
+    /// cluster it runs on, so this is only as truthful as that operator.
+    pub network_domain: [u8; 32],
+    /// Every signed approval names the generation it was issued under, so
+    /// advancing it voids all outstanding approvals at once.
+    pub policy_generation: u64,
+}
+
+/// A P-256 key the risk authority signs deployment approvals with. One
+/// account per key and no close path, so a revoked key stays revoked.
+#[account]
+#[derive(InitSpace)]
+pub struct RiskKey {
+    pub config: Pubkey,
+    pub public_key: [u8; COMPRESSED_PUBLIC_KEY_LEN],
+    /// Earliest accepted `issued_at` and cluster time.
+    pub not_before: i64,
+    /// Latest accepted `expires_at`.
+    pub not_after: i64,
+    pub revoked: bool,
+    pub bump: u8,
+}
+
+/// Permanent evidence that one approval was spent on one deployment. Its
+/// address is keyed by the signed nonce, so a nonce is spent at most once.
+#[account]
+#[derive(InitSpace)]
+pub struct DeploymentReceipt {
+    pub version: u8,
+    pub bump: u8,
+    pub config: Pubkey,
+    pub remote_config: Pubkey,
+    pub risk_key: Pubkey,
+    pub nonce: [u8; DEPLOYMENT_NONCE_LEN],
+    pub deployment_context: [u8; 32],
+    pub amount: u64,
+    pub policy_generation: u64,
+    pub issued_at: i64,
+    pub expires_at: i64,
+    pub consumed_at: i64,
+    pub message_hash: [u8; 32],
+}
+
+/// A compressed key spans two address seeds, parity byte then x coordinate,
+/// since one seed may not exceed 32 bytes.
+pub fn public_key_parity_seed(public_key: &[u8; COMPRESSED_PUBLIC_KEY_LEN]) -> &[u8] {
+    public_key.split_at(1).0
+}
+
+pub fn public_key_x_seed(public_key: &[u8; COMPRESSED_PUBLIC_KEY_LEN]) -> &[u8] {
+    public_key.split_at(1).1
+}

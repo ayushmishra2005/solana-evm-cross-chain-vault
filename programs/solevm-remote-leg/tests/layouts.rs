@@ -10,9 +10,9 @@ mod common;
 use anchor_lang::{AnchorSerialize, Discriminator, Space};
 use common::Pubkey;
 use solevm_remote_leg::{
-    ConsumedMessage, MessageClass, OutboundLane, RecallSentMarker, RemoteConfig, RemotePosition,
-    ReplayLane, ReportRecord, RiskConfig, StrategyConfig, TransferKind, TransferRecord,
-    TransferStatus, TransportLedger,
+    ConsumedMessage, DeployAuthorizationPolicy, MessageClass, OutboundLane, RecallSentMarker,
+    RemoteConfig, RemotePosition, ReplayLane, ReportRecord, RiskConfig, StrategyConfig,
+    TransferKind, TransferRecord, TransferStatus, TransportLedger,
 };
 
 /// Position of every byte a field occupies inside the account data.
@@ -65,8 +65,15 @@ fn the_transport_ledger_has_the_size_this_milestone_fixed() {
 }
 
 #[test]
+fn the_deploy_authorization_policy_has_the_size_this_milestone_fixed() {
+    assert_eq!(DeployAuthorizationPolicy::INIT_SPACE, 74);
+    assert_eq!(DeployAuthorizationPolicy::LEN, DISCRIMINATOR_LEN + 74);
+}
+
+#[test]
 fn every_account_stays_under_the_ten_kilobyte_ceiling() {
     for size in [
+        DeployAuthorizationPolicy::LEN,
         RemoteConfig::LEN,
         RiskConfig::LEN,
         ReplayLane::LEN,

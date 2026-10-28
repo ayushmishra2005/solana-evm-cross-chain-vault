@@ -212,4 +212,18 @@ pub enum RemoteLegError {
     TransportLedgerImbalance,
     #[msg("the open allocation record is required")]
     MissingActiveTransferRecord,
+    #[msg("deployment needs an approval consumed just before it")]
+    DeploymentAuthorizationRequired,
+    #[msg("deployment must be a top level instruction")]
+    DeploymentNotTopLevel,
+    #[msg("authorization config does not bind this leg")]
+    InvalidAuthorizationPolicy,
+    #[msg("authorization receipt does not belong to this deployment")]
+    InvalidAuthorizationReceipt,
+    #[msg("deployment approval has expired")]
+    AuthorizationExpired,
+    #[msg("deployment amount is not the approved amount")]
+    AuthorizationAmountMismatch,
+    #[msg("leg state is not the approved deployment context")]
+    AuthorizationContextMismatch,
 }
