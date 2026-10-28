@@ -72,7 +72,7 @@ fn program_root() -> PathBuf {
 }
 
 /// Keys and evidence drafts must never land in the working tree.
-fn refuse_inside_repository(home: &Path) -> Res<()> {
+pub(crate) fn refuse_inside_repository(home: &Path) -> Res<()> {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../..")
         .canonicalize()?;

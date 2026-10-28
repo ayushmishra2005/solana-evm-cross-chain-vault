@@ -3,6 +3,7 @@
 # ~/.config/solevm-devnet/keys). Existing keys are kept. Prints public keys only.
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+require_v1_sources
 require "$SOLANA_KEYGEN"
 
 mkdir -p "$KEY_DIR"

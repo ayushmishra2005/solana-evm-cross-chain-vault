@@ -4,6 +4,7 @@
 # production build in target/deploy is left untouched.
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+require_v1_sources
 require "$CARGO_BUILD_SBF"
 require python3
 "$CARGO_BUILD_SBF" --version | grep -q "cargo-build-sbf $CARGO_BUILD_SBF_VERSION" ||

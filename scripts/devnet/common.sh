@@ -82,6 +82,15 @@ cluster() {
   esac
 }
 
+# The leg sources now declare the V2 devnet id, so a build from them is not
+# the V1 binary. Refuses before anything is built, deployed or sent, so the
+# recorded V1 binaries, buffers and accounts stay as they are; read-only
+# verification (verify.sh) does not call this.
+require_v1_sources() {
+  grep -q "^declare_id!(\"$LEG_DEVNET_ID\");" "$PROGRAM_DIR/src/lib.rs" ||
+    die "the leg sources no longer declare the V1 devnet id $LEG_DEVNET_ID; the V1 instance is read-only, use scripts/devnet-v2"
+}
+
 state_dir() {
   local dir="$SOLEVM_HOME/state/$1"
   mkdir -p "$dir"

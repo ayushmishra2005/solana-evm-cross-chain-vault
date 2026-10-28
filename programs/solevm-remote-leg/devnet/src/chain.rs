@@ -33,7 +33,17 @@ pub(crate) struct Chain {
 pub(crate) struct Fetched {
     pub owner: Pubkey,
     pub executable: bool,
+    pub lamports: u64,
     pub data: Vec<u8>,
+}
+
+/// What a node's simulation of one signed transaction reported. A
+/// simulation is a prediction, never evidence that anything landed.
+#[derive(Clone, Debug)]
+pub(crate) struct Simulated {
+    pub error: Option<Value>,
+    pub compute_units: Option<u64>,
+    pub logs: Vec<String>,
 }
 
 /// A transaction the cluster executed, successfully or not.
@@ -48,9 +58,21 @@ pub(crate) struct Landed {
     pub compute_units: Option<u64>,
     /// Programs the transaction invoked at the top level.
     pub programs: Vec<String>,
+    /// Every account the transaction message names, in message order.
+    pub account_keys: Vec<String>,
 }
 
 impl Landed {
+    /// Index of the top-level instruction the transaction failed in.
+    pub(crate) fn failed_instruction(&self) -> Option<u8> {
+        let index = self
+            .error
+            .as_ref()?
+            .pointer("/InstructionError/0")?
+            .as_u64()?;
+        u8::try_from(index).ok()
+    }
+
     /// The custom program error code, when the transaction failed with one.
     pub(crate) fn custom_code(&self) -> Option<u32> {
         let code = self
@@ -120,6 +142,11 @@ impl Chain {
         text(&self.call("getGenesisHash", json!([]))?)
     }
 
+    /// The node's software version and feature set, as `getVersion` reports.
+    pub(crate) fn version(&self) -> Res<Value> {
+        self.call("getVersion", json!([]))
+    }
+
     pub(crate) fn latest_blockhash(&self) -> Res<Hash> {
         let result = self.call("getLatestBlockhash", json!([{ "commitment": "confirmed" }]))?;
         let value = result
@@ -176,9 +203,38 @@ impl Chain {
         Ok((slot, values))
     }
 
+    /// Simulates a signed transaction, signatures included, at confirmed
+    /// commitment, without submitting it.
+    pub(crate) fn simulate(&self, transaction: &Transaction) -> Res<Simulated> {
+        let config = json!({
+            "encoding": "base64",
+            "sigVerify": true,
+            "replaceRecentBlockhash": false,
+            "commitment": "confirmed",
+        });
+        let result = self.call(
+            "simulateTransaction",
+            json!([BASE64.encode(wire(transaction)?), config]),
+        )?;
+        let value = &result["value"];
+        Ok(Simulated {
+            error: value.get("err").filter(|error| !error.is_null()).cloned(),
+            compute_units: value["unitsConsumed"].as_u64(),
+            logs: value["logs"]
+                .as_array()
+                .map(|lines| {
+                    lines
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+    }
+
     fn send(&self, transaction: &Transaction, skip_preflight: bool) -> Res<String> {
-        let wire =
-            wincode::serialize(transaction).map_err(|error| format!("serialize: {error:?}"))?;
+        let wire = wire(transaction)?;
         let config = json!({
             "encoding": "base64",
             "skipPreflight": skip_preflight,
@@ -278,6 +334,7 @@ impl Chain {
                 .pointer("/meta/computeUnitsConsumed")
                 .and_then(Value::as_u64),
             programs,
+            account_keys: keys.iter().map(|key| (*key).to_owned()).collect(),
         }))
     }
 
@@ -292,6 +349,18 @@ impl Chain {
         signers: &[&Keypair],
         expect_failure: bool,
     ) -> Res<Landed> {
+        let transaction = self.sign(instructions, payer, signers)?;
+        self.submit(&transaction, expect_failure)
+    }
+
+    /// A legacy transaction on a fresh blockhash, signed by the payer and
+    /// each distinct signer once.
+    pub(crate) fn sign(
+        &self,
+        instructions: &[Instruction],
+        payer: &Keypair,
+        signers: &[&Keypair],
+    ) -> Res<Transaction> {
         let mut keys: Vec<&Keypair> = vec![payer];
         for signer in signers {
             if keys.iter().all(|known| known.pubkey() != signer.pubkey()) {
@@ -299,19 +368,25 @@ impl Chain {
             }
         }
         let blockhash = self.latest_blockhash()?;
-        let transaction = Transaction::new_signed_with_payer(
+        Ok(Transaction::new_signed_with_payer(
             instructions,
             Some(&payer.pubkey()),
             keys.as_slice(),
             blockhash,
-        );
+        ))
+    }
+
+    /// Sends a signed transaction and waits until it is confirmed. With
+    /// `skip_preflight` an expected failure lands on chain instead of being
+    /// refused by the RPC node.
+    pub(crate) fn submit(&self, transaction: &Transaction, skip_preflight: bool) -> Res<Landed> {
         let signature = transaction
             .signatures
             .first()
             .map(ToString::to_string)
             .ok_or("transaction has no signature")?;
 
-        let returned = self.send(&transaction, expect_failure)?;
+        let returned = self.send(transaction, skip_preflight)?;
         if returned != signature {
             return Err(format!("RPC returned signature {returned}, expected {signature}").into());
         }
@@ -333,7 +408,7 @@ impl Chain {
             }
             if broadcast.elapsed() > REBROADCAST_EVERY {
                 // A dropped transaction is resent unchanged; duplicates are ignored.
-                let _ = self.send(&transaction, true);
+                let _ = self.send(transaction, true);
                 broadcast = Instant::now();
             }
             sleep(Duration::from_secs(1));
@@ -369,8 +444,14 @@ fn fetched(value: &Value) -> Res<Option<Fetched>> {
     Ok(Some(Fetched {
         owner: Pubkey::from_str(owner).map_err(|error| format!("owner {owner}: {error:?}"))?,
         executable: value["executable"].as_bool().unwrap_or(false),
+        lamports: value["lamports"].as_u64().unwrap_or(0),
         data: BASE64.decode(data)?,
     }))
+}
+
+/// The bytes a transaction occupies on the wire.
+pub(crate) fn wire(transaction: &Transaction) -> Res<Vec<u8>> {
+    wincode::serialize(transaction).map_err(|error| format!("serialize: {error:?}").into())
 }
 
 fn text(value: &Value) -> Res<String> {

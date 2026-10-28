@@ -7,6 +7,7 @@
 # instead, which public endpoints rate-limit heavily.
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+require_v1_sources
 require "$SOLANA"
 require "$SOLANA_KEYGEN"
 

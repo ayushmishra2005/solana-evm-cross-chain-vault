@@ -15,8 +15,12 @@ use spl_associated_token_account_interface::address::get_associated_token_addres
 use crate::keys::Keys;
 use crate::messages::{CONTROL_LANE_ID, REPORT_LANE_ID};
 
+/// Prefix of every V1 namespace tag.
+const V1_PREFIX: &str = "solevm/devnet";
+
 #[derive(Clone, Debug)]
 pub(crate) struct Namespace {
+    pub prefix: &'static str,
     pub label: String,
     pub deployment_id: [u8; 32],
     pub vault_id: [u8; 32],
@@ -40,10 +44,28 @@ pub(crate) struct Namespace {
 
 impl Namespace {
     pub(crate) fn derive(label: &str, keys: &Keys) -> Self {
+        Self::derive_in(
+            V1_PREFIX,
+            label,
+            keys.mint.pubkey(),
+            keys.escrow_owner,
+            keys.transport.pubkey(),
+        )
+    }
+
+    /// The namespace `label` names under `prefix`, for the given mint,
+    /// escrow owner and asset transport wallet.
+    pub(crate) fn derive_in(
+        prefix: &'static str,
+        label: &str,
+        mint: Pubkey,
+        escrow_owner: Pubkey,
+        transport: Pubkey,
+    ) -> Self {
         let leg = solevm_remote_leg::ID;
         let adapter = solevm_test_strategy::ID;
-        let deployment_id = tag(label, "deployment");
-        let vault_id = tag(label, "vault");
+        let deployment_id = tag(prefix, label, "deployment");
+        let vault_id = tag(prefix, label, "vault");
         let pda =
             |seeds: &[&[u8]], program: &Pubkey| Pubkey::find_program_address(seeds, program).0;
 
@@ -51,12 +73,12 @@ impl Namespace {
         let custody_authority = pda(&[CUSTODY_AUTHORITY_SEED, config.as_ref()], &leg);
         let adapter_state = pda(&[ADAPTER_STATE_SEED, config.as_ref()], &adapter);
         let adapter_authority = pda(&[ADAPTER_AUTHORITY_SEED, adapter_state.as_ref()], &adapter);
-        let mint = keys.mint.pubkey();
         let ata = |owner: &Pubkey| {
             get_associated_token_address_with_program_id(owner, &mint, &spl_token::ID)
         };
 
         Self {
+            prefix,
             label: label.to_owned(),
             deployment_id,
             vault_id,
@@ -80,14 +102,19 @@ impl Namespace {
             program_data: pda(&[leg.as_ref()], &bpf_loader_upgradeable::ID),
             mint,
             custody: ata(&custody_authority),
-            escrow: ata(&keys.escrow_owner),
+            escrow: ata(&escrow_owner),
             adapter_vault: ata(&adapter_authority),
-            transport_source: ata(&keys.transport.pubkey()),
+            transport_source: ata(&transport),
         }
     }
 
     pub(crate) fn transfer_id(&self, name: &str) -> [u8; 32] {
-        tag(&self.label, &format!("transfer/{name}"))
+        tag(self.prefix, &self.label, &format!("transfer/{name}"))
+    }
+
+    /// A 32-byte identifier bound to this namespace.
+    pub(crate) fn tag(&self, name: &str) -> [u8; 32] {
+        tag(self.prefix, &self.label, name)
     }
 
     pub(crate) fn transfer_record(&self, transfer_id: &[u8; 32]) -> Pubkey {
@@ -151,6 +178,6 @@ impl Namespace {
 }
 
 /// A 32-byte identifier bound to this run label.
-fn tag(label: &str, name: &str) -> [u8; 32] {
-    protocol_types::keccak256(format!("solevm/devnet/{label}/{name}").as_bytes())
+fn tag(prefix: &str, label: &str, name: &str) -> [u8; 32] {
+    protocol_types::keccak256(format!("{prefix}/{label}/{name}").as_bytes())
 }
