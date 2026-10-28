@@ -60,9 +60,9 @@ Default builds use the ids in the default `declare_id!`. For the leg and the tes
    Until then `deploy_to_strategy` fails, and nothing else is affected.
 7. Point the relayer at the namespace. Open allocations only after it routes all seven message types.
 
-`programs/solevm-remote-leg/devnet/src/scenario.rs` builds the instructions of steps 2 to 5 and can serve as a reference client for them. It builds nothing for step 6 and never calls `deploy_to_strategy`. The published devnet run used a leg without deployment authorization, and no devnet namespace has adopted it.
+`programs/solevm-remote-leg/devnet/src/scenario.rs` builds the instructions of steps 2 to 5 and can serve as a reference client for them. It builds nothing for step 6 and never calls `deploy_to_strategy`. The V1 devnet run used a leg without deployment authorization.
 
-`programs/solevm-remote-leg/devnet/src/v2/scenario.rs` builds steps 2 to 6 and the authorized deployment transaction, signing approvals with a P-256 key generated in memory for each run. It has run only on a local validator: see [V2: deployment authorization](#v2-deployment-authorization).
+`programs/solevm-remote-leg/devnet/src/v2/scenario.rs` builds steps 2 to 6 and the authorized deployment transaction, signing approvals with a P-256 key generated in memory for each run. It made the recorded V2 devnet run: see [V2: deployment authorization](#v2-deployment-authorization).
 
 In the local LiteSVM tests, the step 6 instructions and the authorized deployment transaction are built by `programs/solevm-remote-leg/tests/common/authorization.rs`:
 
@@ -172,7 +172,7 @@ The run was made with the scripts as they are at commit `1aebf3f`, which has its
 
 ### V2: deployment authorization
 
-**Status: rehearsed on a local validator only. V2 is not deployed on devnet, and no V2 result is devnet validation.**
+**Status: deployed on devnet on 28 October 2026.** The run `devnet-1` is recorded in [`evidence/devnet/v2.json`](../evidence/devnet/v2.json) and summarized in the [README](../README.md#v2-deployment-authorization-verified-on-devnet).
 
 V2 is a separate instance in which every strategy deployment spends a single-use ES256 risk approval, in the transaction described under [Strategy deployment needs a risk approval](../README.md#strategy-deployment-needs-a-risk-approval).
 
@@ -197,11 +197,11 @@ The V2 program ids come from `--cfg solevm_devnet` (see [Build](#build)). V2 nam
 
 #### Funding
 
-At devnet rent quoted for the rehearsal's binaries, deploying costs about 6.53 SOL: 2.10 for the verifier (412,397 bytes of program data), 4.42 for the leg (870,509 bytes) and about 0.0064 in deploy fees. One scenario run costs about 0.036 SOL. The driver refuses to start a run below 0.2 SOL, so hold about 6.8 SOL before deploying, or about 7.5 SOL with headroom for resent deploy writes. `fund.sh` recomputes the estimate from live rent. Each authorized deployment also leaves a permanent 226-byte receipt with no close path, about 0.0018 SOL of rent on devnet.
+Deploying the recorded binaries on devnet cost 6.5265 SOL: 2.10 for the verifier (412,397 bytes of program data), 4.42 for the leg (870,509 bytes), 0.0017 for the two program accounts and 0.0064 in deploy fees. The `devnet-1` run consumed 0.0359 SOL. The driver refuses to start a run below 0.2 SOL, so hold about 6.8 SOL before deploying, or about 7.5 SOL with headroom for resent deploy writes. `fund.sh` recomputes the estimate from live rent. Each authorized deployment also leaves a permanent 226-byte receipt with no close path, about 0.0018 SOL of rent on devnet.
 
 #### Commands
 
-Tools: `cargo-build-sbf` 4.4.0 (platform tools v1.58) for builds, and an Agave release with `solana-test-validator` for the rehearsal (4.3.2 was used).
+Tools: `cargo-build-sbf` 4.4.0 (platform tools v1.58) for builds, and an Agave release with `solana-test-validator` for the rehearsal (4.3.2 was used, and its CLI made the devnet deploy).
 
 ```sh
 scripts/devnet-v2/keygen.sh            # disposable V2 keys; never overwrites
@@ -212,12 +212,15 @@ scripts/devnet-v2/build.sh             # pinned SBPFv0 builds with the V2 ids
 SOLEVM_AGAVE_BIN=/path/to/agave-release/bin \
   scripts/devnet-v2/localnet.sh local-1
 
-# Devnet, only after review (not done):
+# Devnet. These made the recorded run; a new run needs a new label.
 export SOLEVM_RPC_URL=https://api.devnet.solana.com SOLEVM_CLUSTER=devnet
 scripts/devnet-v2/fund.sh              # what the deployer holds and needs
 SOLEVM_V2_DEVNET_APPROVED=1 scripts/devnet-v2/deploy.sh
 SOLEVM_V2_DEVNET_APPROVED=1 scripts/devnet-v2/run.sh devnet-1
 scripts/devnet-v2/verify.sh ~/.config/solevm-devnet-v2/state/devnet/evidence-v2-devnet-1.json
+
+# Re-check the committed record, with no keys or SOL:
+scripts/devnet-v2/verify.sh evidence/devnet/v2.json
 ```
 
 `deploy.sh` deploys the verifier and then the leg, and checks that the reused adapter on the cluster is the pinned binary under its recorded authority.
