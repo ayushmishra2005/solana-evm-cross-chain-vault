@@ -356,3 +356,14 @@ pub struct ConsumedMessageClosed {
     pub rent_destination: Pubkey,
     pub closed_at: i64,
 }
+
+/// Emitted once, when deployments start requiring risk authorization.
+#[event]
+#[derive(Debug)]
+pub struct DeployAuthorizationAdopted {
+    pub remote_config: Pubkey,
+    pub authorization_policy: Pubkey,
+    pub authorization_config: Pubkey,
+    pub network_domain: [u8; 32],
+    pub adopted_at: i64,
+}

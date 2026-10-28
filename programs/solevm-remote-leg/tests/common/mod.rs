@@ -20,6 +20,7 @@ use solana_signer::Signer;
 use solana_transaction::Transaction;
 use solana_transaction_error::TransactionError;
 
+use es256_jws_adapter::SyntheticSigner;
 use solevm_remote_leg::state::{CUSTODY_AUTHORITY_SEED, REMOTE_CONFIG_SEED};
 use solevm_remote_leg::{
     CONSUMED_MESSAGE_SEED, ConsumedMessage, ControlStateParams, InitializeParams,
@@ -30,7 +31,10 @@ use solevm_remote_leg::{
 };
 use solevm_test_strategy::{ADAPTER_AUTHORITY_SEED, ADAPTER_STATE_SEED};
 
+pub mod authorization;
 pub mod messages;
+
+pub use authorization::*;
 
 pub const DEPLOYMENT_ID: [u8; 32] = [0x11; 32];
 pub const VAULT_ID: [u8; 32] = [0x22; 32];
@@ -99,6 +103,13 @@ pub struct Fixture {
     pub adapter_vault: Pubkey,
     pub params: InitializeParams,
     pub last_logs: Vec<String>,
+    /// Upgrade authority of the authorization verifier.
+    pub risk_deployer: Keypair,
+    /// Administrator of this namespace's deployment authority.
+    pub risk_administrator: Keypair,
+    /// The test risk policy's signing key.
+    pub risk_signer: SyntheticSigner,
+    pub next_nonce: u64,
 }
 
 impl Fixture {
@@ -124,6 +135,7 @@ impl Fixture {
         fixture
             .initialize_outbound_state()
             .expect("outbound state initializes");
+        fixture.install_deploy_authorization();
         fixture
     }
 
@@ -156,7 +168,24 @@ impl Fixture {
         } else {
             Keypair::new()
         };
-        for signer in [&administrator, &guardian, &outsider, &verifier] {
+        let risk_deployer = if deterministic {
+            seeded_keypair(5)
+        } else {
+            Keypair::new()
+        };
+        let risk_administrator = if deterministic {
+            seeded_keypair(6)
+        } else {
+            Keypair::new()
+        };
+        for signer in [
+            &administrator,
+            &guardian,
+            &outsider,
+            &verifier,
+            &risk_deployer,
+            &risk_administrator,
+        ] {
             svm.airdrop(&signer.pubkey(), 10_000_000_000).unwrap();
         }
 
@@ -225,6 +254,10 @@ impl Fixture {
                 emergency_guardian: Pubkey::default(),
             },
             last_logs: Vec::new(),
+            risk_deployer,
+            risk_administrator,
+            risk_signer: SyntheticSigner::from_secret(&RISK_SECRET).expect("risk key derives"),
+            next_nonce: 1,
         };
         fixture.params.emergency_guardian = fixture.guardian.pubkey();
         fixture.params.transport_verifier = fixture.verifier.pubkey();
@@ -491,10 +524,19 @@ impl Fixture {
         payer: &Keypair,
         signers: &[&Keypair],
     ) -> TxResult {
+        self.send_instructions(&[instruction], payer, signers)
+    }
+
+    pub fn send_instructions(
+        &mut self,
+        instructions: &[Instruction],
+        payer: &Keypair,
+        signers: &[&Keypair],
+    ) -> TxResult {
         // A fresh blockhash keeps a repeated call from looking like a replay.
         self.svm.expire_blockhash();
         let transaction = Transaction::new_signed_with_payer(
-            &[instruction],
+            instructions,
             Some(&payer.pubkey()),
             signers,
             self.svm.latest_blockhash(),
@@ -900,13 +942,15 @@ impl Fixture {
 
     // Strategy plane
 
-    /// A leg with control state, a live adapter and strategy state.
+    /// A leg with control state, a live adapter, strategy state and an
+    /// adopted deployment authorization.
     pub fn deployed() -> Self {
         let mut fixture = Self::ready();
         fixture.install_adapter();
         fixture
             .initialize_strategy_state(MAX_REMOTE_PRINCIPAL)
             .expect("strategy state initializes");
+        fixture.install_deploy_authorization();
         fixture
     }
 
@@ -1317,21 +1361,29 @@ impl Fixture {
         }
     }
 
-    pub fn deploy(&mut self, maximum_amount: u64) -> TxResult {
+    /// Deploys `amount` under a fresh approval from the test risk policy.
+    pub fn deploy(&mut self, amount: u64) -> TxResult {
         let accounts = self.strategy_accounts();
-        self.deploy_with(accounts, maximum_amount)
+        self.deploy_with(accounts, amount)
     }
 
-    pub fn deploy_with(&mut self, accounts: StrategyAccounts, maximum_amount: u64) -> TxResult {
-        let instruction = self.deploy_instruction(accounts, maximum_amount);
+    /// Deploys through `accounts` under an approval of the leg as it is.
+    /// Panics if anything but the deployment itself refuses, so a test that
+    /// expects a leg error can never be satisfied by the verifier.
+    pub fn deploy_with(&mut self, accounts: StrategyAccounts, amount: u64) -> TxResult {
+        let approval = self.approve(amount);
+        let instructions = self.authorized_deploy(&approval, accounts, amount);
         let payer = self.outsider.insecure_clone();
-        self.send_as(instruction, &payer, &[&payer])
+        let result = self.send_instructions(&instructions, &payer, &[&payer]);
+        refused_by_deployment(result)
     }
 
+    /// `deploy_to_strategy` spending the approval recorded at `receipt`.
     pub fn deploy_instruction(
         &self,
         accounts: StrategyAccounts,
-        maximum_amount: u64,
+        amount: u64,
+        receipt: Pubkey,
     ) -> Instruction {
         let metas = solevm_remote_leg::accounts::DeployToStrategy {
             remote_config: accounts.remote_config,
@@ -1346,13 +1398,16 @@ impl Fixture {
             adapter_token_vault: accounts.adapter_token_vault,
             asset_mint: accounts.asset_mint,
             token_program: accounts.token_program,
+            authorization_policy: self.authorization_policy(),
+            authorization_receipt: receipt,
+            instructions_sysvar: solana_instructions_sysvar::ID,
         }
         .to_account_metas(None);
 
         Instruction {
             program_id: solevm_remote_leg::ID,
             accounts: metas,
-            data: solevm_remote_leg::instruction::DeployToStrategy { maximum_amount }.data(),
+            data: solevm_remote_leg::instruction::DeployToStrategy { amount }.data(),
         }
     }
 
@@ -2304,19 +2359,23 @@ pub fn hostile_adapter_bytes() -> Vec<u8> {
     )
 }
 
+/// Reads `name` from `directory_variable` when it is set, with no fallback,
+/// so a run against one set of binaries can never load a stale default
+/// build. Otherwise reads the default build directory.
 fn built_program(name: &str, directory_variable: &str, default_directory: &str) -> Vec<u8> {
-    let mut paths = Vec::new();
-    if let Ok(directory) = std::env::var(directory_variable) {
-        paths.push(format!("{directory}/{name}.so"));
-    }
-    paths.push(format!(
-        "{}/target/{default_directory}/{name}.so",
-        env!("CARGO_MANIFEST_DIR")
-    ));
-    paths.push(format!(
-        "{}/../target/{default_directory}/{name}.so",
-        env!("CARGO_MANIFEST_DIR")
-    ));
+    let paths = match std::env::var(directory_variable) {
+        Ok(directory) => vec![format!("{directory}/{name}.so")],
+        Err(_) => vec![
+            format!(
+                "{}/target/{default_directory}/{name}.so",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+            format!(
+                "{}/../target/{default_directory}/{name}.so",
+                env!("CARGO_MANIFEST_DIR")
+            ),
+        ],
+    };
     for path in &paths {
         if let Ok(bytes) = std::fs::read(path) {
             return bytes;

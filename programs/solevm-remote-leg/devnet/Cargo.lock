@@ -730,6 +730,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
+name = "es256-authorization-verifier"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "solana-instructions-sysvar",
+ "solana-sdk-ids",
+ "solana-sha256-hasher",
+]
+
+[[package]]
 name = "feature-probe"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2497,7 +2507,9 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
+ "es256-authorization-verifier",
  "protocol-types",
+ "solana-instructions-sysvar",
  "solana-keccak-hasher",
 ]
 

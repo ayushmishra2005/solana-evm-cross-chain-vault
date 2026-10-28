@@ -7,6 +7,7 @@ This is an internal engineering review by the project's developers. It is not an
 - Solana remote leg (`programs/solevm-remote-leg`): PDA derivation and seeds, signer and upgrade-authority checks, SPL custody and the adapter boundary, inbound message authentication, canonical encoding, commitments, sequencing and replay, guardian, freeze and emergency paths, Close and Recover conservation, impairment, exactly-once settlement, arithmetic, account layouts, and compute.
 - Solidity vault and coordinator (`contracts/solevm-vault`): custody, access control, reentrancy, and parity with the Rust accounting model.
 - Protocol codec (`crates/protocol-types`), the relayer interface documented in the README, and CI.
+- Strategy deployment authorization: the second profile of `programs/authorization-verifier` and its enforcement in `deploy.rs` and `authorization.rs`.
 
 Method: manual reading of the code paths above, the existing suites (LiteSVM, Mollusk, Foundry unit, fuzz and invariant, the Rust-to-Solidity differential harness, cross-chain E2E), and the live negative tests of the devnet scenario (`programs/solevm-remote-leg/devnet`).
 
@@ -55,9 +56,17 @@ Both are described, with the recommended solution and the decision each needs, u
 | Transport verifier | Submit inbound control messages: Allocate, Recall, Resolve, ConfigUpdate (`has_one = transport_verifier` in `allocate.rs`, `recall.rs`, `resolve.rs`, `settlement.rs`, `config_update.rs`) | Redirect custody: assets leave only for the pinned `outbound_escrow` (`send.rs`) or the pinned adapter vault (`deploy.rs`, `withdraw.rs`) | Forged but well-formed messages can corrupt accounting: a forged Close impairs an allocation, a forged Recall sends custody home early. The guardian or administrator freezes the leg; see the [runbook](operations.md#transport-verifier-compromise) |
 | Administrator | Initialize state, freeze, advance the replay watermark, close consumed-message records | Submit control messages | Can freeze the leg and reclaim record rent. Cannot move custody |
 | Emergency guardian | Freeze; co-sign recall, attribution, admission, close and recovery on a frozen leg | Start any flow | Can freeze the leg and co-sign flows the verifier submits. Cannot start them |
+| Authorization verifier upgrade authority | Replace the verifier; create a namespace's deployment authority, choosing its risk administrator and network domain (`deployment_admin.rs`) | Move custody, or deploy without the leg's own checks (`authorization.rs`) | Can approve any deployment the leg would otherwise accept. Hold it like the leg's upgrade authority |
+| Risk administrator | Register and revoke risk keys; advance the policy generation, voiding approvals signed for earlier generations | Sign approvals; move custody | Can register its own key, with the same reach as a compromised risk key |
+| Risk key | Approve one deployment of one amount into one exact deployment context, for at most five minutes | Exceed attributed principal or the strategy ceiling; deploy on a frozen leg; approve twice with one nonce; affect recalls or unwinding | Can push exposure up to those limits. Revoke it and advance the generation; see the [runbook](operations.md#risk-key-compromise) |
 | Strategy adapter | Hold deployed principal in its vault | Sign for custody: the leg signs adapter calls with a caller identity that owns nothing, then checks balances and custody control (`custody.rs`) | Must report principal exactly. `check_deployed` requires the adapter's principal to equal the leg's deployed principal, so a rounding or misreporting adapter halts reporting (`InvalidPrincipalDelta`) instead of mispricing |
 
 The administrator, guardian and transport verifier are set once in `initialize_remote_leg`, and no instruction changes them. `ConfigUpdate` changes only risk parameters. Replacing a compromised role therefore means a new namespace, which only the upgrade authority can initialize.
+
+Deployment authorization does not bind these:
+- The network domain is configuration the verifier's upgrade authority attests to. A program cannot read the cluster's genesis hash.
+- The adapter's code version is not bound. Its program id, state, authority and vault are, and an upgraded adapter is still held to `check_deployed`. An adapter upgrade voids no outstanding approval; the [runbook](operations.md#upgrade) advances the policy generation around it.
+- The risk decision is off-chain. The repository contains only a deterministic test risk policy (`tests/risk_approval.rs`), not a production risk service.
 
 ## Properties exercised on a live cluster
 
@@ -76,3 +85,5 @@ The devnet scenario sends these as real transactions and checks the result. Each
 ## Compute
 
 The highest consumption is `process_settlement`. It peaked at about 85,000 compute units in the local rehearsal. On devnet, T09's whole transaction used 80,707. That is under Solana's default budget of 200,000 per instruction. The Mollusk suite (`tests/compute.rs`) guards these costs in CI.
+
+An authorized deployment uses about 60,000 compute units in total in LiteSVM: about 16,000 for the verifier's consume and 44,000 for `deploy_to_strategy`. As a legacy transaction with a compute-budget prefix it is 1,196 of 1,232 bytes. Through an address lookup table it is 705 bytes. `tests/authorization_limits.rs` checks both.

@@ -7,7 +7,12 @@ mod common;
 use anchor_lang::solana_program::instruction::{AccountMeta, Instruction};
 use anchor_lang::{InstructionData, ToAccountMetas};
 use anchor_spl::token::spl_token;
-use common::{ALLOCATE_TRANSFER_ID, Fixture, Pubkey, expect_error, expect_rejection};
+use common::{
+    ALLOCATE_TRANSFER_ID, CONSUME_INDEX, DEPLOY_INDEX, Fixture, Pubkey, deploy_account,
+    expect_error, expect_rejection, instruction_failure, refused_by_deployment,
+};
+use es256_authorization_verifier::VerifierError;
+use solana_instruction::error::InstructionError;
 use solana_signer::Signer;
 use solevm_remote_leg::RemoteLegError;
 
@@ -53,12 +58,17 @@ fn the_adapter_principal_matches_the_deployed_principal() {
 }
 
 #[test]
-fn a_request_above_the_attributed_principal_is_bounded_by_it() {
+fn a_request_above_the_attributed_principal_is_rejected_whole() {
     let mut fixture = funded();
-    fixture.deploy(u64::MAX).expect("deposit lands");
-
-    assert_eq!(fixture.position().deployed_principal, AMOUNT);
-    assert_eq!(fixture.position().attributed_principal, 0);
+    for amount in [AMOUNT + 1, u64::MAX] {
+        expect_error(
+            fixture.deploy(amount),
+            RemoteLegError::InsufficientAttributedCustody,
+        );
+    }
+    assert_eq!(fixture.position().deployed_principal, 0);
+    assert_eq!(fixture.position().attributed_principal, AMOUNT);
+    assert_eq!(fixture.token_amount(fixture.custody), AMOUNT);
 }
 
 #[test]
@@ -88,7 +98,11 @@ fn unattributed_custody_cannot_be_deployed() {
 fn custody_beyond_the_attributed_principal_stays_behind() {
     let mut fixture = funded();
     fixture.credit(fixture.custody, 250);
-    fixture.deploy(u64::MAX).expect("deposit lands");
+    expect_error(
+        fixture.deploy(AMOUNT + 250),
+        RemoteLegError::InsufficientAttributedCustody,
+    );
+    fixture.deploy(AMOUNT).expect("deposit lands");
 
     assert_eq!(fixture.token_amount(fixture.custody), 250);
     assert_eq!(fixture.position().unattributed_custody, 250);
@@ -177,13 +191,13 @@ fn another_custody_account_is_rejected() {
     fixture.write_token_account(stranger, mint, authority, None, None);
 
     let accounts = fixture.strategy_accounts();
-    let mut instruction = fixture.deploy_instruction(accounts, AMOUNT);
-    // The custody account sits after the three fixed configuration accounts.
-    instruction.accounts[4] = AccountMeta::new(stranger, false);
+    let approval = fixture.approve(AMOUNT);
+    let mut instructions = fixture.authorized_deploy(&approval, accounts, AMOUNT);
+    instructions[DEPLOY_INDEX as usize].accounts[deploy_account::CUSTODY_TOKEN_ACCOUNT] =
+        AccountMeta::new(stranger, false);
 
-    let payer = fixture.outsider.insecure_clone();
     expect_error(
-        fixture.send_as(instruction, &payer, &[&payer]),
+        refused_by_deployment(fixture.relay(&instructions)),
         RemoteLegError::InvalidCustodyAccount,
     );
 }
@@ -264,12 +278,18 @@ fn a_stale_position_cannot_survive_a_rejected_deposit() {
 }
 
 #[test]
-fn a_deposit_of_zero_is_rejected() {
+fn a_deposit_of_zero_cannot_be_approved() {
     let mut fixture = funded();
-    expect_error(
-        fixture.deploy(0),
-        RemoteLegError::InsufficientAttributedCustody,
+    let approval = fixture.approve(0);
+    let instructions = fixture.authorized_deploy(&approval, fixture.strategy_accounts(), 0);
+    assert_eq!(
+        instruction_failure(fixture.relay(&instructions)),
+        (
+            CONSUME_INDEX,
+            InstructionError::Custom(u32::from(VerifierError::InvalidAuthorizationAmount))
+        )
     );
+    assert_eq!(fixture.position().attributed_principal, AMOUNT);
 }
 
 #[test]
@@ -277,7 +297,7 @@ fn the_custody_identity_holds_after_every_deposit() {
     let mut fixture = funded();
     fixture.credit(fixture.custody, 111);
 
-    for amount in [1u64, 999, 500_000, u64::MAX] {
+    for amount in [1u64, 999, 500_000, u64::MAX, 499_000] {
         let _ = fixture.deploy(amount);
         let position = fixture.position();
         assert_eq!(

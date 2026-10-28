@@ -9,6 +9,8 @@
     clippy::indexing_slicing
 )]
 
+pub mod deployment;
+
 use anchor_lang::prelude::Pubkey;
 use anchor_lang::solana_program::bpf_loader_upgradeable;
 use anchor_lang::solana_program::clock::Clock;

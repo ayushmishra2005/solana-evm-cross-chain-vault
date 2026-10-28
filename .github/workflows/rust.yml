@@ -50,11 +50,19 @@ jobs:
           --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
           --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
+          --manifest-path ../authorization-verifier/Cargo.toml --sbf-out-dir target/deploy
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v0 \
+          --manifest-path ../authorization-verifier/test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy
+    - name: Check the builds left Cargo.lock unchanged
+      run: git diff --exit-code -- Cargo.lock ../authorization-verifier/Cargo.lock
     - name: Format
       run: cargo fmt --all --check
     - name: Lint
       run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Run tests
+      env:
+        SOLEVM_EXPECTED_SBPF_ARCH: v0
       run: cargo test --locked --workspace --all-features
     - name: Devnet driver
       working-directory: programs/solevm-remote-leg/devnet
@@ -91,10 +99,17 @@ jobs:
           --manifest-path test-strategy/Cargo.toml --sbf-out-dir target/deploy-v3
         cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
           --manifest-path test-strategy/Cargo.toml --features hostile --sbf-out-dir target/deploy-hostile-v3
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
+          --manifest-path ../authorization-verifier/Cargo.toml --sbf-out-dir target/deploy-v3
+        cargo-build-sbf --tools-version "$PLATFORM_TOOLS_VERSION" --arch v3 \
+          --manifest-path ../authorization-verifier/test-programs/cpi-forwarder/Cargo.toml --sbf-out-dir target/deploy-v3
+    - name: Check the builds left Cargo.lock unchanged
+      run: git diff --exit-code -- Cargo.lock ../authorization-verifier/Cargo.lock
     - name: Run tests against SBPFv3
       env:
         SBF_OUT_DIR: ${{ github.workspace }}/programs/solevm-remote-leg/target/deploy-v3
         HOSTILE_SBF_OUT_DIR: ${{ github.workspace }}/programs/solevm-remote-leg/target/deploy-hostile-v3
+        SOLEVM_EXPECTED_SBPF_ARCH: v3
       run: cargo test --locked --workspace --all-features
 
   foundry:

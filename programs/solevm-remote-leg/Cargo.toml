@@ -44,13 +44,22 @@ anchor-lang = "=1.2.1"
 anchor-spl = { version = "=1.2.1", default-features = false, features = ["solana-v3", "token"] }
 protocol-types = { path = "../../crates/protocol-types", default-features = false }
 solana-keccak-hasher = "3.1.0"
+# Typed receipts and the deployment context the risk authority signs.
+es256-authorization-verifier = { path = "../authorization-verifier", features = ["no-entrypoint"] }
+solana-instructions-sysvar = "=3.0.1"
 
 [dev-dependencies]
 # Tests build canonical messages, so they need the owned encoder.
 protocol-types = { path = "../../crates/protocol-types", features = ["std"] }
 # Tests check the adapter call interface against the adapter itself.
 solevm-test-strategy = { path = "test-strategy", features = ["no-entrypoint"] }
-litesvm = "=0.18.1"
+# The native secp256r1 program verifies every deployment approval.
+litesvm = { version = "=0.18.1", features = ["precompiles"] }
+# Signs synthetic deployment approvals for the test risk policy.
+es256-jws-adapter = { path = "../authorization-verifier/adapter" }
+solana-address-lookup-table-interface = "=3.2.0"
+solana-compute-budget-interface = "=3.1.0"
+solana-message = "=4.6.0"
 mollusk-svm = "=0.16.2"
 solana-account = "=4.7.0"
 solana-instruction = "=3.5.1"

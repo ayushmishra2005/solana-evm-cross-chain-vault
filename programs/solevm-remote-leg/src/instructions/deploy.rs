@@ -2,11 +2,17 @@
 //!
 //! Every result is read back from the accounts. The adapter reports nothing.
 //! The leg moves the assets itself, so the adapter never signs for custody.
+//! Each deployment spends one risk approval for exactly its amount; see
+//! [`crate::authorization`].
 
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use es256_authorization_verifier::DeploymentReceipt;
 
 use crate::adapter::{self, AdapterCall};
+use crate::authorization::{
+    Authorization, DEPLOY_AUTHORIZATION_SEED, DeployAuthorizationPolicy, deployment_context,
+};
 use crate::custody;
 use crate::errors::RemoteLegError;
 use crate::events::AssetsDeployed;
@@ -76,12 +82,25 @@ pub struct DeployToStrategy<'info> {
     pub asset_mint: Box<Account<'info, Mint>>,
 
     pub token_program: Program<'info, Token>,
+
+    /// Fails closed: until the administrator adopts a policy this account
+    /// does not exist, so no deployment can run.
+    #[account(
+        seeds = [DEPLOY_AUTHORIZATION_SEED, remote_config.key().as_ref()],
+        bump = authorization_policy.bump,
+    )]
+    pub authorization_policy: Box<Account<'info, DeployAuthorizationPolicy>>,
+
+    /// The approval the preceding instruction spent. Owned by the verifier;
+    /// the handler checks it was spent for this deployment.
+    pub authorization_receipt: Box<Account<'info, DeploymentReceipt>>,
+
+    /// CHECK: The address is pinned and the checked loaders re-verify it.
+    #[account(address = solana_instructions_sysvar::ID)]
+    pub instructions_sysvar: UncheckedAccount<'info>,
 }
 
-pub fn process_deploy_to_strategy(
-    ctx: Context<DeployToStrategy>,
-    maximum_amount: u64,
-) -> Result<()> {
+pub fn process_deploy_to_strategy(ctx: Context<DeployToStrategy>, amount: u64) -> Result<()> {
     require_eq!(
         ctx.accounts.remote_position.state_version,
         STATE_VERSION,
@@ -89,6 +108,11 @@ pub fn process_deploy_to_strategy(
     );
     require_eq!(
         ctx.accounts.strategy_config.state_version,
+        STATE_VERSION,
+        RemoteLegError::InvalidStateVersion
+    );
+    require_eq!(
+        ctx.accounts.authorization_policy.state_version,
         STATE_VERSION,
         RemoteLegError::InvalidStateVersion
     );
@@ -108,8 +132,11 @@ pub fn process_deploy_to_strategy(
     let position = &mut ctx.accounts.remote_position;
     custody::reconcile(position, custody_before)?;
 
-    let amount = maximum_amount.min(position.attributed_principal);
-    require_neq!(amount, 0, RemoteLegError::InsufficientAttributedCustody);
+    // Exactly the approved amount, or nothing.
+    require!(
+        amount != 0 && amount <= position.attributed_principal,
+        RemoteLegError::InsufficientAttributedCustody
+    );
 
     let adapter_state_info = ctx.accounts.adapter_state.to_account_info();
     let principal_before = adapter::read_principal(&adapter_state_info)?;
@@ -117,6 +144,21 @@ pub fn process_deploy_to_strategy(
     let vault_before = ctx.accounts.adapter_token_vault.amount;
 
     let config_key = ctx.accounts.remote_config.key();
+    let context = deployment_context(
+        &config_key,
+        &ctx.accounts.remote_config,
+        &ctx.accounts.strategy_config.key(),
+        &ctx.accounts.strategy_config,
+        &ctx.accounts.remote_position,
+    );
+    let now = Clock::get()?.unix_timestamp;
+    Authorization {
+        policy: &ctx.accounts.authorization_policy,
+        receipt_key: ctx.accounts.authorization_receipt.key(),
+        receipt: &ctx.accounts.authorization_receipt,
+        instructions_sysvar: &ctx.accounts.instructions_sysvar.to_account_info(),
+    }
+    .check(&config_key, &context, amount, now)?;
     let custody_seeds: &[&[u8]] = &[
         CUSTODY_AUTHORITY_SEED,
         config_key.as_ref(),
@@ -209,7 +251,7 @@ pub fn process_deploy_to_strategy(
         deployed_now: amount,
         attributed_principal: position.attributed_principal,
         deployed_principal: position.deployed_principal,
-        deployed_at: Clock::get()?.unix_timestamp,
+        deployed_at: now,
     });
 
     Ok(())

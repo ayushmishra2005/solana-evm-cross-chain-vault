@@ -145,7 +145,8 @@ fn deposits_of_any_size_keep_the_adapter_and_the_position_equal() {
 
         let mut deployed = 0;
         while deployed < AMOUNT {
-            let slice = random.upto(AMOUNT / 3);
+            // Each approval names an exact amount, never more than remains.
+            let slice = random.upto(AMOUNT / 3).min(AMOUNT - deployed);
             fixture.deploy(slice).expect("deposit lands");
             deployed = fixture.position().deployed_principal;
             check_identities(&fixture);

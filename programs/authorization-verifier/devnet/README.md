@@ -17,7 +17,7 @@ Verdicts are locally generated test data, signed by a P-256 key generated in mem
 1. Build SBPFv0. `declare_id!` must match the program keypair you deploy with.
 
    ```bash
-   cd programs/es256-authorization-verifier
+   cd programs/authorization-verifier
    cargo-build-sbf --tools-version v1.58 --arch v0
    shasum -a 256 target/deploy/es256_authorization_verifier.so
    ```
@@ -63,7 +63,7 @@ Verdicts are locally generated test data, signed by a P-256 key generated in mem
 | SHA-256 | `efe5d65e04d6c593a0eeedae9fc117407468ed0d0c1a89d3c156b154dccdb3a4` |
 | CI | [ES256 run 40468566582](https://github.com/ayushmishra2005/solana-evm-cross-chain-vault/actions/runs/40468566582) on `c88b456` |
 
-The ELF extracted from ProgramData is byte-identical to a fresh build of `c88b456`.
+The ELF extracted from ProgramData is byte-identical to a fresh build of `c88b456`. At that commit the program lived in `examples/es256-authorization-verifier` and had only the first profile. Later sources add the deployment profile and build a different binary, which has not been deployed.
 
 ## Authorization and replay test
 
